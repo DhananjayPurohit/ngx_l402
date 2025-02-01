@@ -1,0 +1,20 @@
+[package]
+name = "ngx_l402"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "ngx_l402_lib"
+crate-type = ["cdylib"]
+
+[dependencies]
+ngx = { git = "https://github.com/nginx/ngx-rust", branch = "master" }
+l402_middleware = "1.2.0"
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+serde_json = "1.0"
+reqwest = "0.12.12"
+
+[features]
+default = []
+export-modules = []
