@@ -1,15 +1,14 @@
 use ngx::ffi::{
-    ngx_command_t, ngx_conf_s, ngx_cycle_s, ngx_http_request_t, ngx_module_t, ngx_str_t,
+    ngx_command_t, ngx_cycle_s, ngx_http_request_t, ngx_module_t, ngx_str_t,
     NGX_CONF_TAKE1, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_RS_HTTP_LOC_CONF_OFFSET,
-    NGX_RS_MODULE_SIGNATURE, ngx_http_module_t, ngx_http_core_module, nginx_version,
-    ngx_array_push, ngx_http_handler_pt, ngx_conf_t, ngx_uint_t, NGX_OK, NGX_ERROR,
+    NGX_RS_MODULE_SIGNATURE, ngx_http_module_t, ngx_http_core_module, ngx_array_push, 
+    ngx_http_handler_pt, ngx_conf_t, ngx_uint_t, NGX_OK, NGX_DECLINED, NGX_ERROR,
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, NGX_LOG_INFO, NGX_LOG_ERR, ngx_log_s,
-    ngx_table_elt_t, ngx_log_stderr, ngx_list_push
+    ngx_table_elt_t, ngx_list_push
 };
 use ngx::http::{HTTPModule, ngx_http_conf_get_module_main_conf, Merge, MergeConfigError};
-use ngx::{ngx_null_command, ngx_string, ngx_log_debug_http, ngx_log_error};
+use ngx::{ngx_null_command, ngx_string, ngx_log_error};
 use l402_middleware::middleware::L402Middleware;
-use tokio::task;
 use std::sync::Arc;
 use std::os::raw::c_void;
 use std::ffi::c_char;
@@ -20,10 +19,8 @@ use std::ffi::CStr;
 use std::sync::Once;
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
-use std::time::Instant;
 use std::sync::mpsc;
 use std::thread;
-use std::str;
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -69,7 +66,6 @@ impl FiatRateConfig {
 
 pub struct L402Module {
     config: Arc<FiatRateConfig>,
-    ln_client_config: lnclient::LNClientConfig,
     middleware: L402Middleware,
 }
 
@@ -158,7 +154,6 @@ impl L402Module {
 
         Self {
             config,
-            ln_client_config,
             middleware,
         }
     }
@@ -167,7 +162,7 @@ impl L402Module {
 
         let log = unsafe { &mut *(*(*request).connection).log };
         let log_ref = log as *mut ngx_log_s;
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", 0, "Setting L402 header");
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
 
         let value_msat = self.config.fiat_to_btc_amount_func().await;
         let ln_invoice = lnrpc::Invoice {
@@ -180,18 +175,18 @@ impl L402Module {
             ln_client: module.middleware.ln_client.clone(),
         };
 
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", value_msat, "Setting L402 header");
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "invoice value: {}", value_msat);
         
         let (invoice, payment_hash) = ln_client_conn.generate_invoice(ln_invoice).await.unwrap();
 
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", invoice, "Setting L402 header");
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "invoice: {}", invoice);
         
         match macaroon_util::get_macaroon_as_string(payment_hash, caveats, module.middleware.root_key.clone()) {
             Ok(macaroon_string) => {
                 unsafe {
                     let r = &mut *request;
                     let header_value = format!("L402 macaroon=\"{}\", invoice=\"{}\"", macaroon_string, invoice);
-                    ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", header_value, "Setting L402 header");
+                    ngx_log_error!(NGX_LOG_INFO, log_ref, "header value: {}", header_value);
 
                     let h = ngx_list_push(&mut r.headers_out.headers) as *mut ngx_table_elt_t;
                     if !h.is_null() {
@@ -325,7 +320,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 pub async unsafe extern "C" fn l402_access_handler(request: *mut ngx_http_request_t) -> isize {
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
-    ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", 0, "Handling new request");
+    ngx_log_error!(NGX_LOG_INFO, log_ref, "Handling new request");
     
     let module = unsafe {
         MODULE.as_ref().expect("Module not initialized")
@@ -337,35 +332,44 @@ pub async unsafe extern "C" fn l402_access_handler(request: *mut ngx_http_reques
         let method = r.method;
         let uri = r.uri;
 
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {} {} {}", 0, "Processing request - Method: {:?}, URI: {:?}", method, uri);
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {} {}", "Processing request - Method: {:?}, URI: {:?}", method, uri);
 
         // Get module config to check if L402 is enabled
         let loc_conf = (*r).loc_conf;
         let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
         if !conf.enable {
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", 0, "L402 is disabled for this location");
-            return NGX_OK as isize;
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
+            return NGX_DECLINED.try_into().unwrap();
         }
 
-        let caveats = vec![format!("RequestPath = {}", uri)];
+        let mut request_path = uri.to_string();
+        // Check if the path contains `.html`
+        if request_path.contains(".html") || request_path.ends_with('/') {
+            if let Some(pos) = request_path.rfind('/') {
+                // Remove everything after and including the last '/'
+                request_path = request_path[..pos].to_string();
+            }
+        }
+
+        let caveats = vec![format!("RequestPath = {}", request_path)];
         
         if !auth_header.is_null() {
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", 0, "Found authorization header");
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "Found authorization header");
             let auth_str = CStr::from_ptr((*auth_header).value.data as *const i8)
                 .to_str()
                 .unwrap_or("");
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {} {}", 0, "Authorization: {}", auth_str);
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "Authorization: {}", auth_str);
 
             match utils::parse_l402_header(auth_str) {
                 Ok((mac, preimage)) => {
-                    ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", 0, "Successfully parsed L402 header");
+                    ngx_log_error!(NGX_LOG_INFO, log_ref, "Successfully parsed L402 header");
                     match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
                         Ok(_) => {
-                            ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", 0, "L402 verification successful");
-                            return NGX_OK as isize;
+                            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 verification successful");
+                            return NGX_DECLINED.try_into().unwrap();
                         },
                         Err(e) => {
-                            ngx_log_error!(NGX_LOG_ERR, log_ref, "{} {} {}", 0, "L402 verification failed: {:?}", e);
+                            ngx_log_error!(NGX_LOG_ERR, log_ref, "L402 verification failed: {:?}", e);
                             let r = &mut *request;
                             r.headers_out.status = 402;
                             module.set_l402_header(request, caveats, module).await;
@@ -374,7 +378,7 @@ pub async unsafe extern "C" fn l402_access_handler(request: *mut ngx_http_reques
                     }
                 },
                 Err(e) => {
-                    ngx_log_error!(NGX_LOG_ERR, log_ref, "{} {} {}", 0, "Failed to parse L402 header: {:?}", e);
+                    ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to parse L402 header: {:?}", e);
                     let r = &mut *request;
                     r.headers_out.status = 402;
                     module.set_l402_header(request, caveats, module).await;
@@ -383,7 +387,7 @@ pub async unsafe extern "C" fn l402_access_handler(request: *mut ngx_http_reques
             }
         }
 
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {}", 0, "No authorization header found, sending L402 challenge");
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "No authorization header found, sending L402 challenge");
         let r = &mut *request;
         r.headers_out.status = 402;
         module.set_l402_header(request, caveats, module).await;
