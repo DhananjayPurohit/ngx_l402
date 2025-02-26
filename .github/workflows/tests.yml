@@ -44,6 +44,8 @@ jobs:
 
       - name: Test Nginx Module with LNURL
         run: |
+          docker exec -it nginx cat /var/log/nginx/error.log
+
           echo "Testing with LNURL configuration..."
           export LN_CLIENT_TYPE=LNURL
           export LNURL_ADDRESS=${{ secrets.LNURL_ADDRESS }}
@@ -112,6 +114,8 @@ jobs:
 
       - name: Test Nginx Module with LND
         run: |
+          docker exec -it nginx cat /var/log/nginx/error.log
+
           echo "Testing with LND configuration..."
           export LN_CLIENT_TYPE=LND
           export LND_ADDRESS=0.0.0.0:10009
