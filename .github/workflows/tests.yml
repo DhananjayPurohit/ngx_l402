@@ -44,7 +44,7 @@ jobs:
 
       - name: Test Nginx Module with LNURL
         run: |
-          docker exec -it nginx cat /var/log/nginx/error.log
+          docker logs nginx
 
           echo "Testing with LNURL configuration..."
           export LN_CLIENT_TYPE=LNURL
@@ -114,7 +114,7 @@ jobs:
 
       - name: Test Nginx Module with LND
         run: |
-          docker exec -it nginx cat /var/log/nginx/error.log
+          docker logs nginx
 
           echo "Testing with LND configuration..."
           export LN_CLIENT_TYPE=LND
