@@ -42,6 +42,25 @@ jobs:
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
           cat .env
 
+      - name: Test Nginx Module with LNURL
+        run: |
+          echo "Testing with LNURL configuration..."
+          export LN_CLIENT_TYPE=LNURL
+          export LNURL_ADDRESS=${{ secrets.LNURL_ADDRESS }}
+          
+          # Test unprotected endpoint
+          echo "Testing unprotected endpoint..."
+          curl -v http://localhost:8000/
+          
+          # Test protected endpoint
+          echo "Testing protected endpoint..."
+          response=$(curl -v http://localhost:8000/protected)
+          echo "Response: $response"
+          
+          # Verify response headers for L402 authentication
+          echo "Verifying L402 headers..."
+          curl -I http://localhost:8000/protected | grep -i "www-authenticate"
+
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
           wallet_name="new_wallet"
@@ -67,25 +86,6 @@ jobs:
           MACAROON_PATH="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
           CERT_PATH="/root/.lnd/tls.cert"
 
-          # Wait for files to be available
-          echo "Waiting for LND files to be available..."
-          timeout=60
-          while [ $timeout -gt 0 ]; do
-            if docker exec ${CONTAINER_NAME} test -f ${MACAROON_PATH} && docker exec ${CONTAINER_NAME} test -f ${CERT_PATH}; then
-              echo "LND files are ready"
-              break
-            fi
-            echo "Waiting... ($timeout seconds remaining)"
-            sleep 5
-            timeout=$((timeout-5))
-          done
-
-          if [ $timeout -le 0 ]; then
-            echo "Timeout waiting for LND files"
-            docker logs ${CONTAINER_NAME}
-            exit 1
-          fi
-
           # Copy macaroon from the container to the workspace
           docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
 
@@ -110,27 +110,8 @@ jobs:
             exit 1
           fi
 
-      - name: Build and Test Nginx Module
+      - name: Test Nginx Module with LND
         run: |
-          # Test with LNURL
-          echo "Testing with LNURL configuration..."
-          export LN_CLIENT_TYPE=LNURL
-          export LNURL_ADDRESS=${{ secrets.LNURL_ADDRESS }}
-          
-          # Test unprotected endpoint
-          echo "Testing unprotected endpoint..."
-          curl -v http://localhost:8000/
-          
-          # Test protected endpoint
-          echo "Testing protected endpoint..."
-          response=$(curl -v http://localhost:8000/protected)
-          echo "Response: $response"
-          
-          # Verify response headers for L402 authentication
-          echo "Verifying L402 headers..."
-          curl -I http://localhost:8000/protected | grep -i "www-authenticate"
-
-          # Test with LND
           echo "Testing with LND configuration..."
           export LN_CLIENT_TYPE=LND
           export LND_ADDRESS=0.0.0.0:10009

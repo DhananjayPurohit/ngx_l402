@@ -60,7 +60,7 @@ services:
       args:
         - NGX_MODULE=ngx_http_l402_module.so
     ports:
-      - "80:80"
+      - "8000:8000"
     depends_on:
       - lndnode
 
