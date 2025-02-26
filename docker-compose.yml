@@ -54,6 +54,7 @@ services:
       - bitcoind
 
   nginx:
+    container_name: nginx
     build:
       context: .
       dockerfile: Dockerfile
