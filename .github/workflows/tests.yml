@@ -50,7 +50,7 @@ jobs:
           export LN_CLIENT_TYPE=LNURL
           export LNURL_ADDRESS=${{ secrets.LNURL_ADDRESS }}
           docker restart nginx
-          sleep 5  # Give nginx time to restart
+          sleep 10  # Give nginx time to restart
           
           # Test unprotected endpoint
           echo "Testing unprotected endpoint..."
@@ -124,7 +124,7 @@ jobs:
           export MACAROON_FILE_PATH=${{ env.MACAROON_PATH }}
           export CERT_FILE_PATH=${{ env.CERT_PATH }}
           docker restart nginx
-          sleep 5  # Give nginx time to restart
+          sleep 10  # Give nginx time to restart
           
           # Test unprotected endpoint
           echo "Testing unprotected endpoint..."
