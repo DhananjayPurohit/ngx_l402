@@ -50,16 +50,16 @@ jobs:
           
           # Test unprotected endpoint
           echo "Testing unprotected endpoint..."
-          curl -v http://localhost:8000/
+          curl -v http://0.0.0.0:8000/
           
           # Test protected endpoint
           echo "Testing protected endpoint..."
-          response=$(curl -v http://localhost:8000/protected)
+          response=$(curl -v http://0.0.0.0:8000/protected)
           echo "Response: $response"
           
           # Verify response headers for L402 authentication
           echo "Verifying L402 headers..."
-          curl -I http://localhost:8000/protected | grep -i "www-authenticate"
+          curl -I http://0.0.0.0:8000/protected | grep -i "www-authenticate"
 
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
@@ -120,13 +120,13 @@ jobs:
           
           # Test unprotected endpoint
           echo "Testing unprotected endpoint..."
-          curl -v http://localhost:8000/
+          curl -v http://0.0.0.0:8000/
           
           # Test protected endpoint
           echo "Testing protected endpoint..."
-          response=$(curl -v http://localhost:8000/protected)
+          response=$(curl -v http://0.0.0.0:8000/protected)
           echo "Response: $response"
           
           # Verify response headers for L402 authentication
           echo "Verifying L402 headers..."
-          curl -I http://localhost:8000/protected | grep -i "www-authenticate"
+          curl -I http://0.0.0.0:8000/protected | grep -i "www-authenticate"
