@@ -16,6 +16,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Build module for l402
+        run: cargo build --release --features export-modules
+
       - name: Set up Docker Compose
         run: |
           sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose

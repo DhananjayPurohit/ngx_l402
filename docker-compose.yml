@@ -1,12 +1,6 @@
 version: '3.8'
 
 services:
-  build-ngx-l402-module:
-    image: rust:latest
-    volumes:
-      - .:/app
-    working_dir: /app
-    command: cargo build --release --features export-modules
 
   bitcoind:
     image: lncm/bitcoind:v22.0@sha256:37a1adb29b3abc9f972f0d981f45e41e5fca2e22816a023faa9fdc0084aa4507
@@ -68,7 +62,6 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - build-ngx-l402-module
       - lndnode
 
 volumes:
