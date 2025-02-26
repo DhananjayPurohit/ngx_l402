@@ -67,6 +67,25 @@ jobs:
           MACAROON_PATH="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
           CERT_PATH="/root/.lnd/tls.cert"
 
+          # Wait for files to be available
+          echo "Waiting for LND files to be available..."
+          timeout=60
+          while [ $timeout -gt 0 ]; do
+            if docker exec ${CONTAINER_NAME} test -f ${MACAROON_PATH} && docker exec ${CONTAINER_NAME} test -f ${CERT_PATH}; then
+              echo "LND files are ready"
+              break
+            fi
+            echo "Waiting... ($timeout seconds remaining)"
+            sleep 5
+            timeout=$((timeout-5))
+          done
+
+          if [ $timeout -le 0 ]; then
+            echo "Timeout waiting for LND files"
+            docker logs ${CONTAINER_NAME}
+            exit 1
+          fi
+
           # Copy macaroon from the container to the workspace
           docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
 
