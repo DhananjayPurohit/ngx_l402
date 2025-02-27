@@ -75,7 +75,7 @@ jobs:
 
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
-          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgFFjGZDkObuGjI4_SCgEA8yMhl7GvJOqWuVYMmpTmL4UKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSAyf40wFTZ-L5f3CrV8KFxbIsOPekLaLHPxvX3lPVUOygo=:009c506c6dc623d41449d6333cbe854fabe897ddf17b82e85f9c90fb51181f6b" http://0.0.0.0:8000/protected)
+          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
@@ -85,7 +85,7 @@ jobs:
 
           # Test with invalid preimage
           echo "Testing with invalid preimage..."
-          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgFFjGZDkObuGjI4_SCgEA8yMhl7GvJOqWuVYMmpTmL4UKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSAyf40wFTZ-L5f3CrV8KFxbIsOPekLaLHPxvX3lPVUOygo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
+          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
@@ -158,7 +158,7 @@ jobs:
 
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
-          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgFFjGZDkObuGjI4_SCgEA8yMhl7GvJOqWuVYMmpTmL4UKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSAyf40wFTZ-L5f3CrV8KFxbIsOPekLaLHPxvX3lPVUOygo=:009c506c6dc623d41449d6333cbe854fabe897ddf17b82e85f9c90fb51181f6b" http://0.0.0.0:8000/protected)
+          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
@@ -168,7 +168,7 @@ jobs:
 
           # Test with invalid preimage
           echo "Testing with invalid preimage..."
-          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgFFjGZDkObuGjI4_SCgEA8yMhl7GvJOqWuVYMmpTmL4UKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSAyf40wFTZ-L5f3CrV8KFxbIsOPekLaLHPxvX3lPVUOygo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
+          response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
