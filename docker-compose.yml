@@ -62,6 +62,12 @@ services:
         - NGX_MODULE=ngx_http_l402_module.so
     ports:
       - "8000:8000"
+    environment:
+      - MACAROON_PATH=./admin.macaroon
+      - CERT_PATH=./tls.cert
+      - LN_CLIENT_TYPE=LNURL
+      - LNURL_ADDRESS=${LNURL_ADDRESS}
+
     depends_on:
       - lndnode
 

@@ -31,6 +31,9 @@ jobs:
         run: cargo build --release --features export-modules
 
       - name: Set up Docker Compose
+        env:
+          LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
+          ROOT_KEY: ${{ secrets.ROOT_KEY }}
         run: |
           sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
           sudo chmod +x /usr/local/bin/docker-compose
@@ -47,10 +50,6 @@ jobs:
           docker logs nginx
 
           echo "Testing with LNURL configuration..."
-          export LN_CLIENT_TYPE=LNURL
-          export LNURL_ADDRESS=${{ secrets.LNURL_ADDRESS }}
-          docker restart nginx
-          sleep 10  # Give nginx time to restart
           
           # Test unprotected endpoint
           echo "Testing unprotected endpoint..."
@@ -93,26 +92,8 @@ jobs:
           # Copy macaroon from the container to the workspace
           docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
 
-          # Check if the macaroon was copied successfully
-          if [ -f "./admin.macaroon" ]; then
-            echo "Extracted MACAROON_PATH: ./admin.macaroon"
-            echo "MACAROON_PATH=./admin.macaroon" >> $GITHUB_ENV
-          else
-            echo "Error: Macaroon file not found after copying."
-            exit 1
-          fi
-
           # Copy certificate from the container to the workspace
           docker cp ${CONTAINER_NAME}:${CERT_PATH} ./tls.cert
-
-          # Check if the certificate was copied successfully
-          if [ -f "./tls.cert" ]; then
-            echo "Extracted CERT_PATH: ./tls.cert"
-            echo "CERT_PATH=./tls.cert" >> $GITHUB_ENV
-          else
-            echo "Error: Certificate file not found after copying."
-            exit 1
-          fi
 
       - name: Test Nginx Module with LND
         run: |
@@ -121,10 +102,6 @@ jobs:
           echo "Testing with LND configuration..."
           export LN_CLIENT_TYPE=LND
           export LND_ADDRESS=0.0.0.0:10009
-          export MACAROON_FILE_PATH=${{ env.MACAROON_PATH }}
-          export CERT_FILE_PATH=${{ env.CERT_PATH }}
-          docker restart nginx
-          sleep 10  # Give nginx time to restart
           
           # Test unprotected endpoint
           echo "Testing unprotected endpoint..."
