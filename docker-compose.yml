@@ -65,8 +65,8 @@ services:
     environment:
       - MACAROON_PATH=./admin.macaroon
       - CERT_PATH=./tls.cert
-      - LN_CLIENT_TYPE=LNURL
       - LNURL_ADDRESS=${LNURL_ADDRESS}
+      - LND_ADDRESS=0.0.0.0:10009
 
     depends_on:
       - lndnode

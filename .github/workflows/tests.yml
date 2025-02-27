@@ -45,24 +45,67 @@ jobs:
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
           cat .env
 
-      - name: Test Nginx Module with LNURL
+      - name: Run Integration Tests - LNURL
         run: |
           docker logs nginx
-
           echo "Testing with LNURL configuration..."
-          
-          # Test unprotected endpoint
-          echo "Testing unprotected endpoint..."
-          curl -v http://0.0.0.0:8000/
-          
-          # Test protected endpoint
-          echo "Testing protected endpoint..."
-          response=$(curl -v http://0.0.0.0:8000/protected)
-          echo "Response: $response"
-          
-          # Verify response headers for L402 authentication
-          echo "Verifying L402 headers..."
-          curl -I http://0.0.0.0:8000/protected | grep -i "www-authenticate"
+          export LN_CLIENT_TYPE=LNURL
+          docker restart nginx
+          sleep 10
+
+          # Test free route
+          echo "Testing free route..."
+          response=$(curl -s -w "\n%{http_code}" http://0.0.0.0:8000/)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Free route returned status $status_code, expected 200"
+            exit 1
+          fi
+
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -w "\n%{http_code}" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            exit 1
+          fi
+
+          # Test protected route with L402 header
+          echo "Testing protected route with L402 header..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402: l402" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route with L402 header returned status $status_code, expected 402"
+            exit 1
+          fi
+
+          # Test with valid L402 credentials
+          echo "Testing with valid L402 credentials..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402-Authorization: L402 MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=:7c9d69d87a1af5d06ecebee2b095e49423400cf4f1d650292e0256ccea8b2ae2" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
+            exit 1
+          fi
+
+          # Test with invalid preimage
+          echo "Testing with invalid preimage..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402-Authorization: L402 MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+            exit 1
+          fi
+
+          # Test with macaroon without caveats
+          echo "Testing with macaroon without caveats..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402-Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+            exit 1
+          fi
 
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
@@ -84,34 +127,69 @@ jobs:
       - name: Extract Macaroon and Cert Paths
         run: |
           CONTAINER_NAME="lndnode"
-
-          # Define paths to the macaroon and certificate in the container
           MACAROON_PATH="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
           CERT_PATH="/root/.lnd/tls.cert"
-
-          # Copy macaroon from the container to the workspace
           docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
-
-          # Copy certificate from the container to the workspace
           docker cp ${CONTAINER_NAME}:${CERT_PATH} ./tls.cert
 
-      - name: Test Nginx Module with LND
+      - name: Run Integration Tests - LND
         run: |
           docker logs nginx
-
           echo "Testing with LND configuration..."
           export LN_CLIENT_TYPE=LND
-          export LND_ADDRESS=0.0.0.0:10009
-          
-          # Test unprotected endpoint
-          echo "Testing unprotected endpoint..."
-          curl -v http://0.0.0.0:8000/
-          
-          # Test protected endpoint
-          echo "Testing protected endpoint..."
-          response=$(curl -v http://0.0.0.0:8000/protected)
-          echo "Response: $response"
-          
-          # Verify response headers for L402 authentication
-          echo "Verifying L402 headers..."
-          curl -I http://0.0.0.0:8000/protected | grep -i "www-authenticate"
+          docker restart nginx
+          sleep 10
+
+          # Test free route
+          echo "Testing free route..."
+          response=$(curl -s -w "\n%{http_code}" http://0.0.0.0:8000/)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Free route returned status $status_code, expected 200"
+            exit 1
+          fi
+
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -w "\n%{http_code}" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            exit 1
+          fi
+
+          # Test protected route with L402 header
+          echo "Testing protected route with L402 header..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402: l402" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route with L402 header returned status $status_code, expected 402"
+            exit 1
+          fi
+
+          # Test with valid L402 credentials
+          echo "Testing with valid L402 credentials..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402-Authorization: L402 MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=:7c9d69d87a1af5d06ecebee2b095e49423400cf4f1d650292e0256ccea8b2ae2" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
+            exit 1
+          fi
+
+          # Test with invalid preimage
+          echo "Testing with invalid preimage..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402-Authorization: L402 MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+            exit 1
+          fi
+
+          # Test with macaroon without caveats
+          echo "Testing with macaroon without caveats..."
+          response=$(curl -s -w "\n%{http_code}" -H "L402-Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+            exit 1
+          fi
