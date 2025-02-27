@@ -46,11 +46,12 @@ jobs:
           cat .env
 
       - name: Run Integration Tests - LNURL
-        continue-on-error: true
         run: |
           docker logs nginx
           echo "Testing with LNURL configuration..."
           export LN_CLIENT_TYPE=LNURL
+          docker restart nginx
+          sleep 10
 
           # Test free route
           echo "Testing free route..."
@@ -61,7 +62,15 @@ jobs:
             exit 1
           fi
 
-          docker logs nginx
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -w "\n%{http_code}" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            exit 1
+          fi
+
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
           response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=:7c9d69d87a1af5d06ecebee2b095e49423400cf4f1d650292e0256ccea8b2ae2" http://0.0.0.0:8000/protected)
@@ -115,7 +124,6 @@ jobs:
           docker cp ${CONTAINER_NAME}:${CERT_PATH} ./tls.cert
 
       - name: Run Integration Tests - LND
-        continue-on-error: true
         run: |
           docker logs nginx
           echo "Testing with LND configuration..."
@@ -132,7 +140,15 @@ jobs:
             exit 1
           fi
 
-          docker logs nginx
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -w "\n%{http_code}" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            exit 1
+          fi
+
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
           response=$(curl -s -w "\n%{http_code}" -H "Authorization: L402 MDAxMmxvY2F0aW9uIExTQVQKMDAzMGlkZW50aWZpZXIgjWsDO3viVp1lHXWoaN1CiUFeRdn8Z9Zl1AUIfJHKoCkKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSBZJ8RYr2biQ9CRoCxMcmWBObW7L7nS1bvFduQXRIQcJwo=:7c9d69d87a1af5d06ecebee2b095e49423400cf4f1d650292e0256ccea8b2ae2" http://0.0.0.0:8000/protected)
