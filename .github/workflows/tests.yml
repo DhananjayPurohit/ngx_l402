@@ -50,8 +50,6 @@ jobs:
           docker logs nginx
           echo "Testing with LNURL configuration..."
           export LN_CLIENT_TYPE=LNURL
-          docker restart nginx
-          sleep 10
 
           # Test free route
           echo "Testing free route..."
