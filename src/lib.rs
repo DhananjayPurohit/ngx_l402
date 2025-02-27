@@ -371,18 +371,16 @@ pub async unsafe extern "C" fn l402_access_handler(request: *mut ngx_http_reques
                         Err(e) => {
                             ngx_log_error!(NGX_LOG_ERR, log_ref, "L402 verification failed: {:?}", e);
                             let r = &mut *request;
-                            r.headers_out.status = 402;
-                            module.set_l402_header(request, caveats, module).await;
-                            return 402;
+                            r.headers_out.status = 500;
+                            return 500;
                         }
                     }
                 },
                 Err(e) => {
                     ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to parse L402 header: {:?}", e);
                     let r = &mut *request;
-                    r.headers_out.status = 402;
-                    module.set_l402_header(request, caveats, module).await;
-                    return 402;
+                    r.headers_out.status = 500;
+                    return 500;
                 }
             }
         }
