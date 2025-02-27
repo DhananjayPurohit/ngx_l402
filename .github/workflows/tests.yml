@@ -59,6 +59,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Free route returned status $status_code, expected 200"
+            docker logs nginx
             exit 1
           fi
 
@@ -68,6 +69,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx
             exit 1
           fi
 
@@ -77,6 +79,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
+            docker logs nginx
             exit 1
           fi
 
@@ -86,6 +89,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+            docker logs nginx
             exit 1
           fi
 
@@ -95,6 +99,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+            docker logs nginx
             exit 1
           fi
 
@@ -137,6 +142,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Free route returned status $status_code, expected 200"
+            docker logs nginx
             exit 1
           fi
 
@@ -146,6 +152,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx
             exit 1
           fi
 
@@ -155,6 +162,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
+            docker logs nginx
             exit 1
           fi
 
@@ -164,6 +172,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+            docker logs nginx
             exit 1
           fi
 
@@ -173,5 +182,6 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+            docker logs nginx
             exit 1
           fi
