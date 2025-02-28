@@ -46,6 +46,7 @@ services:
       - "8080:8080"
     volumes:
       - lndnode-data:/data/.lnd
+      - lndnode-data:/root/.lnd
     restart: unless-stopped
     environment:
       HOME: /data
@@ -77,9 +78,11 @@ services:
       - "8001:8001"
     environment:
       - LN_CLIENT_TYPE=LND
-      - MACAROON_FILE_PATH=./admin.macaroon
-      - CERT_FILE_PATH=./tls.cert
-      - LND_ADDRESS=0.0.0.0:10009
+      - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - CERT_FILE_PATH=/root/.lnd/tls.cert
+      - LND_ADDRESS=lndnode:10009
+    volumes:
+      - lndnode-data:/root/.lnd
     depends_on:
       - lndnode
 
