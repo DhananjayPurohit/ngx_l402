@@ -80,7 +80,6 @@ services:
       - MACAROON_PATH=./admin.macaroon
       - CERT_PATH=./tls.cert
       - LND_ADDRESS=0.0.0.0:10009
-
     depends_on:
       - lndnode
 
