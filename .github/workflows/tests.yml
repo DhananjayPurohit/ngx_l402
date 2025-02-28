@@ -123,12 +123,20 @@ jobs:
           CONTAINER_NAME="lndnode"
           MACAROON_PATH="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
           CERT_PATH="/root/.lnd/tls.cert"
-          # Copy files from lndnode to nginx-lnd container
-          docker cp ${CONTAINER_NAME}:${MACAROON_PATH} nginx-lnd:/admin.macaroon
-          docker cp ${CONTAINER_NAME}:${CERT_PATH} nginx-lnd:/tls.cert
-
-          # Verify files exist in both locations
+          
+          # First copy from lndnode to local
+          docker cp ${CONTAINER_NAME}:${MACAROON_PATH} ./admin.macaroon
+          docker cp ${CONTAINER_NAME}:${CERT_PATH} ./tls.cert
+          
+          # Then copy from local to nginx-lnd
+          docker cp ./admin.macaroon nginx-lnd:/admin.macaroon
+          docker cp ./tls.cert nginx-lnd:/tls.cert
+          
+          # Verify files exist in nginx-lnd
           docker exec nginx-lnd ls -la /admin.macaroon /tls.cert
+          
+          # Clean up local files
+          rm ./admin.macaroon ./tls.cert
 
       - name: Run Integration Tests - LND
         run: |
