@@ -53,8 +53,8 @@ services:
     depends_on:
       - bitcoind
 
-  nginx:
-    container_name: nginx
+  nginx-lnurl:
+    container_name: nginx-lnurl
     build:
       context: .
       dockerfile: Dockerfile
@@ -63,9 +63,22 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - LN_CLIENT_TYPE=LNURL
+      - LNURL_ADDRESS=${LNURL_ADDRESS}
+  
+  nginx-lnd:
+    container_name: nginx-lnd
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8001:8001"
+    environment:
+      - LN_CLIENT_TYPE=LND
       - MACAROON_PATH=./admin.macaroon
       - CERT_PATH=./tls.cert
-      - LNURL_ADDRESS=${LNURL_ADDRESS}
       - LND_ADDRESS=0.0.0.0:10009
 
     depends_on:
