@@ -77,8 +77,8 @@ services:
       - "8001:8001"
     environment:
       - LN_CLIENT_TYPE=LND
-      - MACAROON_PATH=./admin.macaroon
-      - CERT_PATH=./tls.cert
+      - MACAROON_FILE_PATH=./admin.macaroon
+      - CERT_FILE_PATH=./tls.cert
       - LND_ADDRESS=0.0.0.0:10009
     depends_on:
       - lndnode
