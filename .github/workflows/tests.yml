@@ -49,7 +49,7 @@ jobs:
         run: |
           docker logs nginx-lnurl
           echo "Testing with LNURL configuration..."
-          sleep 10
+          sleep 20
 
           # Test free route
           echo "Testing free route..."
@@ -128,7 +128,6 @@ jobs:
           docker cp ${CONTAINER_NAME}:${CERT_PATH} nginx-lnd:/tls.cert
 
           # Verify files exist in both locations
-          ls -la ./admin.macaroon ./tls.cert
           docker exec nginx-lnd ls -la /admin.macaroon /tls.cert
 
       - name: Run Integration Tests - LND
