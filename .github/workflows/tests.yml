@@ -123,6 +123,8 @@ jobs:
           docker logs nginx-lnd
           echo "Testing with LND configuration..."
 
+          docker exec -it nginx-lnd ls -l /root/.lnd/data/chain/bitcoin/regtest/
+
           # Test free route
           echo "Testing free route..."
           response=$(curl -s -w "\n%{http_code}" -L http://0.0.0.0:8001/)

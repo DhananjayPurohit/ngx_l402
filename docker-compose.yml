@@ -85,13 +85,6 @@ services:
       - lndnode-data:/root/.lnd
     depends_on:
       - lndnode
-    entrypoint: >
-      /bin/sh -c "
-      while [ ! -f /root/.lnd/tls.cert ] || [ ! -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
-        echo 'Waiting for LND certificates and macaroon files...';
-        sleep 3;
-      done;
-      nginx -g 'daemon off;'"
 
 volumes:
   bitcoin_data:
