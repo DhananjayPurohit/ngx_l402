@@ -123,7 +123,7 @@ jobs:
           docker logs nginx-lnd
           echo "Testing with LND configuration..."
 
-          docker exec -it nginx-lnd ls -l /root/.lnd/data/chain/bitcoin/regtest/
+          docker exec nginx-lnd ls -l /root/.lnd/data/chain/bitcoin/regtest/
 
           # Test free route
           echo "Testing free route..."
