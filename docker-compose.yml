@@ -82,9 +82,7 @@ services:
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode:10009
     volumes:
-      - type: bind
-        source: ./lndnode-data
-        target: /root/.lnd
+      - lndnode-data:/root/.lnd
     depends_on:
       - lndnode
 
