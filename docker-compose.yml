@@ -46,6 +46,7 @@ services:
       - "8080:8080"
     volumes:
       - lndnode-data:/data/.lnd
+      - lndnode-data:/root/.lnd
     restart: unless-stopped
     environment:
       HOME: /data
@@ -53,8 +54,8 @@ services:
     depends_on:
       - bitcoind
 
-  nginx:
-    container_name: nginx
+  nginx-lnurl:
+    container_name: nginx-lnurl
     build:
       context: .
       dockerfile: Dockerfile
@@ -62,6 +63,26 @@ services:
         - NGX_MODULE=ngx_http_l402_module.so
     ports:
       - "8000:8000"
+    environment:
+      - LN_CLIENT_TYPE=LNURL
+      - LNURL_ADDRESS=${LNURL_ADDRESS}
+  
+  nginx-lnd:
+    container_name: nginx-lnd
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8001:8001"
+    environment:
+      - LN_CLIENT_TYPE=LND
+      - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - CERT_FILE_PATH=/root/.lnd/tls.cert
+      - LND_ADDRESS=lndnode:10009
+    volumes:
+      - lndnode-data:/root/.lnd
     depends_on:
       - lndnode
 
