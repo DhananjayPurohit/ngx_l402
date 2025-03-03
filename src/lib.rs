@@ -21,6 +21,7 @@ use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 use std::sync::mpsc;
 use std::thread;
+use std::fs;
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
