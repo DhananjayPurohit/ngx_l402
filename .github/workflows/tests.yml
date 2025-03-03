@@ -11,6 +11,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    fail-fast: false
 
     steps:
       - name: Checkout code
