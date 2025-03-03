@@ -129,11 +129,7 @@ jobs:
         run: |
           docker logs nginx-lnd
           echo "Testing with LND configuration..."
-
-          docker exec nginx-lnd ls -l /root/.lnd/data/chain/bitcoin/regtest/
-          docker exec nginx-lnd chmod -R 777 /root/.lnd
-          docker exec nginx-lnd ls -lah /root/.lnd/data/chain/bitcoin/regtest/
-          docker exec nginx-lnd cat /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+          sleep 30
 
           # Test free route
           echo "Testing free route..."
