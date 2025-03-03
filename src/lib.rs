@@ -98,7 +98,7 @@ impl L402Module {
                 println!("Configuring LND client");
                 let address = std::env::var("LND_ADDRESS").unwrap_or_else(|_| "localhost:10009".to_string());
                 println!("Using LND address: {}", address);
-                let path = "/root/.lnd/data/chain/bitcoin/regtest/";
+                let path = "/";
                 println!("Using macaroon file path: {}", path);
                 match fs::read_dir(path) {
                     Ok(entries) => {
