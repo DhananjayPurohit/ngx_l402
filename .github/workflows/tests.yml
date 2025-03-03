@@ -124,7 +124,7 @@ jobs:
           echo "Testing with LND configuration..."
 
           docker exec nginx-lnd ls -l /root/.lnd/data/chain/bitcoin/regtest/
-          docker exec nginx-lnd chmod 644 /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+          docker exec nginx-lnd chmod -R 777 /root/.lnd
           docker exec nginx-lnd ls -lah /root/.lnd/data/chain/bitcoin/regtest/
 
           # Test free route
