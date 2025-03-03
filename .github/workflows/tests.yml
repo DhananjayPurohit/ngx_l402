@@ -49,7 +49,7 @@ jobs:
         run: |
           docker logs nginx-lnurl
           echo "Testing with LNURL configuration..."
-          sleep 20
+          sleep 30
 
           # Test free route
           echo "Testing free route..."

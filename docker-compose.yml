@@ -45,8 +45,8 @@ services:
       - "10009:10009"
       - "8080:8080"
     volumes:
-      - lndnode-data:/data/.lnd
-      - lndnode-data:/root/.lnd
+      - lndnode-data:/data/.lnd:rw
+      - lndnode-data:/root/.lnd:rw
     restart: unless-stopped
     environment:
       HOME: /data
@@ -83,7 +83,7 @@ services:
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode:10009
     volumes:
-      - lndnode-data:/root/.lnd
+      - lndnode-data:/root/.lnd:rw
     depends_on:
       - lndnode
 
