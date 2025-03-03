@@ -97,6 +97,16 @@ impl L402Module {
                 println!("Configuring LND client");
                 let address = std::env::var("LND_ADDRESS").unwrap_or_else(|_| "localhost:10009".to_string());
                 println!("Using LND address: {}", address);
+                let path = std::env::var("MACAROON_FILE_PATH").unwrap_or_else(|_| "admin.macaroon".to_string());
+                println!("Using macaroon file path: {}", path);
+                match fs::read_dir(path) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            println!("{:?}", entry.path());
+                        }
+                    }
+                    Err(e) => println!("Could not read directory: {}", e),
+                }
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: Some(lnd::LNDOptions {
