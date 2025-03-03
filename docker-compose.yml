@@ -69,6 +69,7 @@ services:
   
   nginx-lnd:
     container_name: nginx-lnd
+    user: root
     build:
       context: .
       dockerfile: Dockerfile
