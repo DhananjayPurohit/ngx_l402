@@ -103,6 +103,9 @@ jobs:
             exit 1
           fi
 
+          # Shut down LNURL service
+          docker-compose -f docker-compose.yml stop nginx-lnurl
+
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
           wallet_name="new_wallet"
@@ -122,8 +125,6 @@ jobs:
 
       - name: Start nginx containers
         run: |
-          # Shut down LNURL service
-          docker-compose -f docker-compose.yml stop nginx-lnurl
           # Start the remaining services
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
 
