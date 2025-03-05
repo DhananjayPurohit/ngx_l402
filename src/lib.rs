@@ -18,6 +18,8 @@ use l402_middleware::{lnclient, lnurl, lnd, l402, utils, macaroon_util};
 use std::ffi::CStr;
 use std::sync::Once;
 use tokio::runtime::Runtime;
+use tokio::sync::oneshot;
+use once_cell::sync::Lazy;
 use tonic_openssl_lnd::lnrpc;
 use std::sync::mpsc;
 use std::thread;
@@ -304,94 +306,85 @@ impl Merge for ModuleConfig {
 }
 
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
-    let (tx, rx) = mpsc::channel();
-    let request_ptr = request as usize;
-
-    thread::spawn(move || {
-        let runtime = Runtime::new().unwrap();
-        let result = runtime.block_on(async {
-            l402_access_handler(request_ptr as *mut ngx_http_request_t).await
-        });
-        tx.send(result).unwrap();
+    // Use a global runtime instead of creating a new one every time
+    static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+        Runtime::new().expect("Failed to create Tokio runtime")
     });
 
-    rx.recv().unwrap()
+    // Create a thread-safe copy of the request data
+    let request_data = unsafe {
+        let r = &*request;
+        let auth_header = if !r.headers_in.authorization.is_null() {
+            Some(CStr::from_ptr((*r.headers_in.authorization).value.data as *const i8)
+                .to_str()
+                .unwrap_or("")
+                .to_string())
+        } else {
+            None
+        };
+        
+        let uri = r.uri.to_string();
+        let method = r.method as u32;
+        
+        (auth_header, uri, method)
+    };
+
+    let (tx, rx) = oneshot::channel();
+
+    RUNTIME.handle().spawn(async move {
+        let result = l402_access_handler(request_data).await;
+        let _ = tx.send(result);
+    });
+
+    // Block until the result is received
+    rx.blocking_recv().unwrap_or(-1)
 }
 
-pub async unsafe extern "C" fn l402_access_handler(request: *mut ngx_http_request_t) -> isize {
-    let log = unsafe { &mut *(*(*request).connection).log };
-    let log_ref = log as *mut ngx_log_s;
-    ngx_log_error!(NGX_LOG_INFO, log_ref, "Handling new request");
+pub async fn l402_access_handler(request_data: (Option<String>, String, u32)) -> isize {
+    let (auth_header, uri, method) = request_data;
     
     let module = unsafe {
         MODULE.as_ref().expect("Module not initialized")
     };
 
-    unsafe {
-        let r = &*request;
-        let auth_header = r.headers_in.authorization;
-        let method = r.method;
-        let uri = r.uri;
+    println!("Processing request - Method: {:?}, URI: {:?}", method, uri);
 
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {} {}", "Processing request - Method: {:?}, URI: {:?}", method, uri);
-
-        // Get module config to check if L402 is enabled
-        let loc_conf = (*r).loc_conf;
-        let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
-        if !conf.enable {
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
-            return NGX_DECLINED.try_into().unwrap();
+    let mut request_path = uri.clone();
+    if request_path.contains(".html") || request_path.ends_with('/') {
+        if let Some(pos) = request_path.rfind('/') {
+            request_path = request_path[..pos].to_string();
         }
-
-        let mut request_path = uri.to_string();
-        // Check if the path contains `.html`
-        if request_path.contains(".html") || request_path.ends_with('/') {
-            if let Some(pos) = request_path.rfind('/') {
-                // Remove everything after and including the last '/'
-                request_path = request_path[..pos].to_string();
-            }
-        }
-
-        let caveats = vec![format!("RequestPath = {}", request_path)];
-        
-        if !auth_header.is_null() {
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "Found authorization header");
-            let auth_str = CStr::from_ptr((*auth_header).value.data as *const i8)
-                .to_str()
-                .unwrap_or("");
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "Authorization: {}", auth_str);
-
-            match utils::parse_l402_header(auth_str) {
-                Ok((mac, preimage)) => {
-                    ngx_log_error!(NGX_LOG_INFO, log_ref, "Successfully parsed L402 header");
-                    match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
-                        Ok(_) => {
-                            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 verification successful");
-                            return NGX_DECLINED.try_into().unwrap();
-                        },
-                        Err(e) => {
-                            ngx_log_error!(NGX_LOG_ERR, log_ref, "L402 verification failed: {:?}", e);
-                            let r = &mut *request;
-                            r.headers_out.status = 500;
-                            return 500;
-                        }
-                    }
-                },
-                Err(e) => {
-                    ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to parse L402 header: {:?}", e);
-                    let r = &mut *request;
-                    r.headers_out.status = 500;
-                    return 500;
-                }
-            }
-        }
-
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "No authorization header found, sending L402 challenge");
-        let r = &mut *request;
-        r.headers_out.status = 402;
-        module.set_l402_header(request, caveats, module).await;
-        return 402;
     }
+
+    let caveats = vec![format!("RequestPath = {}", request_path)];
+    
+    if let Some(auth_str) = auth_header {
+        println!("Found authorization header");
+        println!("Authorization: {}", auth_str);
+
+        match utils::parse_l402_header(&auth_str) {
+            Ok((mac, preimage)) => {
+                println!("Successfully parsed L402 header");
+                match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
+                    Ok(_) => {
+                        println!("L402 verification successful");
+                        return NGX_DECLINED.try_into().unwrap();
+                    },
+                    Err(e) => {
+                        println!("L402 verification failed: {:?}", e);
+                        return 500;
+                    }
+                }
+            },
+            Err(e) => {
+                println!("Failed to parse L402 header: {:?}", e);
+                return 500;
+            }
+        }
+    }
+
+    println!("No authorization header found, sending L402 challenge");
+    402
 }
 
 pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
