@@ -311,6 +311,27 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         Runtime::new().expect("Failed to create Tokio runtime")
     });
 
+    let log = unsafe { &mut *(*(*request).connection).log };
+    let log_ref = log as *mut ngx_log_s;
+
+    // Check if L402 is enabled for this location
+    unsafe {
+        let r = &*request;
+        let auth_header = r.headers_in.authorization;
+        let method = r.method;
+        let uri = r.uri;
+
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {} {}", "Processing request - Method: {:?}, URI: {:?}", method, uri);
+
+        // Get module config to check if L402 is enabled
+        let loc_conf = (*r).loc_conf;
+        let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
+        if !conf.enable {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
+            return NGX_DECLINED.try_into().unwrap();
+        }
+    }
+
     // Create a thread-safe copy of the request data
     let request_data = unsafe {
         let r = &*request;
