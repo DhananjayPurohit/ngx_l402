@@ -11,8 +11,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
 
     steps:
       - name: Checkout code
@@ -48,14 +46,10 @@ jobs:
           cat .env
 
       - name: Run Integration Tests - LNURL
-        id: lnurl_tests
-        continue-on-error: true
         run: |
           docker logs nginx-lnurl
           echo "Testing with LNURL configuration..."
           sleep 15
-          
-          test_failed=false
 
           # Test free route
           echo "Testing free route..."
@@ -64,7 +58,7 @@ jobs:
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Free route returned status $status_code, expected 200"
             docker logs nginx-lnurl
-            test_failed=true
+            exit 1
           fi
 
           # Test protected route without header
@@ -74,7 +68,7 @@ jobs:
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route without header returned status $status_code, expected 402"
             docker logs nginx-lnurl
-            test_failed=true
+            exit 1
           fi
 
           # Test with valid L402 credentials
@@ -84,7 +78,7 @@ jobs:
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
             docker logs nginx-lnurl
-            test_failed=true
+            exit 1
           fi
 
           # Test with invalid preimage
@@ -94,7 +88,7 @@ jobs:
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
             docker logs nginx-lnurl
-            test_failed=true
+            exit 1
           fi
 
           # Test with macaroon without caveats
@@ -104,10 +98,6 @@ jobs:
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
             docker logs nginx-lnurl
-            test_failed=true
-          fi
-          if [ "$test_failed" = true ]; then
-            echo "::error::LNURL tests failed"
             exit 1
           fi
 
@@ -116,8 +106,6 @@ jobs:
           docker-compose -f docker-compose.yml stop nginx-lnurl
 
       - name: Verify Bitcoin daemon Service and create wallet
-        id: bitcoin_setup
-        continue-on-error: true
         run: |
           wallet_name="new_wallet"
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
@@ -128,8 +116,6 @@ jobs:
           docker logs bitcoind
 
       - name: Verify LND node
-        id: lnd_setup
-        continue-on-error: true
         run: |
           identity_pubkey_lndnode=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           echo "Pubkey: $identity_pubkey_lndnode"
@@ -137,21 +123,15 @@ jobs:
           docker logs lndnode
 
       - name: Start nginx containers for LND
-        id: nginx_setup
-        continue-on-error: true
         run: |
           # Start the remaining services
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
 
       - name: Run Integration Tests - LND
-        id: lnd_tests
-        continue-on-error: true
         run: |
           docker logs nginx-lnd
           echo "Testing with LND configuration..."
           sleep 15
-
-          test_failed=false
 
           # Test free route
           echo "Testing free route..."
@@ -160,7 +140,7 @@ jobs:
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Free route returned status $status_code, expected 200"
             docker logs nginx-lnd
-            test_failed=true
+            exit 1
           fi
 
           # Test protected route without header
@@ -170,7 +150,7 @@ jobs:
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route without header returned status $status_code, expected 402"
             docker logs nginx-lnd
-            test_failed=true
+            exit 1
           fi
 
           # Test with valid L402 credentials
@@ -180,7 +160,7 @@ jobs:
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
             docker logs nginx-lnd
-            test_failed=true
+            exit 1
           fi
 
           # Test with invalid preimage
@@ -190,7 +170,7 @@ jobs:
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
             docker logs nginx-lnd
-            test_failed=true
+            exit 1
           fi
 
           # Test with macaroon without caveats
@@ -200,22 +180,13 @@ jobs:
           if [ "$status_code" -ne 500 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
             docker logs nginx-lnd
-            test_failed=true
-          fi
-
-          if [ "$test_failed" = true ]; then
-            echo "::error::LND tests failed"
             exit 1
           fi
 
-      - name: Check test results
-        if: always()
+      - name: Publish .so file
+        if: github.ref == 'refs/heads/main'
         run: |
-          if [ "${{ steps.lnurl_tests.outcome }}" == "failure" ] || \
-             [ "${{ steps.bitcoin_setup.outcome }}" == "failure" ] || \
-             [ "${{ steps.lnd_setup.outcome }}" == "failure" ] || \
-             [ "${{ steps.nginx_setup.outcome }}" == "failure" ] || \
-             [ "${{ steps.lnd_tests.outcome }}" == "failure" ]; then
-            echo "Some tests failed!"
-            exit 1
-          fi
+          tar -czf libngx_l402_lib.tar.gz target/release/libngx_l402_lib.so
+          gh release upload latest libngx_l402_lib.tar.gz --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
