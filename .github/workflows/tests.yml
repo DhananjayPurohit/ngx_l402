@@ -53,7 +53,7 @@ jobs:
         run: |
           docker logs nginx-lnurl
           echo "Testing with LNURL configuration..."
-          sleep 30
+          sleep 15
           
           test_failed=false
 
@@ -106,14 +106,14 @@ jobs:
             docker logs nginx-lnurl
             test_failed=true
           fi
-
-          # Shut down LNURL service
-          docker-compose -f docker-compose.yml stop nginx-lnurl
-
           if [ "$test_failed" = true ]; then
             echo "::error::LNURL tests failed"
             exit 1
           fi
+
+      - name: Stop LNURL service
+        run: |
+          docker-compose -f docker-compose.yml stop nginx-lnurl
 
       - name: Verify Bitcoin daemon Service and create wallet
         id: bitcoin_setup
@@ -136,7 +136,7 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -generate 5
           docker logs lndnode
 
-      - name: Start nginx containers
+      - name: Start nginx containers for LND
         id: nginx_setup
         continue-on-error: true
         run: |
@@ -149,7 +149,7 @@ jobs:
         run: |
           docker logs nginx-lnd
           echo "Testing with LND configuration..."
-          sleep 30
+          sleep 15
 
           test_failed=false
 
