@@ -133,8 +133,11 @@ impl L402Module {
         };
 
         let config = FiatRateConfig {
-            currency: "USD".to_string(),
-            amount: 0.01,
+            currency: std::env::var("CURRENCY").unwrap_or_else(|_| "USD".to_string()),
+            amount: std::env::var("AMOUNT")
+                .unwrap_or_else(|_| "0.01".to_string())
+                .parse()
+                .unwrap_or(0.01),
         };
         println!("Created FiatRateConfig: {} {}", config.amount, config.currency);
 
