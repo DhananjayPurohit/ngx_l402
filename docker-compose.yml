@@ -66,6 +66,8 @@ services:
     environment:
       - LN_CLIENT_TYPE=LNURL
       - LNURL_ADDRESS=${LNURL_ADDRESS}
+      - CURRENCY=${CURRENCY}
+      - AMOUNT=${AMOUNT}
   
   nginx-lnd:
     container_name: nginx-lnd
@@ -82,6 +84,8 @@ services:
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=0.0.0.0:10009
+      - CURRENCY=${CURRENCY}
+      - AMOUNT=${AMOUNT}
     volumes:
       - lndnode-data:/root/.lnd:rw
     depends_on:
