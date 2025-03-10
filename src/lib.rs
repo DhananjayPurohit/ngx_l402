@@ -14,7 +14,7 @@ use std::os::raw::c_void;
 use std::ffi::c_char;
 use std::ptr::addr_of;
 use reqwest::Client;
-use l402_middleware::{lnclient, lnurl, lnd, l402, utils, macaroon_util};
+use l402_middleware::{lnclient, lnurl, lnd, nwc, l402, utils, macaroon_util};
 use std::ffi::CStr;
 use std::sync::Once;
 use tokio::runtime::Runtime;
@@ -90,6 +90,7 @@ impl L402Module {
                     lnurl_config: Some(lnurl::LNURLOptions {
                         address,
                     }),
+                    nwc_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -108,6 +109,24 @@ impl L402Module {
                         cert_file: std::env::var("CERT_FILE_PATH").unwrap_or_else(|_| "tls.cert".to_string()),
                     }),
                     lnurl_config: None,
+                    nwc_config: None,
+                    root_key: std::env::var("ROOT_KEY")
+                        .unwrap_or_else(|_| "root_key".to_string())
+                        .as_bytes()
+                        .to_vec(),
+                }
+            },
+            "NWC" => {
+                println!("Configuring NWC client");
+                let uri = std::env::var("NWC_URI").unwrap_or_else(|_| "nwc_uri".to_string());
+                println!("Using NWC URI: {}", uri);
+                lnclient::LNClientConfig {
+                    ln_client_type,
+                    lnd_config: None,
+                    lnurl_config: None,
+                    nwc_config: Some(nwc::NWCOptions {
+                        uri,
+                    }),
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -124,6 +143,7 @@ impl L402Module {
                     lnurl_config: Some(lnurl::LNURLOptions {
                         address,
                     }),
+                    nwc_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
