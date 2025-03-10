@@ -38,13 +38,14 @@ jobs:
       - name: Set up Docker Compose
         env:
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
+          NWC_URI: ${{ secrets.NWC_URI }}
           ROOT_KEY: ${{ secrets.ROOT_KEY }}
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
           sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
           sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose -f docker-compose.yml up -d bitcoind lndnode nginx-lnurl
+          docker-compose -f docker-compose.yml up -d bitcoind lndnode nginx-lnurl nginx-nwc
 
       - name: Create env file
         run: |
@@ -108,9 +109,65 @@ jobs:
             exit 1
           fi
 
-      - name: Stop LNURL service
+      - name: Run Integration Tests - NWC
         run: |
-          docker-compose -f docker-compose.yml stop nginx-lnurl
+          docker logs nginx-nwc
+          echo "Testing with NWC configuration..."
+          sleep 15
+
+          # Test free route
+          echo "Testing free route..."
+          response=$(curl -s -w "\n%{http_code}" -L http://0.0.0.0:8000/)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Free route returned status $status_code, expected 200"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -w "\n%{http_code}" -L http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Test with valid L402 credentials
+          echo "Testing with valid L402 credentials..."
+          response=$(curl -s -w "\n%{http_code}" -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Test with invalid preimage
+          echo "Testing with invalid preimage..."
+          response=$(curl -s -w "\n%{http_code}" -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Test with macaroon without caveats
+          echo "Testing with macaroon without caveats..."
+          response=$(curl -s -w "\n%{http_code}" -L -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+      - name: Stop LNURL and NWC services
+        run: |
+          docker-compose -f docker-compose.yml stop nginx-lnurl nginx-nwc
 
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
