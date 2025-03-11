@@ -37,8 +37,6 @@ jobs:
 
       - name: Set up Docker Compose
         env:
-          LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
-          NWC_URI: ${{ secrets.NWC_URI }}
           ROOT_KEY: ${{ secrets.ROOT_KEY }}
           CURRENCY: USD
           AMOUNT: 0.01
@@ -54,6 +52,8 @@ jobs:
           cat .env
 
       - name: Start LNURL service
+        env:
+          LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
         run: |
           docker-compose -f docker-compose.yml up -d nginx-lnurl
 
@@ -118,6 +118,8 @@ jobs:
           docker-compose -f docker-compose.yml stop nginx-lnurl
 
       - name: Start NWC service
+        env:
+          NWC_URI: ${{ secrets.NWC_URI }}
         run: |
           docker-compose -f docker-compose.yml up -d nginx-nwc
 
