@@ -77,7 +77,7 @@ services:
       args:
         - NGX_MODULE=ngx_http_l402_module.so
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - LN_CLIENT_TYPE=NWC
       - NWC_URI=${NWC_URI}
@@ -93,7 +93,7 @@ services:
       args:
         - NGX_MODULE=ngx_http_l402_module.so
     ports:
-      - "8000:8000"
+      - "8002:8000"
     environment:
       - LN_CLIENT_TYPE=LND
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
