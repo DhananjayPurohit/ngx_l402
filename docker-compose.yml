@@ -68,6 +68,21 @@ services:
       - LNURL_ADDRESS=${LNURL_ADDRESS}
       - CURRENCY=${CURRENCY}
       - AMOUNT=${AMOUNT}
+
+  nginx-nwc:
+    container_name: nginx-nwc
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8000:8000"
+    environment:
+      - LN_CLIENT_TYPE=NWC
+      - NWC_URI=${NWC_URI}
+      - CURRENCY=${CURRENCY}
+      - AMOUNT=${AMOUNT}
   
   nginx-lnd:
     container_name: nginx-lnd

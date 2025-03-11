@@ -48,6 +48,16 @@ export CURRENCY=USD
 export AMOUNT=0.01
 ```
 
+if using NWC:
+```bash
+export LN_CLIENT_TYPE=NWC
+export NWC_URI=
+# Root key for minting macaroons
+export ROOT_KEY=
+export CURRENCY=USD
+export AMOUNT=0.01
+```
+
 5. Restart Nginx:
 ```bash
 nginx -s reload
