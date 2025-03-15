@@ -364,9 +364,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     };
 
     // Execute the async work directly in the current thread
-    RUNTIME.block_on(async {
-        l402_access_handler(request, auth_header, uri, method).await
-    })
+    RUNTIME.block_on(l402_access_handler(request, auth_header, uri, method))
 }
 
 pub async fn l402_access_handler(request: *mut ngx_http_request_t, auth_header: Option<String>, uri: String, method: u32) -> isize {
@@ -427,14 +425,13 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         println!("Initializing runtime and L402Module");
         match std::panic::catch_unwind(|| {
             let rt = Runtime::new().expect("Failed to create runtime");
-            unsafe { RUNTIME = Some(rt) };
-            
-            let module = unsafe {
-                RUNTIME.as_ref().expect("Runtime not initialized").block_on(async {
-                    L402Module::new().await
-                })
-            };
-            unsafe { MODULE = Some(module) };
+            let module = rt.block_on(async {
+                L402Module::new().await
+            });
+            unsafe { 
+                RUNTIME = Some(rt);
+                MODULE = Some(module);
+            }
             println!("L402Module initialized successfully");
         }) {
             Ok(_) => (),
