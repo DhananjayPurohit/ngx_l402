@@ -4,7 +4,7 @@ use ngx::ffi::{
     NGX_RS_MODULE_SIGNATURE, ngx_http_module_t, ngx_http_core_module, ngx_array_push, 
     ngx_http_handler_pt, ngx_conf_t, ngx_uint_t, NGX_OK, NGX_DECLINED, NGX_ERROR,
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, NGX_LOG_INFO, NGX_LOG_ERR, ngx_log_s,
-    ngx_table_elt_t, ngx_list_push
+    ngx_table_elt_t, ngx_list_push, ngx_http_headers_out_t
 };
 use ngx::http::{HTTPModule, ngx_http_conf_get_module_main_conf, Merge, MergeConfigError};
 use ngx::{ngx_null_command, ngx_string, ngx_log_error};
@@ -184,7 +184,7 @@ impl L402Module {
         }
     }
 
-    pub async fn set_l402_header(&self, request: *mut ngx_http_request_t, caveats: Vec<String>, module: &L402Module) {
+    pub async fn set_l402_header(&self, request: *mut ngx_http_request_t, caveats: Vec<String>) {
 
         let log = unsafe { &mut *(*(*request).connection).log };
         let log_ref = log as *mut ngx_log_s;
@@ -198,7 +198,7 @@ impl L402Module {
         };
 
         let ln_client_conn = lnclient::LNClientConn {
-            ln_client: module.middleware.ln_client.clone(),
+            ln_client: self.middleware.ln_client.clone(),
         };
 
         ngx_log_error!(NGX_LOG_INFO, log_ref, "invoice value: {}", value_msat);
@@ -207,7 +207,7 @@ impl L402Module {
 
         ngx_log_error!(NGX_LOG_INFO, log_ref, "invoice: {}", invoice);
         
-        match macaroon_util::get_macaroon_as_string(payment_hash, caveats, module.middleware.root_key.clone()) {
+        match macaroon_util::get_macaroon_as_string(payment_hash, caveats, self.middleware.root_key.clone()) {
             Ok(macaroon_string) => {
                 unsafe {
                     let r = &mut *request;
@@ -338,26 +338,8 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let log_ref = log as *mut ngx_log_s;
 
     // Check if L402 is enabled for this location
-    unsafe {
-        let r = &*request;
-        let auth_header = r.headers_in.authorization;
-        let method = r.method;
-        let uri = r.uri;
-
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {} {}", "Processing request - Method: {:?}, URI: {:?}", method, uri);
-
-        // Get module config to check if L402 is enabled
-        let loc_conf = (*r).loc_conf;
-        let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
-        if !conf.enable {
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
-            return NGX_DECLINED.try_into().unwrap();
-        }
-    }
-
-    // Create a thread-safe copy of the request data
-    let request_data = unsafe {
-        let r = &*request;
+    let (auth_header, uri, method) = unsafe {
+        let r = &mut *request;
         let auth_header = if !r.headers_in.authorization.is_null() {
             Some(CStr::from_ptr((*r.headers_in.authorization).value.data as *const i8)
                 .to_str()
@@ -369,24 +351,25 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         
         let uri = r.uri.to_string();
         let method = r.method as u32;
-        
+
+        // Get module config to check if L402 is enabled
+        let loc_conf = (*r).loc_conf;
+        let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
+        if !conf.enable {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
+            return NGX_DECLINED.try_into().unwrap();
+        }
+
         (auth_header, uri, method)
     };
 
-    let (tx, rx) = oneshot::channel();
-
-    RUNTIME.handle().spawn(async move {
-        let result = l402_access_handler(request_data).await;
-        let _ = tx.send(result);
-    });
-
-    // Block until the result is received
-    rx.blocking_recv().unwrap_or(-1)
+    // Execute the async work directly in the current thread
+    RUNTIME.block_on(async {
+        l402_access_handler(request, auth_header, uri, method).await
+    })
 }
 
-pub async fn l402_access_handler(request_data: (Option<String>, String, u32)) -> isize {
-    let (auth_header, uri, method) = request_data;
-    
+pub async fn l402_access_handler(request: *mut ngx_http_request_t, auth_header: Option<String>, uri: String, method: u32) -> isize {
     let module = unsafe {
         MODULE.as_ref().expect("Module not initialized")
     };
@@ -428,6 +411,7 @@ pub async fn l402_access_handler(request_data: (Option<String>, String, u32)) ->
     }
 
     println!("No authorization header found, sending L402 challenge");
+    module.set_l402_header(request, caveats).await;
     402
 }
 
