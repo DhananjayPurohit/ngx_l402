@@ -3,8 +3,7 @@ use ngx::ffi::{
     NGX_CONF_TAKE1, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_RS_HTTP_LOC_CONF_OFFSET,
     NGX_RS_MODULE_SIGNATURE, ngx_http_module_t, ngx_http_core_module, ngx_array_push, 
     ngx_http_handler_pt, ngx_conf_t, ngx_uint_t, NGX_OK, NGX_DECLINED, NGX_ERROR,
-    ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, NGX_LOG_INFO, NGX_LOG_ERR, ngx_log_s,
-    ngx_table_elt_t, ngx_list_push, ngx_http_headers_out_t
+    ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, NGX_LOG_INFO, NGX_LOG_ERR, ngx_log_s
 };
 use ngx::http::{HTTPModule, ngx_http_conf_get_module_main_conf, Merge, MergeConfigError, Request};
 use ngx::{ngx_null_command, ngx_string, ngx_log_error};
@@ -18,12 +17,7 @@ use l402_middleware::{lnclient, lnurl, lnd, nwc, l402, utils, macaroon_util};
 use std::ffi::CStr;
 use std::sync::Once;
 use tokio::runtime::Runtime;
-use tokio::sync::oneshot;
-use once_cell::sync::Lazy;
 use tonic_openssl_lnd::lnrpc;
-use std::sync::mpsc;
-use std::thread;
-use std::fs;
 use std::sync::OnceLock;
 
 const SATS_PER_BTC: i64 = 100_000_000;
@@ -292,7 +286,6 @@ pub static mut ngx_http_l402_module: ngx_module_t = ngx_module_t {
     type_: NGX_HTTP_MODULE as usize,
 
     init_master: None,
-    // init_module: None,
     init_module: Some(init_module as unsafe extern "C" fn(*mut ngx_cycle_s) -> isize),
     init_process: None,
     init_thread: None,
@@ -373,7 +366,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 .expect("tokio runtime init")
         });
         
-        // Use block_on instead of spawn + channel for simpler code and better performance
+        // Use block_on as getting better performance than spawn + channel
         let header_result = rt.block_on(async {
             module.get_l402_header(caveats.clone()).await
         });

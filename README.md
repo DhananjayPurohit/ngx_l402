@@ -1,6 +1,25 @@
 # L402 Nginx Module
 
-This project implements an L402 authentication module for Nginx that enables Lightning Network-based API monetization. The module supports both LNURL and LND backends for payment processing.
+An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), LNURL, and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
+
+```mermaid
+graph TD;
+    A[Request Received] --> B{L402 Enabled?}
+    B -->|No| C[Return 200 OK]
+    B -->|Yes| D{Authorization Header Present?}
+    D -->|No| F[Generate L402 Header macaroon & invoice]
+    F --> G{Header Generation Success?}
+    G -->|Yes| H[Add WWW-Authenticate Header]
+    G -->|No| I[Return 500 Internal Server Error]
+    H --> J[Return 402 Payment Required]
+    D -->|Yes| K[Parse L402 Header]
+    K --> L{Parse Success?}
+    L -->|No| M[Return 500 Internal Server Error]
+    L -->|Yes| N[Verify L402]
+    N --> O{Verification Success?}
+    O -->|Yes| P[Return 200 OK]
+    O -->|No| Q[Return 500 Internal Server Error]
+```
 
 ## Installation & Usage
 
@@ -60,7 +79,7 @@ export AMOUNT=0.01
 
 5. Restart Nginx:
 ```bash
-nginx -s reload
+sudo systemctl restart nginx
 ```
 
 ## Building from Source
@@ -68,6 +87,8 @@ nginx -s reload
 To build the module from source:
 
 1. Install Rust and Cargo if not already installed:
+
+```bash
 
 2. Clone the repository:
 
@@ -82,10 +103,4 @@ cd ngx_l402
 cargo build --release --features export-modules
 ```
 
-4. Copy the module file `libngx_l402_lib.so` to your Nginx modules directory (typically `/etc/nginx/modules/`)
-
-```bash
-cp target/release/libngx_l402_lib.so /etc/nginx/modules/
-```
-
-
+The compiled module will be created at `/target/release/libngx_l402_lib.so`.
