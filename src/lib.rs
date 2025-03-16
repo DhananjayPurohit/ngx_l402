@@ -6,7 +6,7 @@ use ngx::ffi::{
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, NGX_LOG_INFO, NGX_LOG_ERR, ngx_log_s,
     ngx_table_elt_t, ngx_list_push, ngx_http_headers_out_t
 };
-use ngx::http::{HTTPModule, ngx_http_conf_get_module_main_conf, Merge, MergeConfigError};
+use ngx::http::{HTTPModule, ngx_http_conf_get_module_main_conf, Merge, MergeConfigError, Request};
 use ngx::{ngx_null_command, ngx_string, ngx_log_error};
 use l402_middleware::middleware::L402Middleware;
 use std::sync::Arc;
@@ -364,33 +364,33 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     if result == 402 {
         let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
         
-        // Get the L402 header value using a thread instead of block_on
-        let caveats_clone = caveats.clone();
-        let (tx, rx) = mpsc::channel();
+        // Create a new runtime for this request
+        let rt = Runtime::new().expect("Failed to create runtime");
         
-        thread::spawn(move || {
-            let rt = Runtime::new().expect("Failed to create runtime");
-            let header_value = rt.block_on(async {
-                module.get_l402_header(caveats_clone).await
-            });
-            tx.send(header_value).expect("Failed to send header value");
-        });
-        
-        if let Ok(Some(header_value)) = rx.recv() {
-            unsafe {
-                let r = &mut *request;
-                ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
-                
-                let h = ngx_list_push(&mut r.headers_out.headers) as *mut ngx_table_elt_t;
-                if !h.is_null() {
-                    (*h).hash = 1;
-                    (*h).key = ngx_string!("WWW-Authenticate");
-                    let header_value_cstr = std::ffi::CString::new(header_value).unwrap();
-                    let header_value_bytes = header_value_cstr.as_bytes_with_nul();
-                    (*h).value.len = header_value_bytes.len() - 1; // Exclude null terminator
-                    (*h).value.data = header_value_cstr.into_raw() as *mut u8;
+        // Add timeout to prevent socket hang up
+        let header_value = rt.block_on(async {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10), // 10 second timeout
+                module.get_l402_header(caveats.clone())
+            ).await {
+                Ok(result) => result,
+                Err(_) => {
+                    ngx_log_error!(NGX_LOG_ERR, log_ref, "Timeout occurred while getting L402 header");
+                    None
                 }
             }
+        });
+        
+        if let Some(header_value) = header_value {
+            unsafe {
+                ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
+                
+                let req = Request::from_ngx_http_request(request);
+                req.add_header_out("WWW-Authenticate", &header_value);
+            }
+        } else {
+            ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
+            return 500; // Return server error if we couldn't get the header
         }
     }
     
