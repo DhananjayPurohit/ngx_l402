@@ -1,22 +1,18 @@
 # L402 Nginx Module
 
-<<<<<<< Updated upstream
-An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), LNURL, and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
-=======
 An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Network URL (LNURL), and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
->>>>>>> Stashed changes
 
 ```mermaid
 graph TD;
-    A[Request Received] --> B{L402 Enabled?}
+    A[Request Received] --> B{Endpoint L402 Enabled?}
     B -->|No| C[Return 200 OK]
-    B -->|Yes| D{Authorization Header Present?}
+    B -->|Yes| D{Authorization Header present in request?}
     D -->|No| F[Generate L402 Header macaroon & invoice]
     F --> G{Header Generation Success?}
     G -->|Yes| H[Add WWW-Authenticate Header]
     G -->|No| I[Return 500 Internal Server Error]
     H --> J[Return 402 Payment Required]
-    D -->|Yes| K[Parse L402 Header]
+    D -->|Yes| K[Parse L402 Header macaroon & preimage]
     K --> L{Parse Success?}
     L -->|No| M[Return 500 Internal Server Error]
     L -->|Yes| N[Verify L402]
@@ -93,11 +89,8 @@ To build the module from source:
 1. Install Rust and Cargo if not already installed:
 
 ```bash
-<<<<<<< Updated upstream
-=======
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
->>>>>>> Stashed changes
 
 2. Clone the repository:
 
