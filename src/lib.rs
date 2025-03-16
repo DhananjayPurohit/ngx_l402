@@ -373,7 +373,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 .expect("tokio runtime init")
         });
         
-        // Since we want to avoid block_on, we'll use a callback approach
         let (tx, rx) = std::sync::mpsc::channel();
         
         // Spawn the task to get the L402 header
@@ -383,7 +382,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         });
         
         // Try to receive the result with a timeout to prevent hanging
-        let header_value = match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+        let header_value = match rx.recv_timeout(std::time::Duration::from_secs(20)) {
             Ok(value) => value,
             Err(e) => {
                 ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header: {:?}", e);
