@@ -1,6 +1,10 @@
 # L402 Nginx Module
 
+<<<<<<< Updated upstream
 An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), LNURL, and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
+=======
+An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Network URL (LNURL), and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
+>>>>>>> Stashed changes
 
 ```mermaid
 graph TD;
@@ -89,6 +93,11 @@ To build the module from source:
 1. Install Rust and Cargo if not already installed:
 
 ```bash
+<<<<<<< Updated upstream
+=======
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+>>>>>>> Stashed changes
 
 2. Clone the repository:
 
