@@ -3,10 +3,9 @@ use ngx::ffi::{
     NGX_CONF_TAKE1, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_RS_HTTP_LOC_CONF_OFFSET,
     NGX_RS_MODULE_SIGNATURE, ngx_http_module_t, ngx_http_core_module, ngx_array_push, 
     ngx_http_handler_pt, ngx_conf_t, ngx_uint_t, NGX_OK, NGX_DECLINED, NGX_ERROR,
-    ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, NGX_LOG_INFO, NGX_LOG_ERR, ngx_log_s,
-    ngx_table_elt_t, ngx_list_push
+    ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, NGX_LOG_INFO, NGX_LOG_ERR, ngx_log_s
 };
-use ngx::http::{HTTPModule, ngx_http_conf_get_module_main_conf, Merge, MergeConfigError};
+use ngx::http::{HTTPModule, ngx_http_conf_get_module_main_conf, Merge, MergeConfigError, Request};
 use ngx::{ngx_null_command, ngx_string, ngx_log_error};
 use l402_middleware::middleware::L402Middleware;
 use std::sync::Arc;
@@ -18,12 +17,8 @@ use l402_middleware::{lnclient, lnurl, lnd, nwc, l402, utils, macaroon_util};
 use std::ffi::CStr;
 use std::sync::Once;
 use tokio::runtime::Runtime;
-use tokio::sync::oneshot;
-use once_cell::sync::Lazy;
 use tonic_openssl_lnd::lnrpc;
-use std::sync::mpsc;
-use std::thread;
-use std::fs;
+use std::sync::OnceLock;
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
@@ -184,12 +179,7 @@ impl L402Module {
         }
     }
 
-    pub async fn set_l402_header(&self, request: *mut ngx_http_request_t, caveats: Vec<String>, module: &L402Module) {
-
-        let log = unsafe { &mut *(*(*request).connection).log };
-        let log_ref = log as *mut ngx_log_s;
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
-
+    pub async fn get_l402_header(&self, caveats: Vec<String>) -> Option<String> {
         let value_msat = self.config.fiat_to_btc_amount_func().await;
         let ln_invoice = lnrpc::Invoice {
             value_msat: value_msat,
@@ -198,35 +188,30 @@ impl L402Module {
         };
 
         let ln_client_conn = lnclient::LNClientConn {
-            ln_client: module.middleware.ln_client.clone(),
+            ln_client: self.middleware.ln_client.clone(),
         };
 
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "invoice value: {}", value_msat);
+        println!("invoice value: {}", value_msat);
         
-        let (invoice, payment_hash) = ln_client_conn.generate_invoice(ln_invoice).await.unwrap();
-
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "invoice: {}", invoice);
-        
-        match macaroon_util::get_macaroon_as_string(payment_hash, caveats, module.middleware.root_key.clone()) {
-            Ok(macaroon_string) => {
-                unsafe {
-                    let r = &mut *request;
-                    let header_value = format!("L402 macaroon=\"{}\", invoice=\"{}\"", macaroon_string, invoice);
-                    ngx_log_error!(NGX_LOG_INFO, log_ref, "header value: {}", header_value);
-
-                    let h = ngx_list_push(&mut r.headers_out.headers) as *mut ngx_table_elt_t;
-                    if !h.is_null() {
-                        (*h).hash = 1;
-                        (*h).key = ngx_string!("WWW-Authenticate");
-                        let header_value_cstr = std::ffi::CString::new(header_value).unwrap();
-                        let header_value_bytes = header_value_cstr.as_bytes_with_nul();
-                        (*h).value.len = header_value_bytes.len() - 1; // Exclude null terminator
-                        (*h).value.data = header_value_cstr.into_raw() as *mut u8;
+        match ln_client_conn.generate_invoice(ln_invoice).await {
+            Ok((invoice, payment_hash)) => {
+                println!("invoice: {}", invoice);
+                
+                match macaroon_util::get_macaroon_as_string(payment_hash, caveats, self.middleware.root_key.clone()) {
+                    Ok(macaroon_string) => {
+                        let header_value = format!("L402 macaroon=\"{}\", invoice=\"{}\"", macaroon_string, invoice);
+                        println!("header value: {}", header_value);
+                        Some(header_value)
+                    },
+                    Err(error) => {
+                        println!("Error generating macaroon: {}", error);
+                        None
                     }
                 }
             },
-            Err(error) => {
-                println!("Error generating macaroon: {}", error);
+            Err(e) => {
+                println!("Error generating invoice: {:?}", e);
+                None
             }
         }
     }
@@ -301,7 +286,6 @@ pub static mut ngx_http_l402_module: ngx_module_t = ngx_module_t {
     type_: NGX_HTTP_MODULE as usize,
 
     init_master: None,
-    // init_module: None,
     init_module: Some(init_module as unsafe extern "C" fn(*mut ngx_cycle_s) -> isize),
     init_process: None,
     init_thread: None,
@@ -329,35 +313,13 @@ impl Merge for ModuleConfig {
 }
 
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
-    // Use a global runtime instead of creating a new one every time
-    static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
-        Runtime::new().expect("Failed to create Tokio runtime")
-    });
 
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
 
     // Check if L402 is enabled for this location
-    unsafe {
-        let r = &*request;
-        let auth_header = r.headers_in.authorization;
-        let method = r.method;
-        let uri = r.uri;
-
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "{} {} {}", "Processing request - Method: {:?}, URI: {:?}", method, uri);
-
-        // Get module config to check if L402 is enabled
-        let loc_conf = (*r).loc_conf;
-        let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
-        if !conf.enable {
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
-            return NGX_DECLINED.try_into().unwrap();
-        }
-    }
-
-    // Create a thread-safe copy of the request data
-    let request_data = unsafe {
-        let r = &*request;
+    let (auth_header, uri, method) = unsafe {
+        let r = &mut *request;
         let auth_header = if !r.headers_in.authorization.is_null() {
             Some(CStr::from_ptr((*r.headers_in.authorization).value.data as *const i8)
                 .to_str()
@@ -369,29 +331,17 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         
         let uri = r.uri.to_string();
         let method = r.method as u32;
-        
+
+        // Get module config to check if L402 is enabled
+        let loc_conf = (*r).loc_conf;
+        let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
+        if !conf.enable {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
+            return NGX_DECLINED.try_into().unwrap();
+        }
+
         (auth_header, uri, method)
     };
-
-    let (tx, rx) = oneshot::channel();
-
-    RUNTIME.handle().spawn(async move {
-        let result = l402_access_handler(request_data).await;
-        let _ = tx.send(result);
-    });
-
-    // Block until the result is received
-    rx.blocking_recv().unwrap_or(-1)
-}
-
-pub async fn l402_access_handler(request_data: (Option<String>, String, u32)) -> isize {
-    let (auth_header, uri, method) = request_data;
-    
-    let module = unsafe {
-        MODULE.as_ref().expect("Module not initialized")
-    };
-
-    println!("Processing request - Method: {:?}, URI: {:?}", method, uri);
 
     let mut request_path = uri.clone();
     if request_path.contains(".html") || request_path.ends_with('/') {
@@ -399,8 +349,52 @@ pub async fn l402_access_handler(request_data: (Option<String>, String, u32)) ->
             request_path = request_path[..pos].to_string();
         }
     }
-
     let caveats = vec![format!("RequestPath = {}", request_path)];
+
+    let result = l402_access_handler(auth_header, uri, method, caveats.clone());
+    
+    // Only set L402 header if result is 402
+    if result == 402 {
+        let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+        
+        // Use a lazily initialized static runtime
+        static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+        let rt = RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread() // Use single-threaded runtime for less overhead
+                .enable_all()
+                .build()
+                .expect("tokio runtime init")
+        });
+        
+        // Use block_on as getting better performance than spawn + channel
+        let header_result = rt.block_on(async {
+            module.get_l402_header(caveats.clone()).await
+        });
+        
+        match header_result {
+            Some(header_value) => {
+                unsafe {
+                    ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
+                    let req = Request::from_ngx_http_request(request);
+                    req.add_header_out("WWW-Authenticate", &header_value);
+                }
+            },
+            None => {
+                ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
+                return 500; // Return server error if we couldn't get the header
+            }
+        }
+    }
+    
+    result
+}
+
+pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32, caveats: Vec<String>) -> isize {
+    let module = unsafe {
+        MODULE.as_ref().expect("Module not initialized")
+    };
+
+    println!("Processing request - Method: {:?}, URI: {:?}", method, uri);
     
     if let Some(auth_str) = auth_header {
         println!("Found authorization header");
@@ -443,14 +437,15 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         println!("Initializing runtime and L402Module");
         match std::panic::catch_unwind(|| {
             let rt = Runtime::new().expect("Failed to create runtime");
-            unsafe { RUNTIME = Some(rt) };
+            let module = rt.block_on(async {
+                L402Module::new().await
+            });
             
-            let module = unsafe {
-                RUNTIME.as_ref().expect("Runtime not initialized").block_on(async {
-                    L402Module::new().await
-                })
-            };
-            unsafe { MODULE = Some(module) };
+            unsafe { 
+                RUNTIME = Some(rt);
+                MODULE = Some(module);
+            }
+            
             println!("L402Module initialized successfully");
         }) {
             Ok(_) => (),
