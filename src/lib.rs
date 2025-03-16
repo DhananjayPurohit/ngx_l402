@@ -363,25 +363,32 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         (auth_header, uri, method)
     };
 
-    // Execute the async work directly in the current thread
-    RUNTIME.block_on(l402_access_handler(request, auth_header, uri, method))
-}
-
-pub async fn l402_access_handler(request: *mut ngx_http_request_t, auth_header: Option<String>, uri: String, method: u32) -> isize {
-    let module = unsafe {
-        MODULE.as_ref().expect("Module not initialized")
-    };
-
-    println!("Processing request - Method: {:?}, URI: {:?}", method, uri);
-
     let mut request_path = uri.clone();
     if request_path.contains(".html") || request_path.ends_with('/') {
         if let Some(pos) = request_path.rfind('/') {
             request_path = request_path[..pos].to_string();
         }
     }
-
     let caveats = vec![format!("RequestPath = {}", request_path)];
+
+    // Execute the async work directly in the current thread
+    let result = l402_access_handler(auth_header, uri, method, caveats.clone());
+    
+    // Only set L402 header if result is 402
+    if result == 402 {
+        let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+        RUNTIME.block_on(module.set_l402_header(request, caveats));
+    }
+    
+    result
+}
+
+pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32, caveats: Vec<String>) -> isize {
+    let module = unsafe {
+        MODULE.as_ref().expect("Module not initialized")
+    };
+
+    println!("Processing request - Method: {:?}, URI: {:?}", method, uri);
     
     if let Some(auth_str) = auth_header {
         println!("Found authorization header");
@@ -409,7 +416,6 @@ pub async fn l402_access_handler(request: *mut ngx_http_request_t, auth_header: 
     }
 
     println!("No authorization header found, sending L402 challenge");
-    module.set_l402_header(request, caveats).await;
     402
 }
 
