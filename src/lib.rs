@@ -24,14 +24,15 @@ use tonic_openssl_lnd::lnrpc;
 use std::sync::mpsc;
 use std::thread;
 use std::fs;
+use std::sync::Mutex;
 
 const SATS_PER_BTC: i64 = 100_000_000;
 const MIN_SATS_TO_BE_PAID: i64 = 1;
 const MSAT_PER_SAT: i64 = 1000;
 
 static INIT: Once = Once::new();
-static mut MODULE: Option<L402Module> = None;
-static mut RUNTIME: Option<Runtime> = None;
+static MODULE: Lazy<Mutex<Option<L402Module>>> = Lazy::new(|| Mutex::new(None));
+static RUNTIME: Lazy<Mutex<Option<Runtime>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Clone)]
 pub struct FiatRateConfig {
@@ -329,10 +330,6 @@ impl Merge for ModuleConfig {
 }
 
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
-    // Use a global runtime instead of creating a new one every time
-    static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
-        Runtime::new().expect("Failed to create Tokio runtime")
-    });
 
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
@@ -371,21 +368,38 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
     let caveats = vec![format!("RequestPath = {}", request_path)];
 
-    // Execute the async work directly in the current thread
     let result = l402_access_handler(auth_header, uri, method, caveats.clone());
     
     // Only set L402 header if result is 402
     if result == 402 {
-        let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
-        RUNTIME.block_on(module.set_l402_header(request, caveats));
+        // Use a global runtime instead of creating a new one every time
+        static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+            Runtime::new().expect("Failed to create Tokio runtime")
+        });
+        
+        if let Ok(module_guard) = MODULE.lock() {
+            if let Some(module) = module_guard.as_ref() {
+                RUNTIME.block_on(module.set_l402_header(request, caveats));
+            }
+        }
     }
     
     result
 }
 
 pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32, caveats: Vec<String>) -> isize {
-    let module = unsafe {
-        MODULE.as_ref().expect("Module not initialized")
+    let module_guard = if let Ok(guard) = MODULE.lock() {
+        guard
+    } else {
+        println!("Failed to acquire module lock");
+        return 500;
+    };
+
+    let module = if let Some(module) = module_guard.as_ref() {
+        module
+    } else {
+        println!("Module not initialized");
+        return 500;
     };
 
     println!("Processing request - Method: {:?}, URI: {:?}", method, uri);
@@ -434,18 +448,25 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             let module = rt.block_on(async {
                 L402Module::new().await
             });
-            unsafe { 
-                RUNTIME = Some(rt);
-                MODULE = Some(module);
+            
+            if let Ok(mut module_guard) = MODULE.lock() {
+                *module_guard = Some(module);
             }
+            
+            if let Ok(mut runtime_guard) = RUNTIME.lock() {
+                *runtime_guard = Some(rt);
+            }
+            
             println!("L402Module initialized successfully");
         }) {
             Ok(_) => (),
             Err(e) => {
                 println!("Panic during initialization: {:?}", e);
-                unsafe {
-                    RUNTIME = None;
-                    MODULE = None;
+                if let Ok(mut module_guard) = MODULE.lock() {
+                    *module_guard = None;
+                }
+                if let Ok(mut runtime_guard) = RUNTIME.lock() {
+                    *runtime_guard = None;
                 }
             }
         }
