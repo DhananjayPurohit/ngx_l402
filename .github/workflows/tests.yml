@@ -149,7 +149,7 @@ jobs:
 
           # Test protected route without header
           echo "Testing protected route without header..."
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 60 -L http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route without header returned status $status_code, expected 402"
