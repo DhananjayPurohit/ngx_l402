@@ -365,12 +365,18 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
         
         // Create a new runtime for this request
-        let rt = Runtime::new().expect("Failed to create runtime");
+        static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+        let rt = RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime init")
+        });
         
         // Add timeout to prevent socket hang up
         let header_value = rt.block_on(async {
             match tokio::time::timeout(
-                std::time::Duration::from_secs(10), // 10 second timeout
+                std::time::Duration::from_secs(15), // 15 second timeout
                 module.get_l402_header(caveats.clone())
             ).await {
                 Ok(result) => result,
