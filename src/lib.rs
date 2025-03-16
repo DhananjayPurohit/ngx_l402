@@ -364,42 +364,32 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     if result == 402 {
         let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
         
-        // Create a new runtime for this request
+        // Use a lazily initialized static runtime
         static RUNTIME: OnceLock<Runtime> = OnceLock::new();
         let rt = RUNTIME.get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
+            tokio::runtime::Builder::new_current_thread() // Use single-threaded runtime for less overhead
                 .enable_all()
                 .build()
                 .expect("tokio runtime init")
         });
         
-        let (tx, rx) = std::sync::mpsc::channel();
-        
-        // Spawn the task to get the L402 header
-        rt.spawn(async move {
-            let header = module.get_l402_header(caveats.clone()).await;
-            let _ = tx.send(header); // Send the result back through the channel
+        // Use block_on instead of spawn + channel for simpler code and better performance
+        let header_result = rt.block_on(async {
+            module.get_l402_header(caveats.clone()).await
         });
         
-        // Try to receive the result with a timeout to prevent hanging
-        let header_value = match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(value) => value,
-            Err(e) => {
-                ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header: {:?}", e);
-                None
+        match header_result {
+            Some(header_value) => {
+                unsafe {
+                    ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
+                    let req = Request::from_ngx_http_request(request);
+                    req.add_header_out("WWW-Authenticate", &header_value);
+                }
+            },
+            None => {
+                ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
+                return 500; // Return server error if we couldn't get the header
             }
-        };
-        
-        if let Some(header_value) = header_value {
-            unsafe {
-                ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
-                
-                let req = Request::from_ngx_http_request(request);
-                req.add_header_out("WWW-Authenticate", &header_value);
-            }
-        } else {
-            ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
-            return 500; // Return server error if we couldn't get the header
         }
     }
     
