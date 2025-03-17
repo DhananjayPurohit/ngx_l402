@@ -40,6 +40,7 @@ location /protected {
     
     # l402 module directive:   
     l402 on;
+    l402_amount_msat    10000;
 }
 ```
 
@@ -51,8 +52,6 @@ export LN_CLIENT_TYPE=LNURL
 export LNURL_ADDRESS=
 # Root key for minting macaroons
 export ROOT_KEY=
-export CURRENCY=USD
-export AMOUNT=0.01
 ```
 
 if using LND:
@@ -63,8 +62,6 @@ export MACAROON_FILE_PATH=
 export CERT_FILE_PATH=
 # Root key for minting macaroons
 export ROOT_KEY=
-export CURRENCY=USD
-export AMOUNT=0.01
 ```
 
 if using NWC:
@@ -73,8 +70,6 @@ export LN_CLIENT_TYPE=NWC
 export NWC_URI=
 # Root key for minting macaroons
 export ROOT_KEY=
-export CURRENCY=USD
-export AMOUNT=0.01
 ```
 
 5. Restart Nginx:
