@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::os::raw::c_void;
 use std::ffi::c_char;
 use std::ptr::addr_of;
-use reqwest::Client;
 use l402_middleware::{lnclient, lnurl, lnd, nwc, l402, utils, macaroon_util};
 use std::ffi::CStr;
 use std::sync::Once;
@@ -20,50 +19,11 @@ use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 use std::sync::OnceLock;
 
-const SATS_PER_BTC: i64 = 100_000_000;
-const MIN_SATS_TO_BE_PAID: i64 = 1;
-const MSAT_PER_SAT: i64 = 1000;
-
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
 
-#[derive(Clone)]
-pub struct FiatRateConfig {
-    pub currency: String,
-    pub amount: f64,
-}
-
-impl FiatRateConfig {
-    pub async fn fiat_to_btc_amount_func(&self) -> i64 {
-        println!("Converting {} {} to BTC", self.amount, self.currency);
-        
-        if self.amount <= 0.0 {
-            println!("Amount is <= 0, returning minimum sats");
-            return MIN_SATS_TO_BE_PAID * MSAT_PER_SAT;
-        }
-
-        let url = format!(
-            "https://blockchain.info/tobtc?currency={}&value={}",
-            self.currency, self.amount
-        );
-        println!("Making request to: {}", url);
-
-        match Client::new().get(&url).send().await {
-            Ok(res) => {
-                let body = res.text().await.unwrap_or_else(|_| MIN_SATS_TO_BE_PAID.to_string());
-                match body.parse::<f64>() {
-                    Ok(amount_in_btc) => ((SATS_PER_BTC as f64 * amount_in_btc) * MSAT_PER_SAT as f64) as i64,
-                    Err(_) => MIN_SATS_TO_BE_PAID * MSAT_PER_SAT,
-                }
-            }
-            Err(_) => MIN_SATS_TO_BE_PAID * MSAT_PER_SAT,
-        }
-    }
-}
-
 pub struct L402Module {
-    config: Arc<FiatRateConfig>,
     middleware: L402Middleware,
 }
 
@@ -147,25 +107,12 @@ impl L402Module {
             },
         };
 
-        let config = FiatRateConfig {
-            currency: std::env::var("CURRENCY").unwrap_or_else(|_| "USD".to_string()),
-            amount: std::env::var("AMOUNT")
-                .unwrap_or_else(|_| "0.01".to_string())
-                .parse()
-                .unwrap_or(0.01),
-        };
-        println!("Created FiatRateConfig: {} {}", config.amount, config.currency);
-
-        let config = Arc::new(config);
-        let fiat_rate_config = Arc::clone(&config);
-
         println!("Creating L402 middleware");
         let middleware = L402Middleware::new_l402_middleware(
             ln_client_config.clone(),
             Arc::new(move |_| {
-                let fiat_config = Arc::clone(&fiat_rate_config);
                 Box::pin(async move {
-                    fiat_config.fiat_to_btc_amount_func().await
+                    0   // Placeholder value, declaring for type inference
                 })
             }),
             Arc::new(|req| {
@@ -174,15 +121,13 @@ impl L402Module {
         ).await.expect("Failed to create middleware");
 
         Self {
-            config,
             middleware,
         }
     }
 
-    pub async fn get_l402_header(&self, caveats: Vec<String>) -> Option<String> {
-        let value_msat = self.config.fiat_to_btc_amount_func().await;
+    pub async fn get_l402_header(&self, caveats: Vec<String>, amount_msat: i64) -> Option<String> {
         let ln_invoice = lnrpc::Invoice {
-            value_msat: value_msat,
+            value_msat: amount_msat,
             memo: l402::L402_HEADER.to_string(),
             ..Default::default()
         };
@@ -191,7 +136,7 @@ impl L402Module {
             ln_client: self.middleware.ln_client.clone(),
         };
 
-        println!("invoice value: {}", value_msat);
+        println!("invoice value: {}", amount_msat);
         
         match ln_client_conn.generate_invoice(ln_invoice).await {
             Ok((invoice, payment_hash)) => {
@@ -239,13 +184,22 @@ impl HTTPModule for L402Module {
 #[derive(Debug, Default)]
 pub struct ModuleConfig {
     enable: bool,
+    amount_msat: i64,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 2] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 3] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_amount_msat"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_l402_amount_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -308,6 +262,9 @@ impl Merge for ModuleConfig {
         if prev.enable {
             self.enable = true;
         };
+        if prev.amount_msat > 0 && self.amount_msat == 0 {
+            self.amount_msat = prev.amount_msat;
+        }
         Ok(())
     }
 }
@@ -318,7 +275,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let log_ref = log as *mut ngx_log_s;
 
     // Check if L402 is enabled for this location
-    let (auth_header, uri, method) = unsafe {
+    let (auth_header, uri, method, amount_msat) = unsafe {
         let r = &mut *request;
         let auth_header = if !r.headers_in.authorization.is_null() {
             Some(CStr::from_ptr((*r.headers_in.authorization).value.data as *const i8)
@@ -340,7 +297,13 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             return NGX_DECLINED.try_into().unwrap();
         }
 
-        (auth_header, uri, method)
+        let amount_msat = conf.amount_msat;
+        if amount_msat <= 0 {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 amount_msat is not set or invalid");
+            return 500;
+        }
+
+        (auth_header, uri, method, amount_msat)
     };
 
     let mut request_path = uri.clone();
@@ -368,7 +331,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         
         // Use block_on as getting better performance than spawn + channel
         let header_result = rt.block_on(async {
-            module.get_l402_header(caveats.clone()).await
+            module.get_l402_header(caveats.clone(), amount_msat).await
         });
         
         match header_result {
@@ -481,6 +444,32 @@ pub unsafe extern "C" fn ngx_http_l402_set(
             conf.enable = true;
         } else if val.len() == 3 && val.eq_ignore_ascii_case("off") {
             conf.enable = false;
+        }
+    };
+
+    std::ptr::null_mut()
+}
+
+pub unsafe extern "C" fn ngx_http_l402_amount_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args = (*(*cf).args).elts as *mut ngx_str_t;
+
+        let val = (*args.add(1)).to_str();
+
+        match val.parse::<i64>() {
+            Ok(amount) if amount > 0 => {
+                conf.amount_msat = amount;
+                println!("Set L402 amount_msat to {}", amount);
+            },
+            _ => {
+                println!("Invalid amount_msat value: {}", val);
+                return std::ptr::null_mut();
+            }
         }
     };
 
