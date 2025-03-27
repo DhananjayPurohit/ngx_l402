@@ -18,6 +18,9 @@ use std::sync::Once;
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 use std::sync::OnceLock;
+use cdk;
+use std::str::FromStr;
+use rand::Rng;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
@@ -157,6 +160,68 @@ impl L402Module {
             Err(e) => {
                 println!("Error generating invoice: {:?}", e);
                 None
+            }
+        }
+    }
+
+    pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
+        // Decode the token from string
+        // Using map_err to convert the error type to String
+        let token_decoded = cdk::nuts::Token::from_str(token)
+            .map_err(|e| format!("Failed to decode Cashu token: {}", e))?;
+
+        eprintln!("token_decoded: {:?}", token_decoded);
+        
+        // Check if the token is valid
+        if token_decoded.proofs().is_empty() {
+            return Ok(false);
+        }
+        
+        // Calculate total token amount in millisatoshis
+        let total_amount_msat: u64 = token_decoded.proofs().iter()
+            .map(|p| u64::from(p.amount))
+            .sum();
+        
+        // Check if the token amount is sufficient
+        if total_amount_msat < amount_msat as u64 {
+            eprintln!("Cashu token amount insufficient: {} msat (required: {} msat)", 
+                total_amount_msat, amount_msat);
+            return Ok(false);
+        }
+        
+        eprintln!("Successfully decoded Cashu token with {} proofs and {} msat (required: {} msat)", 
+            token_decoded.proofs().len(),
+            total_amount_msat,
+            amount_msat);
+        
+        // Extract mint URL from the token
+        let mint_url = token_decoded.mint_url()
+            .map_err(|e| format!("Failed to get mint URL: {}", e))?;
+        
+        eprintln!("Using mint URL from token: {}", mint_url);
+        
+        // Create amount from total millisatoshis
+        let amount = Some(cdk::Amount::from(total_amount_msat));
+
+        let unit = cdk::nuts::CurrencyUnit::Msat;
+        let db = Arc::new(cdk::cdk_database::WalletMemoryDatabase::default());
+        let seed = rand::thread_rng().gen::<[u8; 32]>();
+        let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db, &seed, None)
+            .map_err(|e| format!("Failed to create wallet: {}", e))?;
+        
+        // Create default spending conditions and split target
+        let spending_conditions = None;
+        let amount_split_target = cdk::amount::SplitTarget::default();
+        let include_fees = false;
+
+        match wallet.swap(amount, amount_split_target, token_decoded.proofs(), spending_conditions, include_fees).await {
+            Ok(_) => {
+                eprintln!("Cashu token swap successful");
+                Ok(true)
+            },
+            Err(e) => {
+                eprintln!("Cashu token swap failed: {}", e);
+                Ok(false)
             }
         }
     }
@@ -314,7 +379,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
     let caveats = vec![format!("RequestPath = {}", request_path)];
 
-    let result = l402_access_handler(auth_header, uri, method, caveats.clone());
+    let result = l402_access_handler(auth_header, uri, method, amount_msat, caveats.clone());
     
     // Only set L402 header if result is 402
     if result == 402 {
@@ -352,7 +417,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     result
 }
 
-pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32, caveats: Vec<String>) -> isize {
+pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32, amount_msat: i64, caveats: Vec<String>) -> isize {
     let module = unsafe {
         MODULE.as_ref().expect("Module not initialized")
     };
@@ -363,23 +428,55 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
         println!("Found authorization header");
         println!("Authorization: {}", auth_str);
 
-        match utils::parse_l402_header(&auth_str) {
-            Ok((mac, preimage)) => {
-                println!("Successfully parsed L402 header");
-                match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
-                    Ok(_) => {
-                        println!("L402 verification successful");
-                        return NGX_DECLINED.try_into().unwrap();
-                    },
-                    Err(e) => {
-                        println!("L402 verification failed: {:?}", e);
-                        return 500;
-                    }
+        if auth_str.starts_with("Cashu ") {
+            let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
+            
+            // Use a lazily initialized static runtime
+            static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+            let rt = RUNTIME.get_or_init(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime init")
+            });
+            
+            let verify_result = rt.block_on(async {
+                module.verify_cashu_token(&token, amount_msat).await
+            });
+            
+            match verify_result {
+                Ok(true) => {
+                    println!("Cashu token verification successful");
+                    return NGX_DECLINED.try_into().unwrap();
+                },
+                Ok(false) => {
+                    println!("Cashu token verification failed");
+                    return 500;
+                },
+                Err(e) => {
+                    println!("Error verifying Cashu token: {:?}", e);
+                    return 500;
                 }
-            },
-            Err(e) => {
-                println!("Failed to parse L402 header: {:?}", e);
-                return 500;
+            }
+        } else {
+            match utils::parse_l402_header(&auth_str) {
+                Ok((mac, preimage)) => {
+                    println!("Successfully parsed L402 header");
+                    match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
+                        Ok(_) => {
+                            println!("L402 verification successful");
+                            return NGX_DECLINED.try_into().unwrap();
+                        },
+                        Err(e) => {
+                            println!("L402 verification failed: {:?}", e);
+                            return 500;
+                        }
+                    }
+                },
+                Err(e) => {
+                    println!("Failed to parse L402 header: {:?}", e);
+                    return 500;
+                }
             }
         }
     }
