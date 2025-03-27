@@ -26,6 +26,8 @@ static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
 
+const MSAT_PER_SAT: u64 = 1000;
+
 pub struct L402Module {
     middleware: L402Middleware,
 }
@@ -165,10 +167,15 @@ impl L402Module {
     }
 
     pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
+        eprintln!("Verifying Cashu token: {}", token);
         // Decode the token from string
-        // Using map_err to convert the error type to String
-        let token_decoded = cdk::nuts::Token::from_str(token)
-            .map_err(|e| format!("Failed to decode Cashu token: {}", e))?;
+        let token_decoded = match cdk::nuts::Token::from_str(token) {
+            Ok(token) => token,
+            Err(e) => {
+                eprintln!("Failed to decode Cashu token: {}", e);
+                return Err(format!("Failed to decode Cashu token: {}", e));
+            }
+        };
 
         eprintln!("token_decoded: {:?}", token_decoded);
         
@@ -179,7 +186,7 @@ impl L402Module {
         
         // Calculate total token amount in millisatoshis
         let total_amount_msat: u64 = token_decoded.proofs().iter()
-            .map(|p| u64::from(p.amount))
+            .map(|p| u64::from(p.amount) * MSAT_PER_SAT)
             .sum();
         
         // Check if the token amount is sufficient
@@ -200,10 +207,12 @@ impl L402Module {
         
         eprintln!("Using mint URL from token: {}", mint_url);
         
-        // Create amount from total millisatoshis
-        let amount = Some(cdk::Amount::from(total_amount_msat));
+        // amount from total millisatoshis into satoshis
+        let amount = Some(cdk::Amount::from((total_amount_msat as u64) / MSAT_PER_SAT));
+        eprintln!("Amount: {:?}", amount);
 
-        let unit = cdk::nuts::CurrencyUnit::Msat;
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        eprintln!("Unit: {:?}", unit);
         let db = Arc::new(cdk::cdk_database::WalletMemoryDatabase::default());
         let seed = rand::thread_rng().gen::<[u8; 32]>();
         let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db, &seed, None)
@@ -212,6 +221,7 @@ impl L402Module {
         // Create default spending conditions and split target
         let spending_conditions = None;
         let amount_split_target = cdk::amount::SplitTarget::default();
+        eprintln!("Amount split target: {:?}", amount_split_target);
         let include_fees = false;
 
         match wallet.swap(amount, amount_split_target, token_decoded.proofs(), spending_conditions, include_fees).await {
@@ -430,6 +440,7 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
 
         if auth_str.starts_with("Cashu ") {
             let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
+            eprintln!("Token: {}", token);
             
             // Use a lazily initialized static runtime
             static RUNTIME: OnceLock<Runtime> = OnceLock::new();
