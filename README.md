@@ -44,32 +44,30 @@ location /protected {
 }
 ```
 
-4. Set the following environment variables:
+4. Set the following environment variables in `nginx.service (typically in `/lib/systemd/system/nginx.service`):
 
-if using LNURL:
-```bash
-export LN_CLIENT_TYPE=LNURL
-export LNURL_ADDRESS=
-# Root key for minting macaroons
-export ROOT_KEY=
 ```
+[Service]
+...
+# Use one of the following:
+# if using LNURL:
+Environment=LN_CLIENT_TYPE=LNURL
+Environment=LNURL_ADDRESS=https://your-lnurl-server.com
+Environment=ROOT_KEY=your-root-key
+# if using LND:
+Environment=LN_CLIENT_TYPE=LND
+Environment=LND_ADDRESS=https://your-lnd-server.com
+Environment=MACAROON_FILE_PATH=/path/to/macaroon
+Environment=CERT_FILE_PATH=/path/to/cert
+Environment=ROOT_KEY=your-root-key
+# if using NWC:
+Environment=LN_CLIENT_TYPE=NWC
+Environment=NWC_URI=https://your-nostr-wallet.com
+Environment=ROOT_KEY=your-root-key
 
-if using LND:
-```bash
-export LN_CLIENT_TYPE=LND
-export LND_ADDRESS=
-export MACAROON_FILE_PATH=
-export CERT_FILE_PATH=
-# Root key for minting macaroons
-export ROOT_KEY=
-```
-
-if using NWC:
-```bash
-export LN_CLIENT_TYPE=NWC
-export NWC_URI=
-# Root key for minting macaroons
-export ROOT_KEY=
+# To accept Cashu tokens as Ecash for L402:
+Environment=CASHU_ECASH_SUPPORT=true
+...
 ```
 
 5. Restart Nginx:

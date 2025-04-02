@@ -25,6 +25,7 @@ use rand::Rng;
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
+static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
 
 const MSAT_PER_SAT: u64 = 1000;
 
@@ -211,11 +212,15 @@ impl L402Module {
         let amount = Some(cdk::Amount::from((total_amount_msat as u64) / MSAT_PER_SAT));
         eprintln!("Amount: {:?}", amount);
 
-        let unit = cdk::nuts::CurrencyUnit::Sat;
+        let unit = token_decoded.unit().unwrap();
         eprintln!("Unit: {:?}", unit);
-        let db = Arc::new(cdk::cdk_database::WalletMemoryDatabase::default());
+        
+        // Use the shared database instance
+        let db = CASHU_DB.get()
+            .ok_or_else(|| "Cashu database not initialized".to_string())?;
+            
         let seed = rand::thread_rng().gen::<[u8; 32]>();
-        let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db, &seed, None)
+        let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), &seed, None)
             .map_err(|e| format!("Failed to create wallet: {}", e))?;
         
         // Create default spending conditions and split target
@@ -498,10 +503,43 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
 
 pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     println!("Starting module initialization");
+
+    let log = (*cycle).log;
+    
+    ngx_log_error!(NGX_LOG_INFO, log, "Starting module initialization");
     
     if cycle.is_null() {
         println!("Error: Cycle pointer is null");
         return -1;
+    }
+
+    // Check if Cashu eCash support is enabled
+    let cashu_ecash_support_var = std::env::var("CASHU_ECASH_SUPPORT").unwrap_or_else(|_| "false".to_string());
+    let cashu_ecash_support = cashu_ecash_support_var.trim().to_lowercase() == "true";
+    ngx_log_error!(NGX_LOG_INFO, log, "CASHU_ECASH_SUPPORT: {:?}, raw value: '{}'", cashu_ecash_support, cashu_ecash_support_var);
+    
+    if cashu_ecash_support {
+        println!("Cashu eCash support is enabled");
+        // Initialize Cashu database
+        let rt = Runtime::new().expect("Failed to create runtime");
+        rt.block_on(async {
+            match cdk_sqlite::WalletSqliteDatabase::new("/var/lib/nginx/cashu_wallet.db").await {
+                Ok(db) => {
+                    println!("Initializing Cashu database");
+                    db.migrate().await;
+                    println!("Cashu database initialized successfully");
+                    ngx_log_error!(NGX_LOG_INFO, log, "Cashu database initialized successfully");
+                    // Store the database in the static OnceLock
+                    let _ = CASHU_DB.set(Arc::new(db));
+                },
+                Err(e) => {
+                    ngx_log_error!(NGX_LOG_INFO, log, "Failed to create Cashu database: {:?}", e);
+                    println!("Failed to create Cashu database: {:?}", e);
+                }
+            }
+        });
+    } else {
+        println!("Cashu eCash support is disabled");
     }
 
     INIT.call_once(|| {
