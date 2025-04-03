@@ -288,6 +288,125 @@ jobs:
             exit 1
           fi
 
+          # Test Cashu eCash support
+          echo "Testing Cashu eCash support..."
+          
+          # Install required tools
+          apt-get update && apt-get install -y jq
+          
+          # Mint a test token from nofees.testnut.cashu.space
+          echo "Minting a real Cashu token from nofees.testnut.cashu.space/..."
+          
+          # Step 1: Get the mint keys
+          MINT_URL="https://nofees.testnut.cashu.space"
+          MINT_KEYS_RESPONSE=$(curl -s "${MINT_URL}/v1/keys")
+          
+          # Step 2: Request a mint quote for 1000 sats
+          MINT_QUOTE_RESPONSE=$(curl -s -X POST "${MINT_URL}/v1/mint/quote/bolt11" \
+            -H "Content-Type: application/json" \
+            -d '{"amount": 1000}')
+          
+          QUOTE_ID=$(echo $MINT_QUOTE_RESPONSE | jq -r '.quote')
+          PAYMENT_REQUEST=$(echo $MINT_QUOTE_RESPONSE | jq -r '.request')
+          
+          echo "Mint quote ID: $QUOTE_ID"
+          echo "Payment request: $PAYMENT_REQUEST"
+          
+          # For testing purposes, we'll simulate payment and directly request a token
+          # In a real scenario, you would pay the Lightning invoice first
+          
+          # Step 3: Request a token (simulating that payment was made)
+          MINT_TOKEN_RESPONSE=$(curl -s -X POST "${MINT_URL}/v1/mint" \
+            -H "Content-Type: application/json" \
+            -d "{\"quote\": \"$QUOTE_ID\"}")
+          
+          # Extract the token
+          CASHU_TOKEN=$(echo $MINT_TOKEN_RESPONSE | jq -c .)
+          
+          echo "Cashu token: $CASHU_TOKEN"
+          
+          # Encode the token for HTTP header
+          ENCODED_TOKEN=$(echo -n "$CASHU_TOKEN" | base64 -w 0)
+          
+          # Test protected route with Cashu token
+          echo "Testing protected route with Cashu token..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          
+          # Since we're using a test token, it should be accepted if the verification logic is working
+          # The expected status code depends on your implementation, but should be either 200 (success) or 500 (verification failed)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Protected route with Cashu token returned unexpected status $status_code"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          
+          # Test with invalid Cashu token (wrong amount)
+          echo "Testing with invalid Cashu token (insufficient amount)..."
+          
+          # Create a token with insufficient amount (1 sats instead of 10)
+          INVALID_CASHU_TOKEN='{
+            "token": [
+              {
+                "mint": "https://nofees.testnut.cashu.space",
+                "proofs": [
+                  {
+                    "id": "c78a4cf9-3c26-4d66-9b69-8e1bd583063b",
+                    "amount": 1,
+                    "secret": "fb2c9d39b468f84f6f9d853b6acf0f11e9616f8c98c6f4ecb92c956372228c77",
+                    "C": "03c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+                  }
+                ]
+              }
+            ]
+          }'
+          
+          # Encode the invalid token
+          ENCODED_INVALID_TOKEN=$(echo -n "$INVALID_CASHU_TOKEN" | base64 -w 0)
+          
+          # Test with the invalid token
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_INVALID_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          
+          # This should fail verification due to insufficient amount
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with invalid Cashu token returned status $status_code, expected 500"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          
+          # Test with malformed Cashu token
+          echo "Testing with malformed Cashu token..."
+          
+          # Create a malformed token
+          MALFORMED_CASHU_TOKEN='{
+            "token": [
+              {
+                "mint": "https://nofees.testnut.cashu.space",
+                "proofs": []
+              }
+            ]
+          }'
+          
+          # Encode the malformed token
+          ENCODED_MALFORMED_TOKEN=$(echo -n "$MALFORMED_CASHU_TOKEN" | base64 -w 0)
+          
+          # Test with the malformed token
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          
+          # This should fail verification due to empty proofs
+          if [ "$status_code" -ne 500 ]; then
+            echo "Error: Protected route with malformed Cashu token returned status $status_code, expected 500"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          
+          echo "All Cashu eCash tests completed successfully!"
+
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

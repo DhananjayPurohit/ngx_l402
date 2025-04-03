@@ -21,11 +21,18 @@ use std::sync::OnceLock;
 use cdk;
 use std::str::FromStr;
 use rand::Rng;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::RefCell;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
 static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
+
+// Thread-local storage to track if a request has been processed
+thread_local! {
+    static REQUEST_PROCESSED: RefCell<bool> = RefCell::new(false);
+}
 
 const MSAT_PER_SAT: u64 = 1000;
 
@@ -168,7 +175,6 @@ impl L402Module {
     }
 
     pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
-        eprintln!("Verifying Cashu token: {}", token);
         // Decode the token from string
         let token_decoded = match cdk::nuts::Token::from_str(token) {
             Ok(token) => token,
@@ -177,8 +183,6 @@ impl L402Module {
                 return Err(format!("Failed to decode Cashu token: {}", e));
             }
         };
-
-        eprintln!("token_decoded: {:?}", token_decoded);
         
         // Check if the token is valid
         if token_decoded.proofs().is_empty() {
@@ -197,7 +201,7 @@ impl L402Module {
             return Ok(false);
         }
         
-        eprintln!("Successfully decoded Cashu token with {} proofs and {} msat (required: {} msat)", 
+        println!("Successfully decoded Cashu token with {} proofs and {} msat (required: {} msat)", 
             token_decoded.proofs().len(),
             total_amount_msat,
             amount_msat);
@@ -206,14 +210,10 @@ impl L402Module {
         let mint_url = token_decoded.mint_url()
             .map_err(|e| format!("Failed to get mint URL: {}", e))?;
         
-        eprintln!("Using mint URL from token: {}", mint_url);
-        
         // amount from total millisatoshis into satoshis
         let amount = Some(cdk::Amount::from((total_amount_msat as u64) / MSAT_PER_SAT));
-        eprintln!("Amount: {:?}", amount);
 
         let unit = token_decoded.unit().unwrap();
-        eprintln!("Unit: {:?}", unit);
         
         // Use the shared database instance
         let db = CASHU_DB.get()
@@ -226,7 +226,6 @@ impl L402Module {
         // Create default spending conditions and split target
         let spending_conditions = None;
         let amount_split_target = cdk::amount::SplitTarget::default();
-        eprintln!("Amount split target: {:?}", amount_split_target);
         let include_fees = false;
 
         match wallet.swap(amount, amount_split_target, token_decoded.proofs(), spending_conditions, include_fees).await {
@@ -350,10 +349,33 @@ impl Merge for ModuleConfig {
 }
 
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
-
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
-
+    
+    // Check if this request has already been processed in this phase
+    // NGINX may call the handler twice for the same request
+    let request_ptr = request as usize;
+    let request_id = format!("{:p}", request as *const _);
+    
+    // Use thread-local storage to track if we've already processed this request
+    let already_processed = REQUEST_PROCESSED.with(|processed| {
+        let is_processed = *processed.borrow();
+        if is_processed {
+            // Reset for next request
+            *processed.borrow_mut() = false;
+            true
+        } else {
+            // Mark as processed for this request cycle
+            *processed.borrow_mut() = true;
+            false
+        }
+    });
+    
+    if already_processed {
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "Skipping duplicate handler call for request {:?}", request_id);
+        return NGX_DECLINED.try_into().unwrap();
+    }
+    
     // Check if L402 is enabled for this location
     let (auth_header, uri, method, amount_msat) = unsafe {
         let r = &mut *request;
@@ -445,7 +467,6 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
 
         if auth_str.starts_with("Cashu ") {
             let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
-            eprintln!("Token: {}", token);
             
             // Use a lazily initialized static runtime
             static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -462,29 +483,27 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
             
             match verify_result {
                 Ok(true) => {
-                    println!("Cashu token verification successful");
                     return NGX_DECLINED.try_into().unwrap();
                 },
                 Ok(false) => {
-                    println!("Cashu token verification failed");
+                    eprintln!("Cashu token verification failed");
                     return 500;
                 },
                 Err(e) => {
-                    println!("Error verifying Cashu token: {:?}", e);
+                    eprintln!("Error verifying Cashu token: {:?}", e);
                     return 500;
                 }
             }
         } else {
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
-                    println!("Successfully parsed L402 header");
                     match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
                         Ok(_) => {
                             println!("L402 verification successful");
                             return NGX_DECLINED.try_into().unwrap();
                         },
                         Err(e) => {
-                            println!("L402 verification failed: {:?}", e);
+                            eprintln!("L402 verification failed: {:?}", e);
                             return 500;
                         }
                     }

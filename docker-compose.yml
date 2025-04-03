@@ -95,6 +95,7 @@ services:
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode:10009
+      - CASHU_ECASH_SUPPORT=true
     volumes:
       - lndnode-data:/root/.lnd:rw
     depends_on:
