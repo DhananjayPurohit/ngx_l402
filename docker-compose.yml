@@ -106,3 +106,4 @@ services:
 volumes:
   bitcoin_data:
   lndnode-data:
+  cashu-data:
