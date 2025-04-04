@@ -44,7 +44,7 @@ location /protected {
 }
 ```
 
-4. Set the following environment variables in `nginx.service (typically in `/lib/systemd/system/nginx.service`):
+4. Set the following environment variables in `nginx.service` (typically in `/lib/systemd/system/nginx.service`):
 
 ```
 [Service]
@@ -67,6 +67,7 @@ Environment=ROOT_KEY=your-root-key
 
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
+Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.db
 ...
 ```
 

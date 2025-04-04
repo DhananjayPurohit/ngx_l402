@@ -536,13 +536,16 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     let cashu_ecash_support_var = std::env::var("CASHU_ECASH_SUPPORT").unwrap_or_else(|_| "false".to_string());
     let cashu_ecash_support = cashu_ecash_support_var.trim().to_lowercase() == "true";
     ngx_log_error!(NGX_LOG_INFO, log, "CASHU_ECASH_SUPPORT: {:?}, raw value: '{}'", cashu_ecash_support, cashu_ecash_support_var);
+
+    let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.db".to_string());
+    ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DB_PATH: '{}'", db_path);
     
     if cashu_ecash_support {
         println!("Cashu eCash support is enabled");
         // Initialize Cashu database
         let rt = Runtime::new().expect("Failed to create runtime");
         rt.block_on(async {
-            match cdk_sqlite::WalletSqliteDatabase::new("/var/lib/nginx/cashu_wallet.db").await {
+            match cdk_sqlite::WalletSqliteDatabase::new(&db_path).await {
                 Ok(db) => {
                     println!("Initializing Cashu database");
                     db.migrate().await;
