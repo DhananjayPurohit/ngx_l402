@@ -297,14 +297,10 @@ jobs:
           # Mint a test token from nofees.testnut.cashu.space
           echo "Minting a real Cashu token from nofees.testnut.cashu.space/..."
           
-          # Step 1: Get the mint keys
-          MINT_URL="https://nofees.testnut.cashu.space"
-          MINT_KEYS_RESPONSE=$(curl -s "${MINT_URL}/v1/keys")
-          
-          # Step 2: Request a mint quote for 1000 sats
+          # Step 1: Request a mint quote for 10 sats
           MINT_QUOTE_RESPONSE=$(curl -s -X POST "${MINT_URL}/v1/mint/quote/bolt11" \
             -H "Content-Type: application/json" \
-            -d '{"amount": 1000}')
+            -d '{"amount": 10, "unit": "sat"}')
           
           QUOTE_ID=$(echo $MINT_QUOTE_RESPONSE | jq -r '.quote')
           PAYMENT_REQUEST=$(echo $MINT_QUOTE_RESPONSE | jq -r '.request')
@@ -315,10 +311,22 @@ jobs:
           # For testing purposes, we'll simulate payment and directly request a token
           # In a real scenario, you would pay the Lightning invoice first
           
-          # Step 3: Request a token (simulating that payment was made)
-          MINT_TOKEN_RESPONSE=$(curl -s -X POST "${MINT_URL}/v1/mint" \
+          # Step 2: Request a token (simulating that payment was made)
+          
+          # Create blinded message output
+          # In a real implementation, proper blinding would be performed
+          OUTPUTS="[{
+            \"amount\": 10,
+            \"id\": \"00b4cd27d8861a44\",
+            \"B_\": \"037b29976c1a773773cda0ae2a09d7a4b93fe88e2bb5531776202c32a2d3eaecb5\"
+          }]"
+          
+          # Request token with quote ID and outputs
+          MINT_TOKEN_RESPONSE=$(curl -s -X POST "${MINT_URL}/v1/mint/bolt11" \
             -H "Content-Type: application/json" \
-            -d "{\"quote\": \"$QUOTE_ID\"}")
+            -d "{\"quote\": \"$QUOTE_ID\", \"outputs\": $OUTPUTS}")
+          
+          echo "Mint token response: $MINT_TOKEN_RESPONSE"
           
           # Extract the token
           CASHU_TOKEN=$(echo $MINT_TOKEN_RESPONSE | jq -c .)
