@@ -299,10 +299,8 @@ jobs:
           sudo curl -L https://github.com/cashubtc/nutshell/archive/refs/tags/0.16.5.tar.gz -o nutshell.tar.gz
           sudo mkdir -p nutshell
           sudo tar -xzf nutshell.tar.gz -C nutshell --strip-components=1
-          cd nutshell
-          sudo chmod +x bin/nutshell
-          sudo cp bin/nutshell /usr/local/bin/
-          cd ..
+          sudo chmod +x nutshell
+          sudo cp nutshell /usr/local/bin/
           
           # Create a test wallet and mint tokens
           echo "Creating Cashu wallet and minting tokens..."
