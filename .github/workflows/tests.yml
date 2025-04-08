@@ -292,12 +292,17 @@ jobs:
           echo "Testing Cashu eCash support..."
           
           # Install required tools
-          apt-get update && apt-get install -y jq curl
+          sudo apt-get update && sudo apt-get install -y jq curl
 
           # Install Nutshell CLI for Cashu token generation
           echo "Installing Nutshell CLI..."
-          curl -L https://github.com/cashubtc/nutshell/releases/latest/download/nutshell-linux-x64 -o /usr/local/bin/nutshell
-          chmod +x /usr/local/bin/nutshell
+          wget -q https://github.com/cashubtc/nutshell/releases/latest/download/nutshell-linux-x64 -O /tmp/nutshell
+          chmod +x /tmp/nutshell
+          sudo mv /tmp/nutshell /usr/local/bin/nutshell
+          
+          # Verify nutshell is installed correctly
+          which nutshell
+          nutshell --version
           
           # Create a test wallet and mint tokens
           echo "Creating Cashu wallet and minting tokens..."
