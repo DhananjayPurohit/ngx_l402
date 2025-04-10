@@ -298,14 +298,25 @@ jobs:
           echo "Installing Cashu Python package..."
           pip install cashu
           
-          # Create a test wallet and mint tokens
-          echo "Creating Cashu wallet and minting tokens..."
-          cashu wallet create test-wallet
-          cashu mint 10 -w test-wallet -m https://nofees.testnut.cashu.space
+          # Check wallet info
+          echo "Checking wallet info..."
+          cashu info
+          
+          # Check initial balance
+          echo "Checking initial balance..."
+          cashu balance
+          
+          # Generate a Lightning invoice and mint tokens
+          echo "Generating Lightning invoice and minting tokens..."
+          cashu invoice 10 -m https://nofees.testnut.cashu.space
+          
+          # Check balance after minting
+          echo "Checking balance after minting..."
+          cashu balance
           
           # Get token from wallet
           echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(cashu token -w test-wallet -a 10 -j)
+          CASHU_TOKEN=$(cashu send 10)
           
           echo "Cashu token: $CASHU_TOKEN"
           
@@ -329,8 +340,8 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          cashu mint 1 -w test-wallet -m https://nofees.testnut.cashu.space
-          INVALID_CASHU_TOKEN=$(cashu token -w test-wallet -a 1 -j)
+          cashu invoice 1 -m https://nofees.testnut.cashu.space
+          INVALID_CASHU_TOKEN=$(cashu send 1)
           
           # Encode the invalid token
           ENCODED_INVALID_TOKEN=$(echo -n "$INVALID_CASHU_TOKEN" | base64 -w 0)
