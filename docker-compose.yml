@@ -99,7 +99,7 @@ services:
       - CASHU_DB_PATH=/app/data/cashu_wallet.db
     volumes:
       - lndnode-data:/root/.lnd:rw
-      - cashu-data:/app/data
+      - cashu-data:/app/data:rw
     depends_on:
       - lndnode
 
