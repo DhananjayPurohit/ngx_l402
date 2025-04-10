@@ -325,12 +325,9 @@ jobs:
           
           echo "Cashu token: $CASHU_TOKEN"
           
-          # Encode the token for HTTP header
-          ENCODED_TOKEN=$(echo -n "$CASHU_TOKEN" | base64 -w 0)
-          
           # Test protected route with Cashu token
           echo "Testing protected route with Cashu token..."
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_TOKEN" http://0.0.0.0:8000/protected)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           
           # The token should be accepted if the verification logic is working
@@ -348,11 +345,8 @@ jobs:
           cashu invoice 1 -m https://nofees.testnut.cashu.space
           INVALID_CASHU_TOKEN=$(cashu send 1)
           
-          # Encode the invalid token
-          ENCODED_INVALID_TOKEN=$(echo -n "$INVALID_CASHU_TOKEN" | base64 -w 0)
-          
           # Test with the invalid token
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_INVALID_TOKEN" http://0.0.0.0:8000/protected)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           
           # This should fail verification due to insufficient amount
