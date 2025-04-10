@@ -298,6 +298,11 @@ jobs:
           echo "Installing Cashu Python package..."
           pip install cashu
           
+          # Create .env file with mint URL and TOR settings
+          echo "Creating .env file with mint URL and TOR settings..."
+          echo "MINT_URL=https://nofees.testnut.cashu.space" > .env
+          echo "TOR=FALSE" >> .env
+          
           # Check wallet info
           echo "Checking wallet info..."
           cashu info
