@@ -21,18 +21,17 @@ use std::sync::OnceLock;
 use cdk;
 use std::str::FromStr;
 use rand::Rng;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
 static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
 
-// Thread-local storage to track if a request has been processed
-thread_local! {
-    static REQUEST_PROCESSED: RefCell<bool> = RefCell::new(false);
-}
+// Use a global mutex to track processed request IDs
+static PROCESSED_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 const MSAT_PER_SAT: u64 = 1000;
 
@@ -190,9 +189,18 @@ impl L402Module {
         }
         
         // Calculate total token amount in millisatoshis
-        let total_amount_msat: u64 = token_decoded.proofs().iter()
-            .map(|p| u64::from(p.amount) * MSAT_PER_SAT)
-            .sum();
+        let total_amount = token_decoded.value()
+            .map_err(|e| format!("Failed to get token value: {}", e))?;
+
+        // Check if the token unit is in millisatoshis or satoshis
+        let total_amount_msat: u64 = if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Sat {
+            u64::from(total_amount) * MSAT_PER_SAT
+        } else if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Msat {
+            u64::from(total_amount)
+        } else {
+            // Other units not supported
+            return Err(format!("Unsupported token unit: {:?}", token_decoded.unit().unwrap()));
+        };
         
         // Check if the token amount is sufficient
         if total_amount_msat < amount_msat as u64 {
@@ -209,32 +217,25 @@ impl L402Module {
         // Extract mint URL from the token
         let mint_url = token_decoded.mint_url()
             .map_err(|e| format!("Failed to get mint URL: {}", e))?;
-        
-        // amount from total millisatoshis into satoshis
-        let amount = Some(cdk::Amount::from((total_amount_msat as u64) / MSAT_PER_SAT));
 
         let unit = token_decoded.unit().unwrap();
         
         // Use the shared database instance
         let db = CASHU_DB.get()
-            .ok_or_else(|| "Cashu database not initialized".to_string())?;
+            .ok_or_else(|| "Cashu database not initialized".to_string())?
+            .clone();
             
-        let seed = rand::thread_rng().gen::<[u8; 32]>();
-        let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), &seed, None)
+        let seed = rand::rng().random::<[u8; 32]>();
+        let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db, &seed, None)
             .map_err(|e| format!("Failed to create wallet: {}", e))?;
-        
-        // Create default spending conditions and split target
-        let spending_conditions = None;
-        let amount_split_target = cdk::amount::SplitTarget::default();
-        let include_fees = false;
 
-        match wallet.swap(amount, amount_split_target, token_decoded.proofs(), spending_conditions, include_fees).await {
+        match wallet.receive(token, cdk::wallet::ReceiveOptions::default()).await {
             Ok(_) => {
-                eprintln!("Cashu token swap successful");
+                eprintln!("Cashu token received successful");
                 Ok(true)
             },
             Err(e) => {
-                eprintln!("Cashu token swap failed: {}", e);
+                eprintln!("Cashu token receive failed: {}", e);
                 Ok(false)
             }
         }
@@ -352,27 +353,28 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
     
-    // Check if this request has already been processed in this phase
-    // NGINX may call the handler twice for the same request
-    let request_ptr = request as usize;
+    // Generate a unique request ID
     let request_id = format!("{:p}", request as *const _);
     
-    // Use thread-local storage to track if we've already processed this request
-    let already_processed = REQUEST_PROCESSED.with(|processed| {
-        let is_processed = *processed.borrow();
-        if is_processed {
-            // Reset for next request
-            *processed.borrow_mut() = false;
-            true
-        } else {
-            // Mark as processed for this request cycle
-            *processed.borrow_mut() = true;
-            false
-        }
+    // Initialize the processed requests set if not already done
+    let processed_requests = PROCESSED_REQUESTS.get_or_init(|| {
+        Mutex::new(HashSet::new())
     });
     
+    // Check if this request has already been processed
+    let already_processed = {
+        let mut processed_set = processed_requests.lock().unwrap();
+        if processed_set.contains(&request_id) {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "Skipping duplicate handler call for request {:?}", request_id);
+            true
+        } else {
+            // Add this request to the processed set
+            processed_set.insert(request_id.clone());
+            false
+        }
+    };
+    
     if already_processed {
-        ngx_log_error!(NGX_LOG_INFO, log_ref, "Skipping duplicate handler call for request {:?}", request_id);
         return NGX_DECLINED.try_into().unwrap();
     }
     
@@ -448,6 +450,16 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
                 return 500; // Return server error if we couldn't get the header
             }
+        }
+    }
+    
+    // Clean up the request ID from the processed set when the request is complete
+    // This is done in a separate function that would be called when the request is finalized
+    // For now, we'll keep the set size limited by clearing it when it gets too large
+    {
+        let mut processed_set = processed_requests.lock().unwrap();
+        if processed_set.len() > 10000 {  // Arbitrary limit to prevent memory leaks
+            processed_set.clear();
         }
     }
     
@@ -547,8 +559,6 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         rt.block_on(async {
             match cdk_sqlite::WalletSqliteDatabase::new(&db_path).await {
                 Ok(db) => {
-                    println!("Initializing Cashu database");
-                    db.migrate().await;
                     println!("Cashu database initialized successfully");
                     ngx_log_error!(NGX_LOG_INFO, log, "Cashu database initialized successfully");
                     // Store the database in the static OnceLock
