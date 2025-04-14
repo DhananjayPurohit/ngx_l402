@@ -30,7 +30,7 @@ static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
 static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
 
-// Use a global mutex to track processed request IDs
+// Use a global mutex to track processed request IDs for Cashu tokens
 static PROCESSED_REQUESTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 const MSAT_PER_SAT: u64 = 1000;
@@ -353,31 +353,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
     
-    // Generate a unique request ID
-    let request_id = format!("{:p}", request as *const _);
-    
-    // Initialize the processed requests set if not already done
-    let processed_requests = PROCESSED_REQUESTS.get_or_init(|| {
-        Mutex::new(HashSet::new())
-    });
-    
-    // Check if this request has already been processed
-    let already_processed = {
-        let mut processed_set = processed_requests.lock().unwrap();
-        if processed_set.contains(&request_id) {
-            ngx_log_error!(NGX_LOG_INFO, log_ref, "Skipping duplicate handler call for request {:?}", request_id);
-            true
-        } else {
-            // Add this request to the processed set
-            processed_set.insert(request_id.clone());
-            false
-        }
-    };
-    
-    if already_processed {
-        return NGX_DECLINED.try_into().unwrap();
-    }
-    
     // Check if L402 is enabled for this location
     let (auth_header, uri, method, amount_msat) = unsafe {
         let r = &mut *request;
@@ -418,6 +393,38 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
     let caveats = vec![format!("RequestPath = {}", request_path)];
 
+    // Only track processed requests for Cashu tokens
+    let mut is_cashu_request = false;
+    if let Some(auth_str) = &auth_header {
+        if auth_str.starts_with("Cashu ") {
+            is_cashu_request = true;
+            // Generate a unique request ID
+            let request_id = format!("{:p}", request as *const _);
+            
+            // Initialize the processed requests set if not already done
+            let processed_requests = PROCESSED_REQUESTS.get_or_init(|| {
+                Mutex::new(HashSet::new())
+            });
+            
+            // Check if this request has already been processed
+            let already_processed = {
+                let mut processed_set = processed_requests.lock().unwrap();
+                if processed_set.contains(&request_id) {
+                    ngx_log_error!(NGX_LOG_INFO, log_ref, "Skipping duplicate handler call for Cashu request {:?}", request_id);
+                    true
+                } else {
+                    // Add this request to the processed set
+                    processed_set.insert(request_id.clone());
+                    false
+                }
+            };
+            
+            if already_processed {
+                return NGX_DECLINED.try_into().unwrap();
+            }
+        }
+    }
+
     let result = l402_access_handler(auth_header, uri, method, amount_msat, caveats.clone());
     
     // Only set L402 header if result is 402
@@ -454,9 +461,9 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
     
     // Clean up the request ID from the processed set when the request is complete
-    // This is done in a separate function that would be called when the request is finalized
-    // For now, we'll keep the set size limited by clearing it when it gets too large
-    {
+    // Only for Cashu requests
+    if is_cashu_request {
+        let processed_requests = PROCESSED_REQUESTS.get().unwrap();
         let mut processed_set = processed_requests.lock().unwrap();
         if processed_set.len() > 10000 {  // Arbitrary limit to prevent memory leaks
             processed_set.clear();
