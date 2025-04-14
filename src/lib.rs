@@ -22,15 +22,17 @@ use cdk;
 use std::str::FromStr;
 use rand::Rng;
 use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
 static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
 
-// Thread-local storage to track if a request has been processed
+// Thread-local storage to track processed tokens
 thread_local! {
-    static REQUEST_PROCESSED: RefCell<bool> = RefCell::new(false);
+    static PROCESSED_TOKENS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
 const MSAT_PER_SAT: u64 = 1000;
@@ -42,6 +44,7 @@ pub struct L402Module {
 impl L402Module {
     pub async fn new() -> Self {
         println!("Creating new L402Module");
+        
         // Get environment variables
         let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
         println!("Using LN client type: {}", ln_client_type);
@@ -174,6 +177,16 @@ impl L402Module {
     }
 
     pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
+        // Check if token was already processed
+        let token_already_processed = PROCESSED_TOKENS.with(|tokens| {
+            tokens.borrow().contains(token)
+        });
+
+        if token_already_processed {
+            eprintln!("Token already processed");
+            return Ok(true);
+        }
+
         // Decode the token from string
         let token_decoded = match cdk::nuts::Token::from_str(token) {
             Ok(token) => token,
@@ -232,6 +245,10 @@ impl L402Module {
         match wallet.receive(token, cdk::wallet::ReceiveOptions::default()).await {
             Ok(_) => {
                 eprintln!("Cashu token received successful");
+                // Add token to processed set after successful receive
+                PROCESSED_TOKENS.with(|tokens| {
+                    tokens.borrow_mut().insert(token.to_string());
+                });
                 Ok(true)
             },
             Err(e) => {
@@ -392,33 +409,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         }
     }
     let caveats = vec![format!("RequestPath = {}", request_path)];
-
-    if let Some(auth_str) = &auth_header {
-        if auth_str.starts_with("Cashu ") {
-            // Check if this request has already been processed in this phase
-            // NGINX may call the handler twice for the same request
-            let request_id = format!("{:p}", request as *const _);
-
-            // Use thread-local storage to track if we've already processed this request
-            let already_processed = REQUEST_PROCESSED.with(|processed| {
-                let is_processed = *processed.borrow();
-                if is_processed {
-                    // Reset for next request
-                    *processed.borrow_mut() = false;
-                    true
-                } else {
-                    // Mark as processed for this request cycle
-                    *processed.borrow_mut() = true;
-                    false
-                }
-            });
-
-            if already_processed {
-                ngx_log_error!(NGX_LOG_INFO, log_ref, "Skipping duplicate handler call for request {:?}", request_id);
-                return NGX_DECLINED.try_into().unwrap();
-            }
-        }
-    }
 
     let result = l402_access_handler(auth_header, uri, method, amount_msat, caveats.clone());
     
