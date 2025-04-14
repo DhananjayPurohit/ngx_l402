@@ -18,7 +18,7 @@ graph TD;
     L -->|Yes| N[Verify L402]
     N --> O{Verification Success?}
     O -->|Yes| P[Return 200 OK]
-    O -->|No| Q[Return 500 Internal Server Error]
+    O -->|No| Q[Return 401 Unauthorized]
 ```
 
 ## Installation & Usage
