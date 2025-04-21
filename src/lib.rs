@@ -30,9 +30,9 @@ static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
 static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
 
-// Thread-local storage to track processed tokens
+// Thread-local storage to track processed tokens, only initialized when CASHU_ECASH_SUPPORT is true
 thread_local! {
-    static PROCESSED_TOKENS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static PROCESSED_TOKENS: RefCell<Option<HashSet<String>>> = RefCell::new(None);
 }
 
 const MSAT_PER_SAT: u64 = 1000;
@@ -179,7 +179,11 @@ impl L402Module {
     pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
         // Check if token was already processed
         let token_already_processed = PROCESSED_TOKENS.with(|tokens| {
-            tokens.borrow().contains(token)
+            if let Some(set) = tokens.borrow().as_ref() {
+                set.contains(token)
+            } else {
+                false
+            }
         });
 
         if token_already_processed {
@@ -247,7 +251,9 @@ impl L402Module {
                 eprintln!("Cashu token received successful");
                 // Add token to processed set after successful receive
                 PROCESSED_TOKENS.with(|tokens| {
-                    tokens.borrow_mut().insert(token.to_string());
+                    if let Some(set) = tokens.borrow_mut().as_mut() {
+                        set.insert(token.to_string());
+                    }
                 });
                 Ok(true)
             },
@@ -545,6 +551,11 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                     ngx_log_error!(NGX_LOG_INFO, log, "Cashu database initialized successfully");
                     // Store the database in the static OnceLock
                     let _ = CASHU_DB.set(Arc::new(db));
+                    
+                    // Initialize PROCESSED_TOKENS with empty HashSet
+                    PROCESSED_TOKENS.with(|tokens| {
+                        *tokens.borrow_mut() = Some(HashSet::new());
+                    });
                 },
                 Err(e) => {
                     ngx_log_error!(NGX_LOG_INFO, log, "Failed to create Cashu database: {:?}", e);
