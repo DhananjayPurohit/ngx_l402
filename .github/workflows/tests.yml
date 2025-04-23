@@ -302,6 +302,7 @@ jobs:
 
           # Install Cashu Python package
           echo "Installing Cashu Python package..."
+          pip install marshmallow<4.0.0
           pip install cashu
           
           # Create .env file with mint URL and TOR settings
