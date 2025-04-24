@@ -105,8 +105,8 @@ jobs:
           echo "Testing with invalid preimage..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 500 ]; then
-            echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with invalid preimage returned status $status_code, expected 401"
             docker logs nginx-lnurl
             exit 1
           fi
@@ -115,8 +115,8 @@ jobs:
           echo "Testing with macaroon without caveats..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 500 ]; then
-            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
             docker logs nginx-lnurl
             exit 1
           fi
@@ -179,8 +179,8 @@ jobs:
           echo "Testing with invalid preimage..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 500 ]; then
-            echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with invalid preimage returned status $status_code, expected 401"
             docker logs nginx-nwc
             exit 1
           fi
@@ -189,8 +189,8 @@ jobs:
           echo "Testing with macaroon without caveats..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 500 ]; then
-            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
             docker logs nginx-nwc
             exit 1
           fi
@@ -272,8 +272,8 @@ jobs:
           echo "Testing with invalid preimage..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 500 ]; then
-            echo "Error: Protected route with invalid preimage returned status $status_code, expected 500"
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with invalid preimage returned status $status_code, expected 401"
             docker logs nginx-lnd
             exit 1
           fi
@@ -282,11 +282,117 @@ jobs:
           echo "Testing with macaroon without caveats..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 500 ]; then
-            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 500"
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
             docker logs nginx-lnd
             exit 1
           fi
+
+          # Test Cashu eCash support
+          echo "Testing Cashu eCash support..."
+
+          # Ensure the Cashu database has proper permissions
+          echo "Setting up Cashu database permissions..."
+          docker exec nginx-lnd chmod 777 /app/data
+          docker exec nginx-lnd chmod 666 /app/data/cashu_wallet.db
+          echo "Cashu database permissions set successfully"
+          
+          # Install required tools
+          sudo apt-get update && sudo apt-get install -y jq curl python3-pip
+
+          # Install Cashu Python package
+          echo "Installing Cashu Python package..."
+          pip install "marshmallow<4.0.0"
+          pip install cashu
+          
+          # Create .env file with mint URL and TOR settings
+          echo "Creating .env file with mint URL and TOR settings..."
+          echo "MINT_URL=https://nofees.testnut.cashu.space" > .env
+          echo "TOR=FALSE" >> .env
+          
+          # Check wallet info
+          echo "Checking wallet info..."
+          cashu info
+          
+          # Check initial balance
+          echo "Checking initial balance..."
+          cashu balance
+          
+          # Generate a Lightning invoice and mint tokens
+          echo "Generating Lightning invoice and minting tokens..."
+          cashu invoice 10 -m https://nofees.testnut.cashu.space
+          
+          # Check balance after minting
+          echo "Checking balance after minting..."
+          cashu balance
+          
+          # Get token from wallet
+          echo "Retrieving token from wallet..."
+          CASHU_TOKEN=$(cashu send 10)
+          
+          echo "Cashu token: $CASHU_TOKEN"
+          
+          # Test protected route with Cashu token
+          echo "Testing protected route with Cashu token..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          
+          # The token should be accepted if the verification logic is working
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Protected route with Cashu token returned unexpected status $status_code"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          
+          # Test with invalid Cashu token (insufficient amount)
+          echo "Testing with invalid Cashu token (insufficient amount)..."
+          
+          # Create a token with insufficient amount (1 sat instead of required amount)
+          cashu invoice 1 -m https://nofees.testnut.cashu.space
+          INVALID_CASHU_TOKEN=$(cashu send 1)
+          
+          # Test with the invalid token
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          
+          # This should fail verification due to insufficient amount
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with invalid Cashu token returned status $status_code, expected 401"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          
+          # Test with malformed Cashu token
+          echo "Testing with malformed Cashu token..."
+          
+          # Create a malformed token
+          MALFORMED_CASHU_TOKEN='{
+            "token": [
+              {
+                "mint": "https://nofees.testnut.cashu.space",
+                "proofs": []
+              }
+            ]
+          }'
+          
+          # Encode the malformed token
+          ENCODED_MALFORMED_TOKEN=$(echo -n "$MALFORMED_CASHU_TOKEN" | base64 -w 0)
+          
+          # Test with the malformed token
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          
+          # This should fail verification due to empty proofs
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with malformed Cashu token returned status $status_code, expected 401"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          
+          echo "All Cashu eCash tests completed successfully!"
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')

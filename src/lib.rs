@@ -18,10 +18,24 @@ use std::sync::Once;
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 use std::sync::OnceLock;
+use cdk;
+use std::str::FromStr;
+use rand::Rng;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
+static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
+
+// Thread-local storage to track processed tokens, only initialized when CASHU_ECASH_SUPPORT is true
+thread_local! {
+    static PROCESSED_TOKENS: RefCell<Option<HashSet<String>>> = RefCell::new(None);
+}
+
+const MSAT_PER_SAT: u64 = 1000;
 
 pub struct L402Module {
     middleware: L402Middleware,
@@ -30,6 +44,7 @@ pub struct L402Module {
 impl L402Module {
     pub async fn new() -> Self {
         println!("Creating new L402Module");
+        
         // Get environment variables
         let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
         println!("Using LN client type: {}", ln_client_type);
@@ -160,6 +175,94 @@ impl L402Module {
             }
         }
     }
+
+    pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
+        // Check if token was already processed
+        let token_already_processed = PROCESSED_TOKENS.with(|tokens| {
+            if let Some(set) = tokens.borrow().as_ref() {
+                set.contains(token)
+            } else {
+                false
+            }
+        });
+
+        if token_already_processed {
+            eprintln!("Token already processed");
+            return Ok(true);
+        }
+
+        // Decode the token from string
+        let token_decoded = match cdk::nuts::Token::from_str(token) {
+            Ok(token) => token,
+            Err(e) => {
+                eprintln!("Failed to decode Cashu token: {}", e);
+                return Err(format!("Failed to decode Cashu token: {}", e));
+            }
+        };
+        
+        // Check if the token is valid
+        if token_decoded.proofs().is_empty() {
+            return Ok(false);
+        }
+        
+        // Calculate total token amount in millisatoshis
+        let total_amount = token_decoded.value()
+            .map_err(|e| format!("Failed to get token value: {}", e))?;
+
+        // Check if the token unit is in millisatoshis or satoshis
+        let total_amount_msat: u64 = if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Sat {
+            u64::from(total_amount) * MSAT_PER_SAT
+        } else if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Msat {
+            u64::from(total_amount)
+        } else {
+            // Other units not supported
+            return Err(format!("Unsupported token unit: {:?}", token_decoded.unit().unwrap()));
+        };
+        
+        // Check if the token amount is sufficient
+        if total_amount_msat < amount_msat as u64 {
+            eprintln!("Cashu token amount insufficient: {} msat (required: {} msat)", 
+                total_amount_msat, amount_msat);
+            return Ok(false);
+        }
+        
+        println!("Successfully decoded Cashu token with {} proofs and {} msat (required: {} msat)", 
+            token_decoded.proofs().len(),
+            total_amount_msat,
+            amount_msat);
+        
+        // Extract mint URL from the token
+        let mint_url = token_decoded.mint_url()
+            .map_err(|e| format!("Failed to get mint URL: {}", e))?;
+
+        let unit = token_decoded.unit().unwrap();
+        
+        // Use the shared database instance
+        let db = CASHU_DB.get()
+            .ok_or_else(|| "Cashu database not initialized".to_string())?
+            .clone();
+            
+        let seed = rand::rng().random::<[u8; 32]>();
+        let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db, &seed, None)
+            .map_err(|e| format!("Failed to create wallet: {}", e))?;
+
+        match wallet.receive(token, cdk::wallet::ReceiveOptions::default()).await {
+            Ok(_) => {
+                eprintln!("Cashu token received successful");
+                // Add token to processed set after successful receive
+                PROCESSED_TOKENS.with(|tokens| {
+                    if let Some(set) = tokens.borrow_mut().as_mut() {
+                        set.insert(token.to_string());
+                    }
+                });
+                Ok(true)
+            },
+            Err(e) => {
+                eprintln!("Cashu token receive failed: {}", e);
+                Ok(false)
+            }
+        }
+    }
 }
 
 impl HTTPModule for L402Module {
@@ -270,10 +373,9 @@ impl Merge for ModuleConfig {
 }
 
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
-
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
-
+    
     // Check if L402 is enabled for this location
     let (auth_header, uri, method, amount_msat) = unsafe {
         let r = &mut *request;
@@ -314,7 +416,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
     let caveats = vec![format!("RequestPath = {}", request_path)];
 
-    let result = l402_access_handler(auth_header, uri, method, caveats.clone());
+    let result = l402_access_handler(auth_header, uri, method, amount_msat, caveats.clone());
     
     // Only set L402 header if result is 402
     if result == 402 {
@@ -348,11 +450,11 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             }
         }
     }
-    
+
     result
 }
 
-pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32, caveats: Vec<String>) -> isize {
+pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32, amount_msat: i64, caveats: Vec<String>) -> isize {
     let module = unsafe {
         MODULE.as_ref().expect("Module not initialized")
     };
@@ -363,23 +465,53 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
         println!("Found authorization header");
         println!("Authorization: {}", auth_str);
 
-        match utils::parse_l402_header(&auth_str) {
-            Ok((mac, preimage)) => {
-                println!("Successfully parsed L402 header");
-                match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
-                    Ok(_) => {
-                        println!("L402 verification successful");
-                        return NGX_DECLINED.try_into().unwrap();
-                    },
-                    Err(e) => {
-                        println!("L402 verification failed: {:?}", e);
-                        return 500;
-                    }
+        if auth_str.starts_with("Cashu ") {
+            let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
+            
+            // Use a lazily initialized static runtime
+            static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+            let rt = RUNTIME.get_or_init(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime init")
+            });
+            
+            let verify_result = rt.block_on(async {
+                module.verify_cashu_token(&token, amount_msat).await
+            });
+            
+            match verify_result {
+                Ok(true) => {
+                    return NGX_DECLINED.try_into().unwrap();
+                },
+                Ok(false) => {
+                    eprintln!("Cashu token verification failed");
+                    return 401;
+                },
+                Err(e) => {
+                    eprintln!("Error verifying Cashu token: {:?}", e);
+                    return 401;
                 }
-            },
-            Err(e) => {
-                println!("Failed to parse L402 header: {:?}", e);
-                return 500;
+            }
+        } else {
+            match utils::parse_l402_header(&auth_str) {
+                Ok((mac, preimage)) => {
+                    match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
+                        Ok(_) => {
+                            println!("L402 verification successful");
+                            return NGX_DECLINED.try_into().unwrap();
+                        },
+                        Err(e) => {
+                            eprintln!("L402 verification failed: {:?}", e);
+                            return 401;
+                        }
+                    }
+                },
+                Err(e) => {
+                    println!("Failed to parse L402 header: {:?}", e);
+                    return 401;
+                }
             }
         }
     }
@@ -390,10 +522,49 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
 
 pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     println!("Starting module initialization");
+
+    let log = (*cycle).log;
+    
+    ngx_log_error!(NGX_LOG_INFO, log, "Starting module initialization");
     
     if cycle.is_null() {
         println!("Error: Cycle pointer is null");
         return -1;
+    }
+
+    // Check if Cashu eCash support is enabled
+    let cashu_ecash_support_var = std::env::var("CASHU_ECASH_SUPPORT").unwrap_or_else(|_| "false".to_string());
+    let cashu_ecash_support = cashu_ecash_support_var.trim().to_lowercase() == "true";
+    ngx_log_error!(NGX_LOG_INFO, log, "CASHU_ECASH_SUPPORT: {:?}, raw value: '{}'", cashu_ecash_support, cashu_ecash_support_var);
+
+    let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.db".to_string());
+    ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DB_PATH: '{}'", db_path);
+    
+    if cashu_ecash_support {
+        println!("Cashu eCash support is enabled");
+        // Initialize Cashu database
+        let rt = Runtime::new().expect("Failed to create runtime");
+        rt.block_on(async {
+            match cdk_sqlite::WalletSqliteDatabase::new(&db_path).await {
+                Ok(db) => {
+                    println!("Cashu database initialized successfully");
+                    ngx_log_error!(NGX_LOG_INFO, log, "Cashu database initialized successfully");
+                    // Store the database in the static OnceLock
+                    let _ = CASHU_DB.set(Arc::new(db));
+                    
+                    // Initialize PROCESSED_TOKENS with empty HashSet
+                    PROCESSED_TOKENS.with(|tokens| {
+                        *tokens.borrow_mut() = Some(HashSet::new());
+                    });
+                },
+                Err(e) => {
+                    ngx_log_error!(NGX_LOG_INFO, log, "Failed to create Cashu database: {:?}", e);
+                    println!("Failed to create Cashu database: {:?}", e);
+                }
+            }
+        });
+    } else {
+        println!("Cashu eCash support is disabled");
     }
 
     INIT.call_once(|| {

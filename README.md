@@ -18,7 +18,7 @@ graph TD;
     L -->|Yes| N[Verify L402]
     N --> O{Verification Success?}
     O -->|Yes| P[Return 200 OK]
-    O -->|No| Q[Return 500 Internal Server Error]
+    O -->|No| Q[Return 401 Unauthorized]
 ```
 
 ## Installation & Usage
@@ -44,37 +44,42 @@ location /protected {
 }
 ```
 
-4. Set the following environment variables:
+4. Set the following environment variables in `nginx.service` (typically in `/lib/systemd/system/nginx.service`):
 
-if using LNURL:
-```bash
-export LN_CLIENT_TYPE=LNURL
-export LNURL_ADDRESS=
-# Root key for minting macaroons
-export ROOT_KEY=
 ```
+[Service]
+...
+# Use one of the following:
+# if using LNURL:
+Environment=LN_CLIENT_TYPE=LNURL
+Environment=LNURL_ADDRESS=https://your-lnurl-server.com
+Environment=ROOT_KEY=your-root-key
+# if using LND:
+Environment=LN_CLIENT_TYPE=LND
+Environment=LND_ADDRESS=https://your-lnd-server.com
+Environment=MACAROON_FILE_PATH=/path/to/macaroon
+Environment=CERT_FILE_PATH=/path/to/cert
+Environment=ROOT_KEY=your-root-key
+# if using NWC:
+Environment=LN_CLIENT_TYPE=NWC
+Environment=NWC_URI=https://your-nostr-wallet.com
+Environment=ROOT_KEY=your-root-key
 
-if using LND:
-```bash
-export LN_CLIENT_TYPE=LND
-export LND_ADDRESS=
-export MACAROON_FILE_PATH=
-export CERT_FILE_PATH=
-# Root key for minting macaroons
-export ROOT_KEY=
-```
-
-if using NWC:
-```bash
-export LN_CLIENT_TYPE=NWC
-export NWC_URI=
-# Root key for minting macaroons
-export ROOT_KEY=
+# To accept Cashu tokens as Ecash for L402:
+Environment=CASHU_ECASH_SUPPORT=true
+Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.db
+...
 ```
 
 5. Restart Nginx:
 ```bash
 sudo systemctl restart nginx
+```
+
+6. (Only if accepting Cashu tokens) Provide permission to the Nginx user to access the Cashu database:
+```bash
+sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.db
+sudo chmod 666 /var/lib/nginx/cashu_wallet.db
 ```
 
 ## Building from Source
