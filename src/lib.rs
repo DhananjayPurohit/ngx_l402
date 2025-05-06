@@ -18,24 +18,12 @@ use std::sync::Once;
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 use std::sync::OnceLock;
-use cdk;
-use std::str::FromStr;
-use rand::Rng;
-use std::cell::RefCell;
-use std::collections::HashSet;
-use std::sync::Mutex;
+
+mod cashu;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static mut RUNTIME: Option<Runtime> = None;
-static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
-
-// Thread-local storage to track processed tokens, only initialized when CASHU_ECASH_SUPPORT is true
-thread_local! {
-    static PROCESSED_TOKENS: RefCell<Option<HashSet<String>>> = RefCell::new(None);
-}
-
-const MSAT_PER_SAT: u64 = 1000;
 
 pub struct L402Module {
     middleware: L402Middleware,
@@ -177,91 +165,7 @@ impl L402Module {
     }
 
     pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
-        // Check if token was already processed
-        let token_already_processed = PROCESSED_TOKENS.with(|tokens| {
-            if let Some(set) = tokens.borrow().as_ref() {
-                set.contains(token)
-            } else {
-                false
-            }
-        });
-
-        if token_already_processed {
-            eprintln!("Token already processed");
-            return Ok(true);
-        }
-
-        // Decode the token from string
-        let token_decoded = match cdk::nuts::Token::from_str(token) {
-            Ok(token) => token,
-            Err(e) => {
-                eprintln!("Failed to decode Cashu token: {}", e);
-                return Err(format!("Failed to decode Cashu token: {}", e));
-            }
-        };
-        
-        // Check if the token is valid
-        if token_decoded.proofs().is_empty() {
-            return Ok(false);
-        }
-        
-        // Calculate total token amount in millisatoshis
-        let total_amount = token_decoded.value()
-            .map_err(|e| format!("Failed to get token value: {}", e))?;
-
-        // Check if the token unit is in millisatoshis or satoshis
-        let total_amount_msat: u64 = if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Sat {
-            u64::from(total_amount) * MSAT_PER_SAT
-        } else if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Msat {
-            u64::from(total_amount)
-        } else {
-            // Other units not supported
-            return Err(format!("Unsupported token unit: {:?}", token_decoded.unit().unwrap()));
-        };
-        
-        // Check if the token amount is sufficient
-        if total_amount_msat < amount_msat as u64 {
-            eprintln!("Cashu token amount insufficient: {} msat (required: {} msat)", 
-                total_amount_msat, amount_msat);
-            return Ok(false);
-        }
-        
-        println!("Successfully decoded Cashu token with {} proofs and {} msat (required: {} msat)", 
-            token_decoded.proofs().len(),
-            total_amount_msat,
-            amount_msat);
-        
-        // Extract mint URL from the token
-        let mint_url = token_decoded.mint_url()
-            .map_err(|e| format!("Failed to get mint URL: {}", e))?;
-
-        let unit = token_decoded.unit().unwrap();
-        
-        // Use the shared database instance
-        let db = CASHU_DB.get()
-            .ok_or_else(|| "Cashu database not initialized".to_string())?
-            .clone();
-            
-        let seed = rand::rng().random::<[u8; 32]>();
-        let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db, &seed, None)
-            .map_err(|e| format!("Failed to create wallet: {}", e))?;
-
-        match wallet.receive(token, cdk::wallet::ReceiveOptions::default()).await {
-            Ok(_) => {
-                eprintln!("Cashu token received successful");
-                // Add token to processed set after successful receive
-                PROCESSED_TOKENS.with(|tokens| {
-                    if let Some(set) = tokens.borrow_mut().as_mut() {
-                        set.insert(token.to_string());
-                    }
-                });
-                Ok(true)
-            },
-            Err(e) => {
-                eprintln!("Cashu token receive failed: {}", e);
-                Ok(false)
-            }
-        }
+        cashu::verify_cashu_token(token, amount_msat).await
     }
 }
 
@@ -536,33 +440,22 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     let cashu_ecash_support_var = std::env::var("CASHU_ECASH_SUPPORT").unwrap_or_else(|_| "false".to_string());
     let cashu_ecash_support = cashu_ecash_support_var.trim().to_lowercase() == "true";
     ngx_log_error!(NGX_LOG_INFO, log, "CASHU_ECASH_SUPPORT: {:?}, raw value: '{}'", cashu_ecash_support, cashu_ecash_support_var);
-
-    let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.db".to_string());
-    ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DB_PATH: '{}'", db_path);
     
     if cashu_ecash_support {
         println!("Cashu eCash support is enabled");
+
         // Initialize Cashu database
-        let rt = Runtime::new().expect("Failed to create runtime");
-        rt.block_on(async {
-            match cdk_sqlite::WalletSqliteDatabase::new(&db_path).await {
-                Ok(db) => {
-                    println!("Cashu database initialized successfully");
-                    ngx_log_error!(NGX_LOG_INFO, log, "Cashu database initialized successfully");
-                    // Store the database in the static OnceLock
-                    let _ = CASHU_DB.set(Arc::new(db));
-                    
-                    // Initialize PROCESSED_TOKENS with empty HashSet
-                    PROCESSED_TOKENS.with(|tokens| {
-                        *tokens.borrow_mut() = Some(HashSet::new());
-                    });
-                },
-                Err(e) => {
-                    ngx_log_error!(NGX_LOG_INFO, log, "Failed to create Cashu database: {:?}", e);
-                    println!("Failed to create Cashu database: {:?}", e);
-                }
+        let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.db".to_string());
+        ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DB_PATH: '{}'", db_path);
+
+        match cashu::initialize_cashu(&db_path) {
+            Ok(_) => {
+                ngx_log_error!(NGX_LOG_INFO, log, "Cashu database initialized successfully");
+            },
+            Err(e) => {
+                ngx_log_error!(NGX_LOG_ERR, log, "Failed to initialize Cashu: {}", e);
             }
-        });
+        }
     } else {
         println!("Cashu eCash support is disabled");
     }
