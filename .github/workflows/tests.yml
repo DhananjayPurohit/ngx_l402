@@ -393,6 +393,7 @@ jobs:
           fi
           
           echo "All Cashu eCash tests completed successfully!"
+          docker logs nginx-lnd
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
