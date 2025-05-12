@@ -23,7 +23,6 @@ mod cashu;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
-static mut RUNTIME: Option<Runtime> = None;
 
 pub struct L402Module {
     middleware: L402Middleware,
@@ -439,7 +438,6 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     // Check if Cashu eCash support is enabled
     let cashu_ecash_support_var = std::env::var("CASHU_ECASH_SUPPORT").unwrap_or_else(|_| "false".to_string());
     let cashu_ecash_support = cashu_ecash_support_var.trim().to_lowercase() == "true";
-    ngx_log_error!(NGX_LOG_INFO, log, "CASHU_ECASH_SUPPORT: {:?}, raw value: '{}'", cashu_ecash_support, cashu_ecash_support_var);
     
     if cashu_ecash_support {
         println!("Cashu eCash support is enabled");
@@ -468,18 +466,15 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                 L402Module::new().await
             });
             
-            unsafe { 
-                RUNTIME = Some(rt);
+            unsafe {
                 MODULE = Some(module);
             }
-            
             println!("L402Module initialized successfully");
         }) {
             Ok(_) => (),
             Err(e) => {
                 println!("Panic during initialization: {:?}", e);
                 unsafe {
-                    RUNTIME = None;
                     MODULE = None;
                 }
             }
@@ -487,6 +482,51 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     });
 
     println!("Module initialization complete");
+
+    let redeem_on_lightning = std::env::var("CASHU_REDEEM_ON_LIGHTNING")
+        .unwrap_or_else(|_| "false".to_string())
+        .trim()
+        .to_lowercase() == "true";
+
+    if redeem_on_lightning && cashu_ecash_support {
+        ngx_log_error!(NGX_LOG_INFO, log, "Automatic Cashu redemption enabled");
+
+        // Get redemption interval
+        let interval_secs = std::env::var("CASHU_REDEMPTION_INTERVAL_SECS")
+            .unwrap_or_else(|_| "3600".to_string()) // Default 1 hour
+            .parse::<u64>()
+            .unwrap_or(3600);
+
+        let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+        let ln_client = module.middleware.ln_client.clone();
+
+        // Spawn redemption task in a separate thread to avoid blocking nginx
+        std::thread::Builder::new()
+            .name("cashu_redemption".into())
+            .spawn(move || {
+                println!("Starting redemption task");
+                
+                // Create a new runtime for this thread
+                let thread_rt = Runtime::new().expect("Failed to create thread runtime");
+                
+                thread_rt.block_on(async move {
+                    loop {
+                        let ln_client_conn = lnclient::LNClientConn {
+                            ln_client: ln_client.clone(),
+                        };
+
+                        match cashu::redeem_to_lightning(&ln_client_conn).await {
+                            Ok(true) => println!("Successfully redeemed Cashu tokens"),
+                            Ok(false) => println!("No tokens to redeem"), 
+                            Err(e) => eprintln!("Error redeeming tokens: {}", e)
+                        }
+
+                        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
+                        println!("Sleeping for {} seconds", interval_secs);
+                    }
+                });
+            });
+    }
     0
 }
 
