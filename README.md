@@ -79,7 +79,7 @@ sudo systemctl restart nginx
 6. (Only if accepting Cashu tokens) Provide permission to the Nginx user to access the Cashu database:
 ```bash
 sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.db
-sudo chmod 666 /var/lib/nginx/cashu_wallet.db
+sudo chmod 660 /var/lib/nginx/cashu_wallet.db
 ```
 
 ## Building from Source
