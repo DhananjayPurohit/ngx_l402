@@ -501,7 +501,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         let ln_client = module.middleware.ln_client.clone();
 
         // Spawn redemption task in a separate thread to avoid blocking nginx
-        std::thread::Builder::new()
+        let _ =std::thread::Builder::new()
             .name("cashu_redemption".into())
             .spawn(move || {
                 println!("Starting redemption task");

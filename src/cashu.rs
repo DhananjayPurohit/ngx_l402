@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use l402_middleware::lnclient;
 use tonic_openssl_lnd::lnrpc;
+use cdk::cdk_database::WalletDatabase;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -139,15 +140,35 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
     let db = CASHU_DB.get()
         .ok_or_else(|| "Cashu database not initialized".to_string())?
         .clone();
+    
+    // Get mint URLs from database
+    let mint_urls_map = db.get_mints().await
+        .map_err(|e| format!("Failed to get mint URLs: {}", e))?;
+    
+    // Create wallets for each mint URL
+    let mut wallets = Vec::new();
+    for (mint_url, _mint_info) in mint_urls_map {
+        let seed = rand::rng().random::<[u8; 32]>();
 
+        // Keeping this as Sat for now but a wallet can hold any unit
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        
+        match cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), &seed, None) {
+            Ok(wallet) => wallets.push(wallet),
+            Err(e) => eprintln!("Failed to create wallet for {}: {}", mint_url, e),
+        }
+    }
+    
     let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
         db,
         Arc::new(rand::rng().random::<[u8; 32]>()),
-        vec![],
+        wallets,
     );
 
     let mut total_redeemed = 0;
     let mut total_amount_redeemed_msat = 0;
+
+    println!("Mint URLs: {:?}", multi_mint_wallet.get_wallets().await);
 
     for wallet in multi_mint_wallet.get_wallets().await {
         let wallet_clone = wallet.clone();
@@ -201,8 +222,8 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         println!("Generated invoice for {} msat: {}", total_amount_msat, invoice);
 
         // Melt the proofs to redeem on Lightning
-        match wallet_clone.melt(&invoice).await {
-            Ok(result) => {
+        match wallet_clone.melt_quote(invoice, None).await {
+            Ok(_result) => {
                 println!("Successfully redeemed {} proofs ({} msat) for payment hash {}", 
                     proofs.len(), total_amount_msat, payment_hash);
                 total_redeemed += proofs.len();
