@@ -74,6 +74,8 @@ Environment=CASHU_REDEEM_ON_LIGHTNING=true
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
 ...
 ```
+> **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
+
 
 5. Restart Nginx:
 ```bash
