@@ -331,6 +331,8 @@ jobs:
           CASHU_TOKEN=$(cashu send 10)
           
           echo "Cashu token: $CASHU_TOKEN"
+
+          sleep 5
           
           # Test protected route with Cashu token
           echo "Testing protected route with Cashu token..."
@@ -351,6 +353,8 @@ jobs:
           # Create a token with insufficient amount (1 sat instead of required amount)
           cashu invoice 1 -m https://testnut.cashu.space
           INVALID_CASHU_TOKEN=$(cashu send 1)
+
+          sleep 5
           
           # Test with the invalid token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
@@ -379,6 +383,8 @@ jobs:
           
           # Encode the malformed token
           ENCODED_MALFORMED_TOKEN=$(echo -n "$MALFORMED_CASHU_TOKEN" | base64 -w 0)
+
+          sleep 5
           
           # Test with the malformed token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected)

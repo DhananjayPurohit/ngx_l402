@@ -98,7 +98,7 @@ services:
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_wallet.db
       - CASHU_REDEEM_ON_LIGHTNING=true
-      - CASHU_REDEMPTION_INTERVAL_SECS=30
+      - CASHU_REDEMPTION_INTERVAL_SECS=60
     volumes:
       - lndnode-data:/root/.lnd:rw
       - cashu-data:/app/data:rw
