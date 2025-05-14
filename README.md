@@ -60,14 +60,18 @@ Environment=LND_ADDRESS=https://your-lnd-server.com
 Environment=MACAROON_FILE_PATH=/path/to/macaroon
 Environment=CERT_FILE_PATH=/path/to/cert
 Environment=ROOT_KEY=your-root-key
-# if using NWC:
+# if using NWC (supports NIP47 NWC URIs only):
 Environment=LN_CLIENT_TYPE=NWC
-Environment=NWC_URI=https://your-nostr-wallet.com
+Environment=NWC_URI=nostr+walletconnect://<pubkey>?relay=<relay_url>&secret=<secret>
 Environment=ROOT_KEY=your-root-key
 
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
 Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.db
+# Optional: Enable automatic redemption of Cashu tokens to Lightning (default: false)
+Environment=CASHU_REDEEM_ON_LIGHTNING=true
+# Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
+Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
 ...
 ```
 
