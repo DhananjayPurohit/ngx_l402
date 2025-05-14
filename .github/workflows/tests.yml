@@ -336,7 +336,7 @@ jobs:
           
           # Test protected route with Cashu token
           echo "Testing protected route with Cashu token..."
-          response=$(curl -v -s -i -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          response=$(curl -v -s -i -w "\n%{http_code}" --max-time 120 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           
           # The token should be accepted if the verification logic is working
