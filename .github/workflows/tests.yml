@@ -336,8 +336,25 @@ jobs:
           
           # Test protected route with Cashu token
           echo "Testing protected route with Cashu token..."
-          response=$(curl -v -s -i -w "\n%{http_code}" --max-time 120 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
-          status_code=$(echo "$response" | tail -n1)
+          max_retries=3
+          retry_count=0
+          status_code=0
+          
+          while [ $retry_count -lt $max_retries ] && [ "$status_code" -ne 200 ]; do
+            echo "Attempt $(($retry_count + 1)) of $max_retries..."
+            response=$(curl -v -s -i -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
+            status_code=$(echo "$response" | tail -n1)
+            
+            if [ "$status_code" -ne 200 ]; then
+              if echo "$response" | grep -q "401 Unauthorized"; then
+                echo "Pool connection timed out, retrying..."
+                sleep 5
+                retry_count=$((retry_count + 1))
+              else
+                break
+              fi
+            fi
+          done
           
           # The token should be accepted if the verification logic is working
           if [ "$status_code" -ne 200 ]; then

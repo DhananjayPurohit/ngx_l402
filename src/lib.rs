@@ -521,8 +521,8 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                             Err(e) => eprintln!("Error redeeming tokens: {}", e)
                         }
 
-                        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
                         println!("Sleeping for {} seconds", interval_secs);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
                     }
                 });
             });
