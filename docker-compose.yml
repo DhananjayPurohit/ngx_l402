@@ -60,22 +60,11 @@ services:
     ports:
       - "3338:3338"
     environment:
+      - MINT_BACKEND_BOLT11_SAT=FakeWallet
       - MINT_LISTEN_HOST=0.0.0.0
       - MINT_LISTEN_PORT=3338
-      - MINT_LIGHTNING_BACKEND=lnd
-      - MINT_LND_REST_HOST=lndnode
-      - MINT_LND_REST_PORT=8080
-      - MINT_LND_REST_MACAROON_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
-      - MINT_LND_REST_CERT_PATH=/root/.lnd/tls.cert
-      - MINT_DERIVATION_PATH=0/0/0/0
       - MINT_PRIVATE_KEY=${ROOT_KEY}
-      - MINT_CURRENCY=sat
-      - MINT_AMOUNT=1000
-    volumes:
-      - lndnode-data:/root/.lnd:ro
-      - cashu-mint-data:/data
-    depends_on:
-      - lndnode
+    command: ["poetry", "run", "mint"]
 
   nginx-lnurl:
     container_name: nginx-lnurl
@@ -134,4 +123,3 @@ volumes:
   bitcoin_data:
   lndnode-data:
   cashu-data:
-  cashu-mint-data:
