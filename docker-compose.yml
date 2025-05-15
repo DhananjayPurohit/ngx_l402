@@ -74,7 +74,6 @@ services:
     volumes:
       - lndnode-data:/root/.lnd:ro
       - cashu-mint-data:/data
-    restart: unless-stopped
     depends_on:
       - lndnode
 
