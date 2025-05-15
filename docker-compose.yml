@@ -134,3 +134,4 @@ volumes:
   bitcoin_data:
   lndnode-data:
   cashu-data:
+  cashu-mint-data:
