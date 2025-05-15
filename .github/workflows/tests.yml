@@ -307,7 +307,7 @@ jobs:
           
           # Create .env file with mint URL and TOR settings
           echo "Creating .env file with mint URL and TOR settings..."
-          echo "MINT_URL=https://testnut.cashu.space" > .env
+          echo "MINT_URL=http://cashu-mint:3338" > .env
           echo "TOR=FALSE" >> .env
           
           # Check wallet info
@@ -320,7 +320,7 @@ jobs:
           
           # Generate a Lightning invoice and mint tokens
           echo "Generating Lightning invoice and minting tokens..."
-          cashu invoice 10 -m https://testnut.cashu.space
+          cashu invoice 10 -m http://cashu-mint:3338
           
           # Check balance after minting
           echo "Checking balance after minting..."
@@ -368,7 +368,7 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          cashu invoice 1 -m https://testnut.cashu.space
+          cashu invoice 1 -m http://cashu-mint:3338
           INVALID_CASHU_TOKEN=$(cashu send 1)
 
           sleep 5
@@ -392,7 +392,7 @@ jobs:
           MALFORMED_CASHU_TOKEN='{
             "token": [
               {
-                "mint": "https://testnut.cashu.space",
+                "mint": "http://cashu-mint:3338",
                 "proofs": []
               }
             ]

@@ -54,6 +54,30 @@ services:
     depends_on:
       - bitcoind
 
+  cashu-mint:
+    container_name: cashu-mint
+    image: cashubtc/nutshell
+    ports:
+      - "3338:3338"
+    environment:
+      - MINT_LISTEN_HOST=0.0.0.0
+      - MINT_LISTEN_PORT=3338
+      - MINT_LIGHTNING_BACKEND=lnd
+      - MINT_LND_REST_HOST=lndnode
+      - MINT_LND_REST_PORT=8080
+      - MINT_LND_REST_MACAROON_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - MINT_LND_REST_CERT_PATH=/root/.lnd/tls.cert
+      - MINT_DERIVATION_PATH=0/0/0/0
+      - MINT_PRIVATE_KEY=${ROOT_KEY}
+      - MINT_CURRENCY=sat
+      - MINT_AMOUNT=1000
+    volumes:
+      - lndnode-data:/root/.lnd:ro
+      - cashu-mint-data:/data
+    restart: unless-stopped
+    depends_on:
+      - lndnode
+
   nginx-lnurl:
     container_name: nginx-lnurl
     build:
@@ -95,6 +119,7 @@ services:
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode:10009
+      - CASHU_MINT_ADDRESS=cashu-mint:3338
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_wallet.db
       - CASHU_REDEEM_ON_LIGHTNING=true
