@@ -129,6 +129,7 @@ services:
       - cashu-data:/app/data:rw
     depends_on:
       - lndnode
+      - cashu-mint
 
 volumes:
   bitcoin_data:
