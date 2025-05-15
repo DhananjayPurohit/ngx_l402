@@ -226,6 +226,7 @@ jobs:
 
       - name: Run Integration Tests - LND
         run: |
+          docker ps -a
           docker logs nginx-lnd
           docker logs cashu-mint
           echo "Testing with LND configuration..."
