@@ -310,6 +310,8 @@ jobs:
           echo "MINT_URL=http://0.0.0.0:3338" > .env
           echo "TOR=FALSE" >> .env
           
+          docker logs cashu-mint
+
           # Check wallet info
           echo "Checking wallet info..."
           cashu info
@@ -317,8 +319,6 @@ jobs:
           # Check initial balance
           echo "Checking initial balance..."
           cashu balance
-
-          docker logs cashu-mint
           
           # Generate a Lightning invoice and mint tokens
           echo "Generating Lightning invoice and minting tokens..."
