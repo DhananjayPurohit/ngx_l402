@@ -109,7 +109,7 @@ services:
       - LND_ADDRESS=lndnode:10009
       - CASHU_MINT_ADDRESS=cashu-mint:3338
       - CASHU_ECASH_SUPPORT=true
-      - CASHU_DB_PATH=/app/data/cashu_wallet.db
+      - CASHU_DB_PATH=/app/data/cashu_wallet.redb
       - CASHU_REDEEM_ON_LIGHTNING=true
       - CASHU_REDEMPTION_INTERVAL_SECS=90
     volumes:

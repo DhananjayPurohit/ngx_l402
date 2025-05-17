@@ -443,7 +443,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         println!("Cashu eCash support is enabled");
 
         // Initialize Cashu database
-        let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.db".to_string());
+        let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.redb".to_string());
         ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DB_PATH: '{}'", db_path);
 
         match cashu::initialize_cashu(&db_path) {

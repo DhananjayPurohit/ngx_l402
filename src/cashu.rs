@@ -8,6 +8,8 @@ use tokio::runtime::Runtime;
 use l402_middleware::lnclient;
 use tonic_openssl_lnd::lnrpc;
 use cdk::cdk_database::WalletDatabase;
+use std::path::Path;
+use bip39::Mnemonic;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -17,7 +19,7 @@ thread_local! {
 const MSAT_PER_SAT: u64 = 1000;
 
 // Database singleton
-static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
+static CASHU_DB: OnceLock<Arc<cdk_redb::wallet::WalletRedbDatabase>> = OnceLock::new();
 
 pub fn initialize_cashu(db_path: &str) -> Result<(), String> {
     // Initialize PROCESSED_TOKENS with empty HashSet
@@ -30,7 +32,7 @@ pub fn initialize_cashu(db_path: &str) -> Result<(), String> {
     
     // Initialize database
     rt.block_on(async {
-        match cdk_sqlite::WalletSqliteDatabase::new(db_path).await {
+        match cdk_redb::wallet::WalletRedbDatabase::new(Path::new(db_path)) {
             Ok(db) => {
                 println!("Cashu database initialized successfully");
                 let _ = CASHU_DB.set(Arc::new(db));
@@ -141,29 +143,31 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         .ok_or_else(|| "Cashu database not initialized".to_string())?
         .clone();
     
-    // Get mint URLs from database
+     // Get mint URLs from database
     let mint_urls_map = db.get_mints().await
         .map_err(|e| format!("Failed to get mint URLs: {}", e))?;
-    
+
+    let mnemonic = Mnemonic::generate(12).unwrap();
+
+    let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
+        db,
+        Arc::new(mnemonic.to_seed_normalized("")),
+        vec![],
+    );
+
+    println!("Mint wallets: {:?}", multi_mint_wallet);
+
     // Create wallets for each mint URL
-    let mut wallets = Vec::new();
     for (mint_url, _mint_info) in mint_urls_map {
-        let seed = rand::rng().random::<[u8; 32]>();
 
         // Keeping this as Sat for now but a wallet can hold any unit
         let unit = cdk::nuts::CurrencyUnit::Sat;
-        
-        match cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), &seed, None) {
-            Ok(wallet) => wallets.push(wallet),
-            Err(e) => eprintln!("Failed to create wallet for {}: {}", mint_url, e),
-        }
+
+        multi_mint_wallet
+            .create_and_add_wallet(&mint_url.to_string(), unit, None)
+            .await
+            .map_err(|e| format!("Failed to create wallet for {}: {}", mint_url, e))?;
     }
-    
-    let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
-        db,
-        Arc::new(rand::rng().random::<[u8; 32]>()),
-        wallets,
-    );
 
     let mut total_redeemed = 0;
     let mut total_amount_redeemed_msat = 0;

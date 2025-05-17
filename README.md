@@ -67,7 +67,7 @@ Environment=ROOT_KEY=your-root-key
 
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
-Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.db
+Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.redb
 # Optional: Enable automatic redemption of Cashu tokens to Lightning (default: false)
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
@@ -84,8 +84,8 @@ sudo systemctl restart nginx
 
 6. (Only if accepting Cashu tokens) Provide permission to the Nginx user to access the Cashu database:
 ```bash
-sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.db
-sudo chmod 660 /var/lib/nginx/cashu_wallet.db
+sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.redb
+sudo chmod 660 /var/lib/nginx/cashu_wallet.redb
 ```
 
 ## Building from Source
