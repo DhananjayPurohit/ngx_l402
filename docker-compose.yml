@@ -107,7 +107,7 @@ services:
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode:10009
-      - CASHU_MINT_ADDRESS=cashu-mint:3338
+      - CASHU_MINT_ADDRESS=mint.cashu-mint:3338
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_wallet.redb
       - CASHU_REDEEM_ON_LIGHTNING=true
