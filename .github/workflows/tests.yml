@@ -307,23 +307,23 @@ jobs:
           
           # Check wallet info
           echo "Checking wallet info..."
-          docker exec cashu-mint cashu info
+          docker exec cashu-mint python -m cashu info
           
           # Check initial balance
           echo "Checking initial balance..."
-          docker exec cashu-mint cashu balance
+          docker exec cashu-mint python -m cashu balance
           
           # Generate a Lightning invoice and mint tokens
           echo "Generating Lightning invoice and minting tokens..."
-          docker exec cashu-mint cashu invoice 10
+          docker exec cashu-mint python -m cashu invoice 10
           
           # Check balance after minting
           echo "Checking balance after minting..."
-          docker exec cashu-mint cashu balance
+          docker exec cashu-mint python -m cashu balance
           
           # Get token from wallet
           echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(docker exec cashu-mint cashu send 10)
+          CASHU_TOKEN=$(docker exec cashu-mint python -m cashu send 10)
           
           echo "Cashu token: $CASHU_TOKEN"
 
@@ -363,8 +363,8 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          docker exec cashu-mint cashu invoice 1
-          INVALID_CASHU_TOKEN=$(docker exec cashu-mint cashu send 1)
+          docker exec cashu-mint python -m cashu invoice 1
+          INVALID_CASHU_TOKEN=$(docker exec cashu-mint python -m cashu send 1)
 
           sleep 5
           
