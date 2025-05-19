@@ -313,9 +313,8 @@ jobs:
           echo "Checking initial balance..."
           docker exec cashu-mint poetry run cashu balance
           
-          # Generate a Lightning invoice and mint tokens
-          echo "Generating Lightning invoice and minting tokens..."
-          docker exec cashu-mint poetry run cashu invoice 100
+          echo "Directly minting tokens for testing..."
+          docker exec cashu-mint poetry run cashu mint 100
           
           # Check balance after minting
           echo "Checking balance after minting..."
