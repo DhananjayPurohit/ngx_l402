@@ -313,8 +313,42 @@ jobs:
           echo "Checking initial balance..."
           docker exec cashu-mint poetry run cashu balance
           
-          echo "Directly minting tokens for testing..."
-          docker exec cashu-mint poetry run cashu mint 100
+          # Generate a Lightning invoice and mint tokens
+          echo "Generating Lightning invoice and minting tokens..."
+          invoice_output=$(docker exec cashu-mint poetry run cashu invoice 100)
+          echo "$invoice_output"
+          
+          # Extract the ID from the invoice output
+          invoice_id=$(echo "$invoice_output" | grep -o 'ID: [^ ]*' | cut -d' ' -f2)
+          echo "Invoice ID: $invoice_id"          
+
+          # Wait for the invoice to be paid
+          echo "Waiting for the invoice to be paid..."
+          max_attempts=3
+          attempt=0
+          invoice_paid=false
+          
+          while [ $attempt -lt $max_attempts ] && [ "$invoice_paid" = false ]; do
+            # Check if the invoice has been paid using the invoice ID
+            invoice_status=$(docker exec cashu-mint poetry run cashu invoice 100 --id $invoice_id)
+            echo "Invoice status: $invoice_status"
+            
+            # If the status indicates the invoice has been paid
+            if echo "$invoice_status" | grep -q "paid: true"; then
+              echo "Invoice has been paid successfully!"
+              invoice_paid=true
+            else
+              echo "Invoice not paid yet. Waiting... (Attempt $((attempt+1))/$max_attempts)"
+              sleep 2
+              attempt=$((attempt+1))
+            fi
+          done
+          
+          if [ "$invoice_paid" = false ]; then
+            echo "Error: Invoice payment timed out after $max_attempts attempts"
+            docker logs cashu-mint
+            exit 1
+          fi
           
           # Check balance after minting
           echo "Checking balance after minting..."
