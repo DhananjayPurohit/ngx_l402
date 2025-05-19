@@ -319,7 +319,7 @@ jobs:
           echo "$invoice_output"
           
           # Extract the ID from the invoice output
-          invoice_id=$(echo "$invoice_output" | grep -o 'ID: [^ ]*' | cut -d' ' -f2)
+          invoice_id=$(echo "$invoice_output" | grep -oP '(?<=--id\s)[\w\-]+')
           echo "Invoice ID: $invoice_id"          
 
           # Wait for the invoice to be paid
