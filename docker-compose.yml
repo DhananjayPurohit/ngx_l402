@@ -68,6 +68,8 @@ services:
       - MINT_LND_RPC_CERT=/root/.lnd/tls.cert
       - MINT_LND_RPC_MACAROON=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
     command: ["poetry", "run", "mint"]
+    volumes:
+      - lndnode-data:/root/.lnd:rw
 
   nginx-lnurl:
     container_name: nginx-lnurl
