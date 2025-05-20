@@ -318,9 +318,23 @@ jobs:
           invoice_output=$(docker exec cashu-mint poetry run cashu invoice 100)
           echo "$invoice_output"
           
-          # Extract the ID from the invoice output
-          invoice_id=$(echo "$invoice_output" | grep -oP '(?<=--id\s)[\w\-]+')
-          echo "Invoice ID: $invoice_id"          
+          # Extract the invoice from the output
+          invoice=$(echo "$invoice_output" | grep -oP '(?<=Invoice: )lnbc[a-zA-Z0-9]+')
+          echo "Lightning Invoice: $invoice"
+          
+          # Pay the invoice using lndnode
+          echo "Paying the invoice using lndnode..."
+          payment_output=$(docker exec lndnode lncli -n=regtest payinvoice --force --json "$invoice")
+          echo "$payment_output"
+          
+          # Verify payment status
+          payment_status=$(docker exec lndnode lncli --network=regtest listpayments --json | grep -o '"status":"SUCCEEDED"')
+          if [ -z "$payment_status" ]; then
+            echo "Error: Failed to pay the invoice"
+            docker logs lndnode
+            exit 1
+          fi
+          echo "Invoice paid successfully!"
 
           # Wait for the invoice to be paid
           echo "Waiting for the invoice to be paid..."

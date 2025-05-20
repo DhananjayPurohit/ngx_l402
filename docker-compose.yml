@@ -60,10 +60,13 @@ services:
     ports:
       - "3338:3338"
     environment:
-      - MINT_BACKEND_BOLT11_SAT=FakeWallet
       - MINT_LISTEN_HOST=0.0.0.0
       - MINT_LISTEN_PORT=3338
       - MINT_PRIVATE_KEY=${ROOT_KEY}
+      - MINT_BACKEND_BOLT11_SAT=LndRPCWallet
+      - MINT_LND_RPC_ENDPOINT=lndnode:10009
+      - MINT_LND_RPC_CERT=/root/.lnd/tls.cert
+      - MINT_LND_RPC_MACAROON=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
     command: ["poetry", "run", "mint"]
 
   nginx-lnurl:
