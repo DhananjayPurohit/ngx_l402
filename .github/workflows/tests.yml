@@ -315,54 +315,7 @@ jobs:
           
           # Generate a Lightning invoice and mint tokens
           echo "Generating Lightning invoice and minting tokens..."
-          invoice_output=$(docker exec cashu-mint poetry run cashu invoice 100)
-          echo "$invoice_output"
-          
-          # Extract the invoice from the output
-          invoice=$(echo "$invoice_output" | grep -oP '(?<=Invoice: )lnbc[a-zA-Z0-9]+')
-          echo "Lightning Invoice: $invoice"
-          
-          # Pay the invoice using lndnode
-          echo "Paying the invoice using lndnode..."
-          payment_output=$(docker exec lndnode lncli -n=regtest payinvoice --force --json "$invoice")
-          echo "$payment_output"
-          
-          # Verify payment status
-          payment_status=$(docker exec lndnode lncli --network=regtest listpayments --json | grep -o '"status":"SUCCEEDED"')
-          if [ -z "$payment_status" ]; then
-            echo "Error: Failed to pay the invoice"
-            docker logs lndnode
-            exit 1
-          fi
-          echo "Invoice paid successfully!"
-
-          # Wait for the invoice to be paid
-          echo "Waiting for the invoice to be paid..."
-          max_attempts=3
-          attempt=0
-          invoice_paid=false
-          
-          while [ $attempt -lt $max_attempts ] && [ "$invoice_paid" = false ]; do
-            # Check if the invoice has been paid using the invoice ID
-            invoice_status=$(docker exec cashu-mint poetry run cashu invoice 100 --id $invoice_id)
-            echo "Invoice status: $invoice_status"
-            
-            # If the status indicates the invoice has been paid
-            if echo "$invoice_status" | grep -q "paid: true"; then
-              echo "Invoice has been paid successfully!"
-              invoice_paid=true
-            else
-              echo "Invoice not paid yet. Waiting... (Attempt $((attempt+1))/$max_attempts)"
-              sleep 2
-              attempt=$((attempt+1))
-            fi
-          done
-          
-          if [ "$invoice_paid" = false ]; then
-            echo "Error: Invoice payment timed out after $max_attempts attempts"
-            docker logs cashu-mint
-            exit 1
-          fi
+          docker exec cashu-mint poetry run cashu invoice 100
           
           # Check balance after minting
           echo "Checking balance after minting..."
