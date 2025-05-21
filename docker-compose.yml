@@ -55,7 +55,7 @@ services:
 
   cashu-mint:
     container_name: cashu-mint
-    image: cashubtc/nutshell:0.16.5
+    image: cashubtc/nutshell:0.17.0
     ports:
       - "3338:3338"
     environment:
@@ -63,7 +63,7 @@ services:
       - MINT_LISTEN_PORT=3338
       - MINT_PRIVATE_KEY=${ROOT_KEY}
       - MINT_BACKEND_BOLT11_SAT=FakeWallet
-      - MINT_URL=https://testnut.cashu.space
+      - MINT_URL=http://0.0.0.0:3338
     command: ["poetry", "run", "mint"]
 
   nginx-lnurl:
