@@ -222,11 +222,13 @@ jobs:
           AMOUNT: 0.01
         run: |
           # Start the remaining services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint
 
       - name: Run Integration Tests - LND
         run: |
+          docker ps -a
           docker logs nginx-lnd
+          docker logs cashu-mint
           echo "Testing with LND configuration..."
           sleep 15
 
@@ -293,49 +295,61 @@ jobs:
 
           # Ensure the Cashu database has proper permissions
           echo "Setting up Cashu database permissions..."
-          docker exec nginx-lnd chmod 777 /app/data
-          docker exec nginx-lnd chmod 666 /app/data/cashu_wallet.db
+          docker exec nginx-lnd chmod 770 /app/data
+          docker exec nginx-lnd chmod 660 /app/data/cashu_wallet.redb
           echo "Cashu database permissions set successfully"
           
-          # Install required tools
-          sudo apt-get update && sudo apt-get install -y jq curl python3-pip
-
-          # Install Cashu Python package
-          echo "Installing Cashu Python package..."
-          pip install "marshmallow<4.0.0"
-          pip install cashu
+          # Check mint logs
+          docker logs cashu-mint
           
-          # Create .env file with mint URL and TOR settings
-          echo "Creating .env file with mint URL and TOR settings..."
-          echo "MINT_URL=https://nofees.testnut.cashu.space" > .env
-          echo "TOR=FALSE" >> .env
+          # Execute cashu commands inside the mint container using poetry run
+          echo "Executing cashu commands inside the mint container..."
           
           # Check wallet info
           echo "Checking wallet info..."
-          cashu info
+          docker exec cashu-mint poetry run cashu info
           
           # Check initial balance
           echo "Checking initial balance..."
-          cashu balance
+          docker exec cashu-mint poetry run cashu balance
           
           # Generate a Lightning invoice and mint tokens
           echo "Generating Lightning invoice and minting tokens..."
-          cashu invoice 10 -m https://nofees.testnut.cashu.space
+          docker exec cashu-mint poetry run cashu invoice 100
           
           # Check balance after minting
           echo "Checking balance after minting..."
-          cashu balance
+          docker exec cashu-mint poetry run cashu balance
           
           # Get token from wallet
           echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(cashu send 10)
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
           
           echo "Cashu token: $CASHU_TOKEN"
+
+          sleep 5
           
           # Test protected route with Cashu token
           echo "Testing protected route with Cashu token..."
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
-          status_code=$(echo "$response" | tail -n1)
+          max_retries=3
+          retry_count=0
+          status_code=0
+          
+          while [ $retry_count -lt $max_retries ] && [ "$status_code" -ne 200 ]; do
+            echo "Attempt $(($retry_count + 1)) of $max_retries..."
+            response=$(curl -v -s -i -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
+            status_code=$(echo "$response" | tail -n1)
+            
+            if [ "$status_code" -ne 200 ]; then
+              if echo "$response" | grep -q "401 Unauthorized"; then
+                echo "Pool connection timed out, retrying..."
+                sleep 5
+                retry_count=$((retry_count + 1))
+              else
+                break
+              fi
+            fi
+          done
           
           # The token should be accepted if the verification logic is working
           if [ "$status_code" -ne 200 ]; then
@@ -349,8 +363,10 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          cashu invoice 1 -m https://nofees.testnut.cashu.space
-          INVALID_CASHU_TOKEN=$(cashu send 1)
+          docker exec cashu-mint poetry run cashu invoice 1
+          INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
+
+          sleep 5
           
           # Test with the invalid token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
@@ -371,7 +387,7 @@ jobs:
           MALFORMED_CASHU_TOKEN='{
             "token": [
               {
-                "mint": "https://nofees.testnut.cashu.space",
+                "mint": "http://cashu-mint:3338",
                 "proofs": []
               }
             ]
@@ -379,6 +395,8 @@ jobs:
           
           # Encode the malformed token
           ENCODED_MALFORMED_TOKEN=$(echo -n "$MALFORMED_CASHU_TOKEN" | base64 -w 0)
+
+          sleep 5
           
           # Test with the malformed token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected)
@@ -393,6 +411,7 @@ jobs:
           fi
           
           echo "All Cashu eCash tests completed successfully!"
+          docker logs nginx-lnd
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')

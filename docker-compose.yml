@@ -18,7 +18,6 @@ services:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
     container_name: lndnode
     user: root
-    hostname: lnd
     entrypoint: 
       - sh
       - -c
@@ -53,6 +52,19 @@ services:
     command: [ '/init-wallet-k8s.sh' ]
     depends_on:
       - bitcoind
+
+  cashu-mint:
+    container_name: cashu-mint
+    image: cashubtc/nutshell:0.17.0
+    ports:
+      - "3338:3338"
+    environment:
+      - MINT_LISTEN_HOST=0.0.0.0
+      - MINT_LISTEN_PORT=3338
+      - MINT_PRIVATE_KEY=${ROOT_KEY}
+      - MINT_BACKEND_BOLT11_SAT=FakeWallet
+      - MINT_URL=https://testnut.cashu.space
+    command: ["poetry", "run", "mint"]
 
   nginx-lnurl:
     container_name: nginx-lnurl
@@ -96,12 +108,15 @@ services:
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode:10009
       - CASHU_ECASH_SUPPORT=true
-      - CASHU_DB_PATH=/app/data/cashu_wallet.db
+      - CASHU_DB_PATH=/app/data/cashu_wallet.redb
+      - CASHU_REDEEM_ON_LIGHTNING=true
+      - CASHU_REDEMPTION_INTERVAL_SECS=90
     volumes:
       - lndnode-data:/root/.lnd:rw
       - cashu-data:/app/data:rw
     depends_on:
       - lndnode
+      - cashu-mint
 
 volumes:
   bitcoin_data:
