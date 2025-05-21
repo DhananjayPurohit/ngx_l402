@@ -63,7 +63,7 @@ services:
       - MINT_LISTEN_PORT=3338
       - MINT_PRIVATE_KEY=${ROOT_KEY}
       - MINT_BACKEND_BOLT11_SAT=FakeWallet
-      - MINT_URL=http://0.0.0.0:3338
+      - MINT_URL=cashu-mint:3338
     command: ["poetry", "run", "mint"]
 
   nginx-lnurl:
