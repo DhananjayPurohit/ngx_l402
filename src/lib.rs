@@ -238,7 +238,7 @@ pub static mut ngx_http_l402_module: ngx_module_t = ngx_module_t {
     name: std::ptr::null_mut(),
     spare0: 0,
     spare1: 0,
-    version: 1027003 as ngx_uint_t,
+    version: 1028000 as ngx_uint_t,
     signature: NGX_RS_MODULE_SIGNATURE.as_ptr() as *const c_char,
 
     ctx: &NGX_HTTP_L402_MODULE_CTX as *const _ as *mut c_void,

@@ -416,7 +416,8 @@ jobs:
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          tar -czf libngx_l402_lib.tar.gz target/release/libngx_l402_lib.so
-          gh release create ${GITHUB_REF#refs/tags/} libngx_l402_lib.tar.gz
+          VERSION=${GITHUB_REF#refs/tags/v}
+          tar -czf ngx_l402-${VERSION}.tar.gz target/release/libngx_l402_lib.so
+          gh release create ${GITHUB_REF#refs/tags/} ngx_l402-${VERSION}.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
