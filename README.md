@@ -2,6 +2,8 @@
 
 An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Network URL (LNURL), and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
 
+![L402 module demo](https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9)
+
 ```mermaid
 graph TD;
     A[Request Received] --> B{Endpoint L402 Enabled?}
@@ -22,6 +24,8 @@ graph TD;
 ```
 
 ## Installation & Usage
+
+> **Note**: This module requires **NGINX version 1.28.0** or later. Earlier versions will cause module version mismatch errors.
 
 1. Download the module file `libngx_l402_lib.so` from the [latest release](https://github.com/DhananjayPurohit/ngx_l402/releases/latest) and copy it to your Nginx modules directory (typically `/etc/nginx/modules/`)
 
