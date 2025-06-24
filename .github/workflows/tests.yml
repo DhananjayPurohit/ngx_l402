@@ -141,12 +141,9 @@ jobs:
           sleep 5
 
           docker logs cln
-          NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')
-          echo "Extracted NWC URI: $NWC_URI"
+          echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
 
       - name: Start NWC service
-        env:
-          NWC_URI: $NWC_URI
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps nginx-nwc
 
