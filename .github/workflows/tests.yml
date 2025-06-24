@@ -137,7 +137,7 @@ jobs:
 
       - name: Start cln
         run: |
-          docker-compose -f docker-compose.yml up -d cln
+          docker-compose -f docker-compose.yml up -d --no-deps cln
 
           docker logs cln
           NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')
@@ -147,7 +147,7 @@ jobs:
         env:
           NWC_URI: $NWC_URI
         run: |
-          docker-compose -f docker-compose.yml up -d nginx-nwc
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-nwc
 
       - name: Run Integration Tests - NWC
         run: |
