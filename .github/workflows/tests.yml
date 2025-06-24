@@ -138,6 +138,7 @@ jobs:
       - name: Start cln
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps cln
+          sleep 5
 
           docker logs cln
           NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')

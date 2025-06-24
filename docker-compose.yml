@@ -61,7 +61,6 @@ services:
       - sh 
       - -c
       - |
-        mkdir -p /root/.lightning/regtest
         # Install NWC plugin
         if [ ! -f "/usr/local/libexec/c-lightning/plugins/cln-nip47" ]; then
           apt-get update && apt-get install -y wget
