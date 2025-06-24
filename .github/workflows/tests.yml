@@ -125,9 +125,17 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnurl
 
+      - name: Start cln
+        run: |
+          docker-compose -f docker-compose.yml up -d cln
+
+          docker logs cln
+          NWC_URI=$(docker exec -it cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')
+          echo "Extracted NWC URI: $NWC_URI"
+
       - name: Start NWC service
         env:
-          NWC_URI: ${{ secrets.NWC_URI }}
+          NWC_URI: $NWC_URI
         run: |
           docker-compose -f docker-compose.yml up -d nginx-nwc
 
@@ -202,7 +210,7 @@ jobs:
       - name: Verify Bitcoin daemon Service and create wallet
         run: |
           wallet_name="new_wallet"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name || docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
           address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
           echo "New Wallet Address: $address"
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address"
