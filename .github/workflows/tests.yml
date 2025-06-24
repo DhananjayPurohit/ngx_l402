@@ -130,7 +130,7 @@ jobs:
           docker-compose -f docker-compose.yml up -d cln
 
           docker logs cln
-          NWC_URI=$(docker exec -it cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')
+          NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')
           echo "Extracted NWC URI: $NWC_URI"
 
       - name: Start NWC service
