@@ -184,9 +184,9 @@ impl L402Module {
         let mut conn = redis_client.lock().expect("Failed to lock Redis client")
             .get_connection().expect("Failed to get Redis connection");
         
-        // Try to get price from Redis, fallback to default if not found
+        // Try to get price from Redis using the path as key
         let price: Option<i64> = conn.get(path).unwrap_or(None);
-        price.unwrap_or(1000) // Default 1000 msats if no price found
+        price.unwrap_or(0) // Return 0 if no price found, indicating no dynamic pricing
     }
 }
 
@@ -225,7 +225,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 3] = [
         post: std::ptr::null_mut(),
     },
     ngx_command_t {
-        name: ngx_string!("l402_amount_msat"),
+        name: ngx_string!("l402_amount_msat_default"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_amount_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,

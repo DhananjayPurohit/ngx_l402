@@ -44,7 +44,9 @@ location /protected {
     
     # l402 module directive:   
     l402 on;
-    l402_amount_msat    10000;
+    l402_amount_msat_default    10000;
+    # Note: Dynamic pricing is handled via Redis using the request path as key
+    # Example: SET /protected 15000 (sets price to 15000 msats for /protected endpoint)
 }
 ```
 
@@ -68,6 +70,9 @@ Environment=ROOT_KEY=your-root-key
 Environment=LN_CLIENT_TYPE=NWC
 Environment=NWC_URI=nostr+walletconnect://<pubkey>?relay=<relay_url>&secret=<secret>
 Environment=ROOT_KEY=your-root-key
+
+# To use redis to set price dynamically
+Environment=REDIS_URL=redis://127.0.0.1:6379
 
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
