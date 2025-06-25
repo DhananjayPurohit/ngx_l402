@@ -44,7 +44,9 @@ location /protected {
     
     # l402 module directive:   
     l402 on;
-    l402_amount_msat    10000;
+    l402_amount_msat_default    10000;
+    # Note: Dynamic pricing is handled via Redis using the request path as key
+    # Example: SET /protected 15000 (sets price to 15000 msats for /protected endpoint)
 }
 ```
 
@@ -69,6 +71,9 @@ Environment=LN_CLIENT_TYPE=NWC
 Environment=NWC_URI=nostr+walletconnect://<pubkey>?relay=<relay_url>&secret=<secret>
 Environment=ROOT_KEY=your-root-key
 
+# To use redis to set price dynamically
+Environment=REDIS_URL=redis://127.0.0.1:6379
+
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
 Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.redb
@@ -80,6 +85,7 @@ Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
 ```
 > **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
 
+> **Note**: The module supports dynamic pricing through Redis, allowing you to change endpoint prices in real-time without restarting Nginx. When Redis is configured, the module will check Redis for a price override before using the default price specified in the nginx configuration.
 
 5. Restart Nginx:
 ```bash

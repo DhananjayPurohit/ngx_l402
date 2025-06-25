@@ -18,11 +18,15 @@ use std::sync::Once;
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 use std::sync::OnceLock;
+use redis::Client as RedisClient;
+use redis::Commands;
+use std::sync::Mutex;
 
 mod cashu;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
+static REDIS_CLIENT: OnceLock<Mutex<RedisClient>> = OnceLock::new();
 
 pub struct L402Module {
     middleware: L402Middleware,
@@ -32,6 +36,14 @@ impl L402Module {
     pub async fn new() -> Self {
         println!("Creating new L402Module");
         
+        // Initialize Redis client
+        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        let redis_client = RedisClient::open(redis_url.clone())
+            .expect("Failed to create Redis client");
+        REDIS_CLIENT.set(Mutex::new(redis_client))
+            .expect("Failed to set Redis client");
+        println!("Connected to Redis at {}", redis_url);
+
         // Get environment variables
         let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
         println!("Using LN client type: {}", ln_client_type);
@@ -166,6 +178,16 @@ impl L402Module {
     pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
         cashu::verify_cashu_token(token, amount_msat).await
     }
+
+    pub fn get_dynamic_price(&self, path: &str) -> i64 {
+        let redis_client = REDIS_CLIENT.get().expect("Redis client not initialized");
+        let mut conn = redis_client.lock().expect("Failed to lock Redis client")
+            .get_connection().expect("Failed to get Redis connection");
+        
+        // Try to get price from Redis using the path as key
+        let price: Option<i64> = conn.get(path).unwrap_or(None);
+        price.unwrap_or(0) // Return 0 if no price found, indicating no dynamic pricing
+    }
 }
 
 impl HTTPModule for L402Module {
@@ -203,7 +225,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 3] = [
         post: std::ptr::null_mut(),
     },
     ngx_command_t {
-        name: ngx_string!("l402_amount_msat"),
+        name: ngx_string!("l402_amount_msat_default"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_amount_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
@@ -308,7 +330,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             return 500;
         }
 
-        (auth_header, uri, method, amount_msat)
+        (auth_header, uri.clone(), method, amount_msat)
     };
 
     let mut request_path = uri.clone();
@@ -319,12 +341,15 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
     let caveats = vec![format!("RequestPath = {}", request_path)];
 
-    let result = l402_access_handler(auth_header, uri, method, amount_msat, caveats.clone());
+    // Get dynamic price from Redis
+    let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+    let dynamic_amount = module.get_dynamic_price(&request_path);
+    let final_amount = if dynamic_amount > 0 { dynamic_amount } else { amount_msat };
+
+    let result = l402_access_handler(auth_header, uri, method, final_amount, caveats.clone());
     
     // Only set L402 header if result is 402
     if result == 402 {
-        let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
-        
         // Use a lazily initialized static runtime
         static RUNTIME: OnceLock<Runtime> = OnceLock::new();
         let rt = RUNTIME.get_or_init(|| {
@@ -336,7 +361,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         
         // Use block_on as getting better performance than spawn + channel
         let header_result = rt.block_on(async {
-            module.get_l402_header(caveats.clone(), amount_msat).await
+            module.get_l402_header(caveats.clone(), final_amount).await
         });
         
         match header_result {
