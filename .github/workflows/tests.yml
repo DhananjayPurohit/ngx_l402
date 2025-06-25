@@ -82,7 +82,7 @@ jobs:
             docker logs nginx-lnurl
             exit 1
           fi
-          
+
           # Check if WWW-Authenticate header is present
           if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
             echo "Error: WWW-Authenticate header is missing in the 402 response"
@@ -228,7 +228,7 @@ jobs:
           AMOUNT: 0.01
         run: |
           # Start the remaining services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
         run: |
@@ -261,6 +261,88 @@ jobs:
           # Check if WWW-Authenticate header is present
           if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
             echo "Error: WWW-Authenticate header is missing in the 402 response"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Extract and verify invoice amount
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header"
+            echo "$response"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+
+          # Decode invoice and check amount
+          decoded_amount=$(docker exec lndnode lncli -n regtest decodepayreq "$invoice" | jq -r '.num_msat')
+          if [ "$decoded_amount" != "10000" ]; then
+            echo "Error: Invoice amount is $decoded_amount msat, expected 10000 msat"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Test dynamic pricing by setting a new price in Redis
+          echo "Setting dynamic price to 15000 msat..."
+          docker exec redis redis-cli set /protected 15000
+
+          # Test protected route to get new invoice with dynamic price
+          echo "Testing protected route with dynamic price..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route with dynamic price returned status $status_code, expected 402"
+            # docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Extract and verify new invoice amount
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header for dynamic price"
+            echo "$response"
+            # docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Decode invoice and check dynamic amount
+          decoded_amount=$(docker exec lndnode lncli -n regtest decodepayreq "$invoice" | jq -r '.num_msat')
+          if [ "$decoded_amount" != "15000" ]; then
+            echo "Error: Dynamic invoice amount is $decoded_amount msat, expected 15000 msat"
+            echo "$response"
+            # docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Reset price back to default
+          echo "Resetting price back to default..."
+          docker exec redis redis-cli del /protected
+
+          # Test protected route to verify reset price
+          echo "Testing protected route with reset price..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route with reset price returned status $status_code, expected 402"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Extract and verify reset invoice amount
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header after reset"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Decode invoice and check reset amount
+          decoded_amount=$(docker exec lndnode lncli -n regtest decodepayreq "$invoice" | jq -r '.num_msat')
+          if [ "$decoded_amount" != "10000" ]; then
+            echo "Error: Reset invoice amount is $decoded_amount msat, expected 10000 msat"
             echo "$response"
             docker logs nginx-lnd
             exit 1

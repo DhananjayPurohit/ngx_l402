@@ -85,6 +85,7 @@ Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
 ```
 > **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
 
+> **Note**: The module supports dynamic pricing through Redis, allowing you to change endpoint prices in real-time without restarting Nginx. When Redis is configured, the module will check Redis for a price override before using the default price specified in the nginx configuration.
 
 5. Restart Nginx:
 ```bash

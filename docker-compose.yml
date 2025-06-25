@@ -14,6 +14,41 @@ services:
     volumes:
       - bitcoin_data:/root/.bitcoin
 
+  cln:
+    image: elementsproject/lightningd:v25.05
+    container_name: cln
+    user: root
+    entrypoint:
+      - sh 
+      - -c
+      - |
+        # Install NWC plugin
+        if [ ! -f "/usr/local/libexec/c-lightning/plugins/cln-nip47" ]; then
+          apt-get update && apt-get install -y wget
+          cd /tmp
+          wget -O nwc.tar.gz https://github.com/daywalker90/cln-nip47/releases/download/v0.1.3/cln-nip47-v0.1.3-x86_64-linux-gnu.tar.gz
+          tar xzf nwc.tar.gz
+          chmod +x cln-nip47
+          mv cln-nip47 /usr/local/libexec/c-lightning/plugins/cln-nip47
+        fi
+        lightningd \
+          --network=regtest \
+          --bitcoin-rpcconnect=bitcoind \
+          --bitcoin-rpcport=18443 \
+          --bitcoin-rpcuser=user \
+          --bitcoin-rpcpassword=pass \
+          --addr=cln:9835 \
+          --grpc-port=9996 \
+          --plugin=/usr/local/libexec/c-lightning/plugins/cln-nip47 \
+          --nip47-relays=wss://relay.damus.io
+    ports:
+      - "9835:9835"
+      - "9996:9996"
+    volumes:
+      - cln-data:/root/.lightning:rw
+    depends_on:
+      - bitcoind
+
   lndnode:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
     container_name: lndnode
@@ -105,6 +140,7 @@ services:
       - NWC_URI=${NWC_URI}
       - REDIS_URL=redis://redis:6379
     depends_on:
+      - cln
       - redis
   
   nginx-lnd:
@@ -139,4 +175,5 @@ volumes:
   bitcoin_data:
   lndnode-data:
   cashu-data:
+  cln-data:
   redis_data:
