@@ -126,6 +126,23 @@ services:
     depends_on:
       - redis
 
+  nginx-cln:
+    container_name: nginx-cln
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8000:8000"
+    environment:
+      - LN_CLIENT_TYPE=CLN
+      - CLN_LIGHTNING_DIR_PATH=/root/.lightning/lightning-rpc
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - cln
+      - redis
+
   nginx-nwc:
     container_name: nginx-nwc
     build:
