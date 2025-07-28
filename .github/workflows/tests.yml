@@ -221,6 +221,7 @@ jobs:
 
       - name: Run Integration Tests - CLN
         run: |
+          docker logs cln
           docker logs nginx-cln
           echo "Testing with CLN configuration..."
           sleep 15
@@ -283,9 +284,9 @@ jobs:
             exit 1
           fi
 
-      - name: Stop NWC service and CLN
+      - name: Stop CLN service and CLN node
         run: |
-          docker-compose -f docker-compose.yml stop nginx-nwc cln
+          docker-compose -f docker-compose.yml stop nginx-cln cln
 
       - name: Verify LND node
         run: |
