@@ -107,7 +107,7 @@ impl L402Module {
             },
             "CLN" => {
                 println!("Configuring CLN client");
-                let lightning_dir = std::env::var("CLN_LIGHTNING_RPC_FILE_PATH").unwrap_or_else(|_| "CLN_LIGHTNING_DIR_PATH".to_string());
+                let lightning_dir = std::env::var("CLN_LIGHTNING_RPC_FILE_PATH").unwrap_or_else(|_| "CLN_LIGHTNING_RPC_FILE_PATH".to_string());
                 println!("Using CLN LIGHTNING RPC FILE PATH: {}", lightning_dir);
                 lnclient::LNClientConfig {
                     ln_client_type,
