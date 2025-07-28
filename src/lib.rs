@@ -105,17 +105,17 @@ impl L402Module {
                         .to_vec(),
                 }
             },
-            "NWC" => {
+            "CLN" => {
                 println!("Configuring CLN client");
-                let uri = std::env::var("NWC_URI").unwrap_or_else(|_| "nwc_uri".to_string());
-                println!("Using NWC URI: {}", uri);
+                let lightning_dir = std::env::var("CLN_LIGHTNING_RPC_FILE_PATH").unwrap_or_else(|_| "CLN_LIGHTNING_DIR_PATH".to_string());
+                println!("Using CLN LIGHTNING RPC FILE PATH: {}", uri);
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: None,
                     lnurl_config: None,
-                    cln_config: None,
-                    nwc_config: Some(nwc::NWCOptions {
-                        uri,
+                    nwc_config: None,
+                    cln_config: Some(cln::CLNOptions {
+                        lightning_dir: env::var("CLN_LIGHTNING_RPC_FILE_PATH").expect("CLN_LIGHTNING_RPC_FILE_PATH not found in .env"),
                     }),
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
