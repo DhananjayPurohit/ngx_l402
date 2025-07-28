@@ -43,7 +43,7 @@ jobs:
         run: |
           sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
           sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose -f docker-compose.yml up -d bitcoind lndnode
+          docker-compose -f docker-compose.yml up -d bitcoind
 
       - name: Create env file
         run: |
@@ -135,9 +135,9 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress bcrt1pcngfxjdkf4r2h26k52dh5nunxg8m68uf4lkfhmfjvjj6agfkm5jqmftw4e 0.0001
           docker logs bitcoind
 
-      - name: Start cln
+      - name: Start cln and lndnode
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln
+          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode
           sleep 5
 
           docker logs cln
@@ -283,9 +283,9 @@ jobs:
             exit 1
           fi
 
-      - name: Stop NWC service
+      - name: Stop NWC service and CLN
         run: |
-          docker-compose -f docker-compose.yml stop nginx-nwc
+          docker-compose -f docker-compose.yml stop nginx-nwc cln
 
       - name: Verify LND node
         run: |
