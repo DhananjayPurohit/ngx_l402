@@ -139,6 +139,8 @@ services:
       - LN_CLIENT_TYPE=CLN
       - CLN_LIGHTNING_RPC_FILE_PATH=/root/.lightning/lightning-rpc
       - REDIS_URL=redis://redis:6379
+    volumes:
+      - cln-data:/root/.lightning:ro
     depends_on:
       - cln
       - redis
@@ -181,7 +183,7 @@ services:
       - CASHU_REDEMPTION_INTERVAL_SECS=90
       - REDIS_URL=redis://redis:6379
     volumes:
-      - lndnode-data:/root/.lnd:rw
+      - lndnode-data:/root/.lnd:ro
       - cashu-data:/app/data:rw
     depends_on:
       - lndnode
