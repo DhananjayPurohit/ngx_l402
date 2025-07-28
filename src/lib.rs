@@ -60,6 +60,7 @@ impl L402Module {
                         address,
                     }),
                     nwc_config: None,
+                    cln_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -79,6 +80,7 @@ impl L402Module {
                     }),
                     lnurl_config: None,
                     nwc_config: None,
+                    cln_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -93,6 +95,25 @@ impl L402Module {
                     ln_client_type,
                     lnd_config: None,
                     lnurl_config: None,
+                    cln_config: None,
+                    nwc_config: Some(nwc::NWCOptions {
+                        uri,
+                    }),
+                    root_key: std::env::var("ROOT_KEY")
+                        .unwrap_or_else(|_| "root_key".to_string())
+                        .as_bytes()
+                        .to_vec(),
+                }
+            },
+            "NWC" => {
+                println!("Configuring CLN client");
+                let uri = std::env::var("NWC_URI").unwrap_or_else(|_| "nwc_uri".to_string());
+                println!("Using NWC URI: {}", uri);
+                lnclient::LNClientConfig {
+                    ln_client_type,
+                    lnd_config: None,
+                    lnurl_config: None,
+                    cln_config: None,
                     nwc_config: Some(nwc::NWCOptions {
                         uri,
                     }),
@@ -113,6 +134,7 @@ impl L402Module {
                         address,
                     }),
                     nwc_config: None,
+                    cln_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()

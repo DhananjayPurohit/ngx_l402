@@ -137,7 +137,7 @@ services:
       - "8000:8000"
     environment:
       - LN_CLIENT_TYPE=CLN
-      - CLN_LIGHTNING_DIR_PATH=/root/.lightning/lightning-rpc
+      - CLN_LIGHTNING_RPC_FILE_PATH=/root/.lightning/lightning-rpc
       - REDIS_URL=redis://redis:6379
     depends_on:
       - cln

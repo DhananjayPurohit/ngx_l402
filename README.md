@@ -68,7 +68,7 @@ Environment=CERT_FILE_PATH=/path/to/cert
 Environment=ROOT_KEY=your-root-key
 # if using CLN:
 Environment=LN_CLIENT_TYPE=CLN
-Environment=CLN_LIGHTNING_DIR_PATH=/path/to/lightning-rpc
+Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
 Environment=ROOT_KEY=your-root-key
 # if using NWC (supports NIP47 NWC URIs only):
 Environment=LN_CLIENT_TYPE=NWC
