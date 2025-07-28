@@ -236,24 +236,6 @@ jobs:
             exit 1
           fi
 
-          # Test protected route without header
-          echo "Testing protected route without header..."
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 60 -L http://0.0.0.0:8000/protected)
-          status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 402 ]; then
-            echo "Error: Protected route without header returned status $status_code, expected 402"
-            docker logs nginx-cln
-            exit 1
-          fi
-          
-          # Check if WWW-Authenticate header is present
-          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
-            echo "Error: WWW-Authenticate header is missing in the 402 response"
-            echo "$response"
-            docker logs nginx-cln
-            exit 1
-          fi
-
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
@@ -280,6 +262,24 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
+            docker logs nginx-cln
+            exit 1
+          fi
+
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 60 -L http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx-cln
+            exit 1
+          fi
+          
+          # Check if WWW-Authenticate header is present
+          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
+            echo "Error: WWW-Authenticate header is missing in the 402 response"
+            echo "$response"
             docker logs nginx-cln
             exit 1
           fi
