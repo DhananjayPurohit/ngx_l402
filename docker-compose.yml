@@ -128,6 +128,7 @@ services:
 
   nginx-cln:
     container_name: nginx-cln
+    user: root
     build:
       context: .
       dockerfile: Dockerfile
