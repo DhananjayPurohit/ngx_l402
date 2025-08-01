@@ -16,6 +16,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: full
+      RUST_LOG: debug
 
     steps:
       - name: Checkout code
