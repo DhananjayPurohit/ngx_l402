@@ -39,6 +39,7 @@ services:
           --bitcoin-rpcpassword=pass \
           --addr=cln:9835 \
           --grpc-port=9996 \
+          --rpc-file-mode=0666 \
           --plugin=/usr/local/libexec/c-lightning/plugins/cln-nip47 \
           --nip47-relays=wss://relay.damus.io
     ports:
