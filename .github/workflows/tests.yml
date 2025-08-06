@@ -230,6 +230,17 @@ jobs:
             sudo chmod 666 "${{ github.workspace }}/cln-socket/lightning-rpc"
           fi
           docker-compose -f docker-compose.yml up -d --no-deps nginx-cln
+          
+          # Fix permissions from within the nginx-cln container
+          sleep 5
+          docker exec nginx-cln chmod -R 777 /root/.lightning/regtest
+          if docker exec nginx-cln test -S /root/.lightning/regtest/lightning-rpc; then
+            docker exec nginx-cln chmod 666 /root/.lightning/regtest/lightning-rpc
+            echo "Socket permissions fixed from within container"
+          else
+            echo "Socket file not found in container, checking contents:"
+            docker exec nginx-cln ls -la /root/.lightning/regtest/
+          fi
 
       - name: Run Integration Tests - CLN
         run: |
