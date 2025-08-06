@@ -40,7 +40,6 @@ jobs:
 
       - name: Set up Docker Compose
         env:
-          ROOT_KEY: ${{ secrets.ROOT_KEY }}
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
@@ -52,7 +51,13 @@ jobs:
         run: |
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          echo CLN_SOCKET_DIR=${{ github.workspace }}/cln-socket >> .env
           cat .env
+      
+      - name: Prepare socket directory
+        run: |
+          mkdir -p ${{ github.workspace }}/cln-socket
+          chmod -R 777 ${{ github.workspace }}/cln-socket
 
       - name: Start LNURL service
         env:
@@ -300,9 +305,6 @@ jobs:
           docker logs lndnode
 
       - name: Start nginx containers for LND
-        env:
-          CURRENCY: USD
-          AMOUNT: 0.01
         run: |
           # Start the remaining services
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
