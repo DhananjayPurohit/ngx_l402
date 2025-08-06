@@ -229,6 +229,11 @@ jobs:
           echo "Testing with CLN configuration..."
           sleep 15
 
+          docker exec -it cln ls -l /root/.lightning/regtest/lightning-rpc
+          docker exec -it cln chmod 666 /root/.lightning/regtest/lightning-rpc
+          docker exec -it nginx-cln chmod 666 /root/.lightning/regtest/lightning-rpc
+          docker exec -it nginx-cln ls -l /root/.lightning/regtest/
+
           # Test free route
           echo "Testing free route..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/)
