@@ -224,6 +224,11 @@ jobs:
 
       - name: Start CLN service
         run: |
+          # Ensure socket permissions are correct before starting nginx-cln
+          sudo chmod -R 777 ${{ github.workspace }}/cln-socket
+          if [ -S "${{ github.workspace }}/cln-socket/lightning-rpc" ]; then
+            sudo chmod 666 "${{ github.workspace }}/cln-socket/lightning-rpc"
+          fi
           docker-compose -f docker-compose.yml up -d --no-deps nginx-cln
 
       - name: Run Integration Tests - CLN
@@ -232,7 +237,7 @@ jobs:
           echo "Testing with CLN configuration..."
           sleep 15
           docker logs nginx-cln
-          docker exec nginx-cln ls -l ${CLN_SOCKET_DIR}/lightning-rpc
+          docker exec nginx-cln ls -l /root/.lightning/regtest/lightning-rpc
 
           # Test free route
           echo "Testing free route..."
