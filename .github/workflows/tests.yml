@@ -19,6 +19,7 @@ jobs:
     env:
       RUST_BACKTRACE: full
       RUST_LOG: debug
+      CLN_SOCKET_DIR: ${{ github.workspace }}/cln-socket
 
     steps:
       - name: Checkout code
@@ -47,12 +48,10 @@ jobs:
           sudo chmod +x /usr/local/bin/docker-compose
           docker-compose -f docker-compose.yml up -d bitcoind
 
-      - name: Create env file
+      - name: Set env variables 
         run: |
-          touch .env
-          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
-          echo CLN_SOCKET_DIR=${{ github.workspace }}/cln-socket >> .env
-          cat .env
+          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> $GITHUB_ENV
+          echo "CLN_SOCKET_DIR=${{ github.workspace }}/cln-socket" >> $GITHUB_ENV
       
       - name: Prepare socket directory
         run: |
