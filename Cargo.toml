@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ngx = { git = "https://github.com/nginx/ngx-rust", branch = "master" }
-l402_middleware = "1.7.0"
+l402_middleware = "1.6.0"
 tokio = { version = "1.33.0", features = ["full"] }
 futures = "0.3"
 serde_json = "1.0"
