@@ -229,6 +229,10 @@ jobs:
           sleep 15
           docker logs nginx-cln
           docker exec nginx-cln ls -l /root/.lightning/regtest/lightning-rpc
+          docker exec -it nginx-cln apt update
+          docker exec -it nginx-cln apt install -y socat
+          docker exec -it nginx-cln socat - UNIX-CONNECT:/root/.lightning/regtest/lightning-rpc
+          docker exec -it nginx-cln lightning-cli --rpc-file=/root/.lightning/regtest/lightning-rpc getinfo
 
           # Test free route
           echo "Testing free route..."
