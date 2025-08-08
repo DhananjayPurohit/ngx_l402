@@ -40,7 +40,8 @@ services:
           --addr=cln:9835 \
           --grpc-port=9996 \
           --plugin=/usr/local/libexec/c-lightning/plugins/cln-nip47 \
-          --nip47-relays=wss://relay.damus.io
+          --nip47-relays=wss://relay.damus.io \
+          --rpc-file-mode=0666
     ports:
       - "9835:9835"
       - "9996:9996"
@@ -126,6 +127,33 @@ services:
     depends_on:
       - redis
 
+  nginx-cln:
+    container_name: nginx-cln
+    user: root
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8000:8000"
+    environment:
+      - LN_CLIENT_TYPE=CLN
+      - CLN_LIGHTNING_RPC_FILE_PATH=/root/.lightning/regtest/lightning-rpc
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - cln-data:/root/.lightning:rw
+    depends_on:
+      - cln
+      - redis
+    entrypoint: sh -c "
+      until [ -S /root/.lightning/regtest/lightning-rpc ]; do
+        echo 'Waiting for lightning-rpc...';
+        sleep 1;
+      done;
+      echo 'lightning-rpc found, starting nginx...';
+      exec nginx -g 'daemon off;'"
+
   nginx-nwc:
     container_name: nginx-nwc
     build:
@@ -164,7 +192,7 @@ services:
       - CASHU_REDEMPTION_INTERVAL_SECS=90
       - REDIS_URL=redis://redis:6379
     volumes:
-      - lndnode-data:/root/.lnd:rw
+      - lndnode-data:/root/.lnd:ro
       - cashu-data:/app/data:rw
     depends_on:
       - lndnode

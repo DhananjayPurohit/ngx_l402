@@ -1,6 +1,6 @@
 # L402 Nginx Module
 
-An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Network URL (LNURL), and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
+An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning Network URL (LNURL), and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
 
 ![L402 module demo](https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9)
 
@@ -65,6 +65,10 @@ Environment=LN_CLIENT_TYPE=LND
 Environment=LND_ADDRESS=https://your-lnd-server.com
 Environment=MACAROON_FILE_PATH=/path/to/macaroon
 Environment=CERT_FILE_PATH=/path/to/cert
+Environment=ROOT_KEY=your-root-key
+# if using CLN:
+Environment=LN_CLIENT_TYPE=CLN
+Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
 Environment=ROOT_KEY=your-root-key
 # if using NWC (supports NIP47 NWC URIs only):
 Environment=LN_CLIENT_TYPE=NWC

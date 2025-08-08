@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::os::raw::c_void;
 use std::ffi::c_char;
 use std::ptr::addr_of;
-use l402_middleware::{lnclient, lnurl, lnd, nwc, l402, utils, macaroon_util};
+use l402_middleware::{lnclient, lnurl, lnd, nwc, cln, l402, utils, macaroon_util};
 use std::ffi::CStr;
 use std::sync::Once;
 use tokio::runtime::Runtime;
@@ -60,6 +60,7 @@ impl L402Module {
                         address,
                     }),
                     nwc_config: None,
+                    cln_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -79,6 +80,7 @@ impl L402Module {
                     }),
                     lnurl_config: None,
                     nwc_config: None,
+                    cln_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -93,8 +95,27 @@ impl L402Module {
                     ln_client_type,
                     lnd_config: None,
                     lnurl_config: None,
+                    cln_config: None,
                     nwc_config: Some(nwc::NWCOptions {
                         uri,
+                    }),
+                    root_key: std::env::var("ROOT_KEY")
+                        .unwrap_or_else(|_| "root_key".to_string())
+                        .as_bytes()
+                        .to_vec(),
+                }
+            },
+            "CLN" => {
+                println!("Configuring CLN client");
+                let lightning_dir = std::env::var("CLN_LIGHTNING_RPC_FILE_PATH").unwrap_or_else(|_| "CLN_LIGHTNING_RPC_FILE_PATH".to_string());
+                println!("Using CLN LIGHTNING RPC FILE PATH: {}", lightning_dir);
+                lnclient::LNClientConfig {
+                    ln_client_type,
+                    lnd_config: None,
+                    lnurl_config: None,
+                    nwc_config: None,
+                    cln_config: Some(cln::CLNOptions {
+                        lightning_dir,
                     }),
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
@@ -113,6 +134,7 @@ impl L402Module {
                         address,
                     }),
                     nwc_config: None,
+                    cln_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
