@@ -41,7 +41,7 @@ services:
           --grpc-port=9996 \
           --plugin=/usr/local/libexec/c-lightning/plugins/cln-nip47 \
           --nip47-relays=wss://relay.damus.io \
-          --rpc-file-mode=0666
+          --rpc-file-mode=0660
     ports:
       - "9835:9835"
       - "9996:9996"
