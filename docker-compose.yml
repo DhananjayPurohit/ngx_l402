@@ -40,7 +40,8 @@ services:
           --addr=cln:9835 \
           --grpc-port=9996 \
           --plugin=/usr/local/libexec/c-lightning/plugins/cln-nip47 \
-          --nip47-relays=wss://relay.damus.io
+          --nip47-relays=wss://relay.damus.io \
+          --rpc-file-mode=0666
     ports:
       - "9835:9835"
       - "9996:9996"
@@ -145,6 +146,13 @@ services:
     depends_on:
       - cln
       - redis
+    entrypoint: sh -c "
+      until [ -S /root/.lightning/regtest/lightning-rpc ]; do
+        echo 'Waiting for lightning-rpc...';
+        sleep 1;
+      done;
+      echo 'lightning-rpc found, starting nginx...';
+      exec nginx -g 'daemon off;'"
 
   nginx-nwc:
     container_name: nginx-nwc
