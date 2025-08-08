@@ -229,7 +229,11 @@ jobs:
           echo "Testing with CLN configuration..."
           sleep 15
 
+          docker inspect nginx-cln
           docker exec cln ls -l /root/.lightning/regtest/lightning-rpc
+          docker exec cln ls -l /root/.lightning/regtest/
+          docker exec cln ls -l /root/.lightning/
+          docker exec cln ls -l /root/
           docker exec cln chmod 666 /root/.lightning/regtest/lightning-rpc
           docker exec nginx-cln chmod 666 /root/.lightning/regtest/lightning-rpc
           docker exec nginx-cln ls -l /root/.lightning/regtest/
