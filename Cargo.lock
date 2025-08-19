@@ -1824,9 +1824,9 @@ dependencies = [
 
 [[package]]
 name = "l402_middleware"
-version = "1.7.0"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8267c21e5ec35b1fa45d563348bba99f1e319aef44d36143065dc5f4474fe61f"
+checksum = "5d5df84ff353590361f9e5b14dc6efb7610bee22bd6b91f92f8c455659ee6543"
 dependencies = [
  "base64 0.21.7",
  "bitcoin 0.32.5",
@@ -2137,6 +2137,7 @@ dependencies = [
  "cdk-redb",
  "futures",
  "l402_middleware",
+ "macaroon",
  "ngx",
  "once_cell",
  "rand 0.9.0",
