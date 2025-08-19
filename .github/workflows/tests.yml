@@ -143,6 +143,26 @@ jobs:
           docker-compose -f docker-compose.yml up -d --no-deps cln lndnode
           sleep 5
 
+          # Get node info for both lightning nodes
+          echo "Getting CLN node info..."
+          cln_pubkey=$(docker exec cln lightning-cli --network=regtest getinfo | jq -r '.id')
+          echo "CLN pubkey: $cln_pubkey"
+
+          echo "Getting LND node info..."
+          lnd_pubkey=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
+          echo "LND pubkey: $lnd_pubkey"
+
+          # Connect nodes
+          echo "Connecting LND to CLN..."
+          docker exec lndnode lncli -n regtest connect $cln_pubkey@cln:9735
+
+          # Open channel from LND to CLN
+          echo "Opening channel from LND to CLN..."
+          docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000
+
+          # Generate blocks to confirm channel
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+
           docker logs cln
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
 
@@ -166,9 +186,9 @@ jobs:
             exit 1
           fi
 
-          # Test protected route without header
-          echo "Testing protected route without header..."
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 60 -L http://0.0.0.0:8000/protected)
+          # Test protected route with timeout without header
+          echo "Testing protected route with timeout without header..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 60 -L http://0.0.0.0:8000/protected-timeout)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route without header returned status $status_code, expected 402"
@@ -184,12 +204,49 @@ jobs:
             exit 1
           fi
 
-          # Test with valid L402 credentials
-          echo "Testing with valid L402 credentials..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
+          # Extract invoice from header
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header"
+            echo "$response"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Pay invoice using LND to get preimage
+          echo "Paying invoice through LND..."
+          payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice)
+          if ! echo "$payment_result" | grep -q '"status": "SUCCEEDED"'; then
+            echo "Error: Failed to pay invoice"
+            echo "$payment_result"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Extract preimage from payment result
+          preimage=$(echo "$payment_result" | jq -r '.payment_preimage')
+          macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+
+          # Test with obtained preimage immediately
+          echo "Testing protected route with valid preimage..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 $macaroon:$preimage" http://0.0.0.0:8000/protected-timeout)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
-            echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
+            echo "Error: Protected route with valid preimage returned status $status_code, expected 200"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Wait for macaroon to expire (10 seconds)
+          echo "Waiting for macaroon to expire..."
+          sleep 10
+
+          # Test with expired macaroon
+          echo "Testing protected route with expired macaroon..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 $macaroon:$preimage" http://0.0.0.0:8000/protected-timeout)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with expired macaroon returned status $status_code, expected 401"
             docker logs nginx-nwc
             exit 1
           fi

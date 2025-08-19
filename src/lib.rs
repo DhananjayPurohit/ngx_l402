@@ -188,12 +188,14 @@ impl L402Module {
             Ok((invoice, payment_hash)) => {
                 println!("invoice: {}", invoice);
 
-                // Add expiry time caveat
-                let expiry = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64 + timeout_secs;
-                caveats.push(format!("ExpiresAt = {}", expiry));
+                // Only add expiry time caveat if timeout_secs > 0
+                if timeout_secs > 0 {
+                    let expiry = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64 + timeout_secs;
+                    caveats.push(format!("ExpiresAt = {}", expiry));
+                }
                 
                 match macaroon_util::get_macaroon_as_string(payment_hash, caveats, self.middleware.root_key.clone()) {
                     Ok(macaroon_string) => {
