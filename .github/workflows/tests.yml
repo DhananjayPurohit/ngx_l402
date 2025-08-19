@@ -154,7 +154,7 @@ jobs:
 
           # Connect nodes
           echo "Connecting LND to CLN..."
-          docker exec lndnode lncli -n regtest connect $cln_pubkey@cln:9735
+          docker exec lndnode lncli -n regtest connect $cln_pubkey@0.0.0.0:9735
 
           # Open channel from LND to CLN
           echo "Opening channel from LND to CLN..."
