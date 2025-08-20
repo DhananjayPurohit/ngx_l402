@@ -223,6 +223,7 @@ jobs:
           echo "Pubkey: $identity_pubkey_lndnode"
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -generate 5
           docker logs lndnode
+          docker logs cln
 
           # Get node info for both lightning nodes
           echo "Getting CLN node info..."
@@ -233,9 +234,19 @@ jobs:
           lnd_pubkey=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           echo "LND pubkey: $lnd_pubkey"
 
+          # Generate a new address for LND node
+          address=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
+          echo "Generated address for LND: $address"
+
+          # Send 10 BTC to LND node
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$address" 10
+          
+          # Generate blocks to confirm the transaction
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+
           # Connect nodes
           echo "Connecting LND to CLN..."
-          docker exec lndnode lncli -n regtest connect $cln_pubkey@0.0.0.0:9735
+          docker exec lndnode lncli -n regtest connect $cln_pubkey@cln:9835
 
           # Open channel from LND to CLN
           echo "Opening channel from LND to CLN..."
