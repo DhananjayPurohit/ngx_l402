@@ -310,29 +310,17 @@ jobs:
           echo "Paying invoice through LND..."
           payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice 2>&1)
           echo "payment_result: $payment_result"
-          # Wait for payment to complete and extract preimage
-          max_attempts=30
-          attempt=1
-          while [ $attempt -le $max_attempts ]; do
-            payment_status=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1].status')
-            echo "Payment status (attempt $attempt): $payment_status"
-            
-            if [ "$payment_status" = "SUCCEEDED" ]; then
-              payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1]')
-              break
-            elif [ "$payment_status" = "FAILED" ]; then
-              echo "Error: Payment failed"
-              docker logs nginx-nwc
-              exit 1
-            fi
-            
-            echo "Waiting for payment to complete..."
-            sleep 1
-            attempt=$((attempt + 1))
-          done
-
-          if [ $attempt -gt $max_attempts ]; then
-            echo "Error: Payment timed out after $max_attempts attempts"
+          
+          # Wait a few seconds for payment to settle
+          echo "Waiting for payment to settle..."
+          sleep 5
+          
+          # Get payment result with preimage
+          payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1]')
+          payment_status=$(echo "$payment_result" | jq -r '.status')
+          
+          if [ "$payment_status" != "SUCCEEDED" ]; then
+            echo "Error: Payment failed or timed out"
             docker logs nginx-nwc
             exit 1
           fi
