@@ -308,7 +308,7 @@ jobs:
 
           # Pay invoice using LND to get preimage
           echo "Paying invoice through LND..."
-          payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice)
+          payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice 2>&1)
           echo "payment_result: $payment_result"
           if ! echo "$payment_result" | grep -q '"status": "SUCCEEDED"'; then
             echo "Error: Failed to pay invoice"
