@@ -304,6 +304,7 @@ jobs:
             docker logs nginx-nwc
             exit 1
           fi
+          echo "invoice: $invoice"
 
           # Pay invoice using LND to get preimage
           echo "Paying invoice through LND..."
