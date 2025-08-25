@@ -282,6 +282,7 @@ jobs:
           echo "Testing protected route with timeout without header..."
           response=$(curl -s -i -w "\n%{http_code}" --max-time 60 -L http://0.0.0.0:8000/protected-timeout)
           status_code=$(echo "$response" | tail -n1)
+          echo "status_code: $status_code"
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route without header returned status $status_code, expected 402"
             docker logs nginx-nwc
