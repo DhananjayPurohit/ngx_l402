@@ -309,6 +309,7 @@ jobs:
 
           # Pay invoice using LND to get preimage
           echo "Paying invoice through LND..."
+          docker logs lndnode
           payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice 2>&1)
           docker logs lndnode
           echo "payment_result: $payment_result"
