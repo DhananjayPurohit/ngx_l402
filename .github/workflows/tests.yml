@@ -266,7 +266,7 @@ jobs:
         run: |
           docker logs nginx-nwc
           echo "Testing with NWC configuration..."
-          sleep 15
+          sleep 20
 
           # Test free route
           echo "Testing free route..."
