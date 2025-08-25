@@ -319,6 +319,8 @@ jobs:
           # Get payment result with preimage
           payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1]')
           payment_status=$(echo "$payment_result" | jq -r '.status')
+          echo "payment_result: $payment_result"
+          echo "payment_status: $payment_status"
           
           if [ "$payment_status" != "SUCCEEDED" ]; then
             echo "Error: Payment failed or timed out"
