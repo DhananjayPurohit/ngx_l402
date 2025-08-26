@@ -46,7 +46,7 @@ services:
       - "9835:9835"
       - "9996:9996"
     volumes:
-      - cln-data:/root/.lightning:rw
+      - cln-data:/root/.lightning/regtest:rw
     depends_on:
       - bitcoind
 
@@ -123,7 +123,6 @@ services:
     environment:
       - LN_CLIENT_TYPE=LNURL
       - LNURL_ADDRESS=${LNURL_ADDRESS}
-      - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
 
@@ -140,9 +139,8 @@ services:
     environment:
       - LN_CLIENT_TYPE=CLN
       - CLN_LIGHTNING_RPC_FILE_PATH=/root/.lightning/regtest/lightning-rpc
-      - REDIS_URL=redis://redis:6379
     volumes:
-      - cln-data:/root/.lightning:rw
+      - cln-data:/root/.lightning/regtest:rw
     depends_on:
       - cln
       - redis
@@ -166,7 +164,6 @@ services:
     environment:
       - LN_CLIENT_TYPE=NWC
       - NWC_URI=${NWC_URI}
-      - REDIS_URL=redis://redis:6379
     depends_on:
       - cln
       - redis

@@ -21,6 +21,8 @@ use std::sync::OnceLock;
 use redis::Client as RedisClient;
 use redis::Commands;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+use macaroon::Verifier;
 
 mod cashu;
 
@@ -36,13 +38,21 @@ impl L402Module {
     pub async fn new() -> Self {
         println!("Creating new L402Module");
         
-        // Initialize Redis client
-        let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-        let redis_client = RedisClient::open(redis_url.clone())
-            .expect("Failed to create Redis client");
-        REDIS_CLIENT.set(Mutex::new(redis_client))
-            .expect("Failed to set Redis client");
-        println!("Connected to Redis at {}", redis_url);
+        // Initialize Redis client if URL is configured
+        if let Ok(redis_url) = std::env::var("REDIS_URL") {
+            match RedisClient::open(redis_url.clone()) {
+                Ok(redis_client) => {
+                    if let Ok(_) = REDIS_CLIENT.set(Mutex::new(redis_client)) {
+                        println!("Connected to Redis at {}", redis_url);
+                    } else {
+                        println!("Failed to set Redis client in OnceLock");
+                    }
+                },
+                Err(e) => println!("Failed to create Redis client: {}", e)
+            }
+        } else {
+            println!("No Redis URL configured, dynamic pricing disabled");
+        }
 
         // Get environment variables
         let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
@@ -161,7 +171,7 @@ impl L402Module {
         }
     }
 
-    pub async fn get_l402_header(&self, caveats: Vec<String>, amount_msat: i64) -> Option<String> {
+    pub async fn get_l402_header(&self, mut caveats: Vec<String>, amount_msat: i64, timeout_secs: i64) -> Option<String> {
         let ln_invoice = lnrpc::Invoice {
             value_msat: amount_msat,
             memo: l402::L402_HEADER.to_string(),
@@ -173,10 +183,19 @@ impl L402Module {
         };
 
         println!("invoice value: {}", amount_msat);
-        
+
         match ln_client_conn.generate_invoice(ln_invoice).await {
             Ok((invoice, payment_hash)) => {
                 println!("invoice: {}", invoice);
+
+                // Only add expiry time caveat if timeout_secs > 0
+                if timeout_secs > 0 {
+                    let expiry = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64 + timeout_secs;
+                    caveats.push(format!("ExpiresAt = {}", expiry));
+                }
                 
                 match macaroon_util::get_macaroon_as_string(payment_hash, caveats, self.middleware.root_key.clone()) {
                     Ok(macaroon_string) => {
@@ -202,13 +221,14 @@ impl L402Module {
     }
 
     pub fn get_dynamic_price(&self, path: &str) -> i64 {
-        let redis_client = REDIS_CLIENT.get().expect("Redis client not initialized");
-        let mut conn = redis_client.lock().expect("Failed to lock Redis client")
-            .get_connection().expect("Failed to get Redis connection");
-        
-        // Try to get price from Redis using the path as key
-        let price: Option<i64> = conn.get(path).unwrap_or(None);
-        price.unwrap_or(0) // Return 0 if no price found, indicating no dynamic pricing
+        if let Some(redis_client) = REDIS_CLIENT.get() {
+            if let Ok(mut conn) = redis_client.lock().expect("Failed to lock Redis client").get_connection() {
+                // Try to get price from Redis using the path as key
+                let price: Option<i64> = conn.get(path).unwrap_or(None);
+                return price.unwrap_or(0); // Return 0 if no price found
+            }
+        }
+        0 // Return 0 if Redis is not configured or connection fails
     }
 }
 
@@ -235,9 +255,10 @@ impl HTTPModule for L402Module {
 pub struct ModuleConfig {
     enable: bool,
     amount_msat: i64,
+    macaroon_timeout: i64,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 3] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 4] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -250,6 +271,14 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 3] = [
         name: ngx_string!("l402_amount_msat_default"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_amount_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_macaroon_timeout"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_l402_timeout_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -315,6 +344,9 @@ impl Merge for ModuleConfig {
         if prev.amount_msat > 0 && self.amount_msat == 0 {
             self.amount_msat = prev.amount_msat;
         }
+        if prev.macaroon_timeout > 0 && self.macaroon_timeout == 0 {
+            self.macaroon_timeout = prev.macaroon_timeout;
+        }
         Ok(())
     }
 }
@@ -324,7 +356,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let log_ref = log as *mut ngx_log_s;
     
     // Check if L402 is enabled for this location
-    let (auth_header, uri, method, amount_msat) = unsafe {
+    let (auth_header, uri, method, amount_msat, macaroon_timeout) = unsafe {
         let r = &mut *request;
         let auth_header = if !r.headers_in.authorization.is_null() {
             Some(CStr::from_ptr((*r.headers_in.authorization).value.data as *const i8)
@@ -352,7 +384,13 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             return 500;
         }
 
-        (auth_header, uri.clone(), method, amount_msat)
+        let macaroon_timeout = conf.macaroon_timeout;
+        if macaroon_timeout < 0 {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 macaroon_timeout is invalid");
+            return 500;
+        }
+
+        (auth_header, uri.clone(), method, amount_msat, macaroon_timeout)
     };
 
     let mut request_path = uri.clone();
@@ -383,7 +421,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         
         // Use block_on as getting better performance than spawn + channel
         let header_result = rt.block_on(async {
-            module.get_l402_header(caveats.clone(), final_amount).await
+            module.get_l402_header(caveats.clone(), final_amount, macaroon_timeout).await
         });
         
         match header_result {
@@ -447,7 +485,37 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
         } else {
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
-                    match l402::verify_l402(&mac, caveats.clone(), module.middleware.root_key.clone(), preimage) {
+                    
+                    // Check expiry using verifier
+                    let mut verifier = Verifier::default();
+                    verifier.satisfy_general(|predicate| {
+                        let predicate_str = match std::str::from_utf8(&predicate.0) {
+                            Ok(s) => s,
+                            Err(_) => return false,
+                        };
+                        if let Some(secs_str) = predicate_str.strip_prefix("ExpiresAt = ") {
+                            if let Ok(ts) = secs_str.parse::<i64>() {
+                                let current_time = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as i64)
+                                    .unwrap_or(0);
+                                let is_valid = current_time <= ts;
+                                return is_valid;
+                            }
+                        }
+                        // Return true for predicates we don't need to validate
+                        // This allows other predicates to pass through
+                        true
+                    });
+                    
+                    // Add exact caveats, ignoring ExpiresAt
+                    for caveat in caveats {
+                        if !caveat.starts_with("ExpiresAt = ") {
+                            verifier.satisfy_exact(caveat.into());
+                        }
+                    }
+
+                    match l402::verify_l402_with_verifier(&mac, &mut verifier, module.middleware.root_key.clone(), preimage) {
                         Ok(_) => {
                             println!("L402 verification successful");
                             return NGX_DECLINED.try_into().unwrap();
@@ -619,6 +687,32 @@ pub unsafe extern "C" fn ngx_http_l402_amount_set(
             },
             _ => {
                 println!("Invalid amount_msat value: {}", val);
+                return std::ptr::null_mut();
+            }
+        }
+    };
+
+    std::ptr::null_mut()
+}
+
+pub unsafe extern "C" fn ngx_http_l402_timeout_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args = (*(*cf).args).elts as *mut ngx_str_t;
+
+        let val = (*args.add(1)).to_str();
+
+        match val.parse::<i64>() {
+            Ok(timeout) if timeout > 0 => {
+                conf.macaroon_timeout = timeout;
+                println!("Set L402 macaroon timeout to {} seconds", timeout);
+            },
+            _ => {
+                println!("Invalid macaroon_timeout value: {}", val);
                 return std::ptr::null_mut();
             }
         }

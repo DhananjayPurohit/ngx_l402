@@ -47,6 +47,7 @@ location /protected {
     l402_amount_msat_default    10000;
     # Note: Dynamic pricing is handled via Redis using the request path as key
     # Example: SET /protected 15000 (sets price to 15000 msats for /protected endpoint)
+    l402_macaroon_timeout 3600;  # Macaroon validity in seconds, set to 0 to disable timeout
 }
 ```
 
