@@ -346,7 +346,7 @@ jobs:
 
           # Wait for macaroon to expire (10 seconds)
           echo "Waiting for macaroon to expire..."
-          sleep 10
+          sleep 15
 
           # Test with expired macaroon
           echo "Testing protected route with expired macaroon..."
