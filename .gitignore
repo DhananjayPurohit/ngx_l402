@@ -1,2 +1,4 @@
 /target
 .env
+/grpc-server/target
+/grpc-server/.env

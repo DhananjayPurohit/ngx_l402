@@ -196,6 +196,17 @@ services:
       - cashu-mint
       - redis
 
+  grpc-content-server:
+    container_name: grpc-content-server
+    build:
+      context: ./grpc-server
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+
 volumes:
   bitcoin_data:
   lndnode-data:
