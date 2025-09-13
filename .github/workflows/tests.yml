@@ -58,7 +58,7 @@ jobs:
         env:
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
         run: |
-          docker-compose -f docker-compose.yml up -d nginx-lnurl
+          docker-compose -f docker-compose.yml up -d nginx-lnurl grpc-content-server
 
       - name: Run Integration Tests - LNURL
         run: |
