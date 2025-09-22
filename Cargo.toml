@@ -24,6 +24,7 @@ redb = "2.4.0"
 bip39 = { version = "2.1.0", features = ["rand"] }
 redis = "0.32.2"
 macaroon = "0.3.0"
+log = "0.4"
 
 [features]
 default = []
