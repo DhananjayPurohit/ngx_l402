@@ -112,7 +112,10 @@ sudo chmod 660 /var/lib/nginx/cashu_wallet.redb
 
 ### View Logs
 ```bash
-# Nginx logs
+# Module initialization and system logs
+sudo journalctl -u nginx
+
+# Nginx error logs
 sudo tail -f /var/log/nginx/error.log
 
 # Docker logs
