@@ -708,9 +708,13 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
         let val = (*args.add(1)).to_str();
 
         match val.parse::<i64>() {
-            Ok(timeout) if timeout > 0 => {
+            Ok(timeout) if timeout >= 0 => {  // Allow 0 (no timeout)
                 conf.macaroon_timeout = timeout;
-                println!("Set L402 macaroon timeout to {} seconds", timeout);
+                if timeout == 0 {
+                    println!("Set L402 macaroon timeout to never expire (0)");
+                } else {
+                    println!("Set L402 macaroon timeout to {} seconds", timeout);
+                }
             },
             _ => {
                 println!("Invalid macaroon_timeout value: {}", val);
