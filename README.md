@@ -103,6 +103,20 @@ sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.redb
 sudo chmod 660 /var/lib/nginx/cashu_wallet.redb
 ```
 
+## Debugging and Monitoring
+
+To monitor the L402 module and troubleshoot issues, use these commands:
+
+### View Nginx Error Logs
+```bash
+sudo tail -f /var/log/nginx/error.log
+```
+
+### Check Nginx Service Status
+```bash
+sudo systemctl status nginx
+```
+
 ## Building from Source
 
 To build the module from source:

@@ -245,7 +245,7 @@ impl HTTPModule for L402Module {
         if h.is_null() {
             return NGX_ERROR as ngx_int_t;
         }
-        // set an access phase handler for l402
+        // set an access phase handler for l402 (after location matching and rewrite)
         *h = Some(l402_access_handler_wrapper);
         NGX_OK as ngx_int_t
     }
@@ -373,6 +373,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         // Get module config to check if L402 is enabled
         let loc_conf = (*r).loc_conf;
         let conf = &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
+        
         if !conf.enable {
             ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
             return NGX_DECLINED.try_into().unwrap();
@@ -707,9 +708,13 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
         let val = (*args.add(1)).to_str();
 
         match val.parse::<i64>() {
-            Ok(timeout) if timeout > 0 => {
+            Ok(timeout) if timeout >= 0 => {  // Allow 0 (no timeout)
                 conf.macaroon_timeout = timeout;
-                println!("Set L402 macaroon timeout to {} seconds", timeout);
+                if timeout == 0 {
+                    println!("Set L402 macaroon timeout to never expire (0)");
+                } else {
+                    println!("Set L402 macaroon timeout to {} seconds", timeout);
+                }
             },
             _ => {
                 println!("Invalid macaroon_timeout value: {}", val);

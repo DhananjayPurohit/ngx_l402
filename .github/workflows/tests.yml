@@ -58,7 +58,7 @@ jobs:
         env:
           LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
         run: |
-          docker-compose -f docker-compose.yml up -d nginx-lnurl
+          docker-compose -f docker-compose.yml up -d nginx-lnurl grpc-content-server
 
       - name: Run Integration Tests - LNURL
         run: |
@@ -123,6 +123,90 @@ jobs:
             docker logs nginx-lnurl
             exit 1
           fi
+
+      - name: Run Integration Tests - gRPC
+        run: |
+          docker logs grpc-content-server
+          echo "Testing gRPC server..."
+          sleep 5
+
+          # Install grpcurl for testing gRPC endpoints
+          echo "Installing grpcurl..."
+          curl -L https://github.com/fullstorydev/grpcurl/releases/download/v1.8.9/grpcurl_1.8.9_linux_x86_64.tar.gz | tar -xzf - -C /tmp
+          sudo mv /tmp/grpcurl /usr/local/bin/
+
+          # Test gRPC service reflection
+          echo "Testing gRPC service reflection..."
+          grpcurl -plaintext localhost:50051 list || {
+            echo "Error: gRPC reflection failed"
+            docker logs grpc-content-server
+            exit 1
+          }
+
+          # Test GetContent method
+          echo "Testing GetContent method..."
+          response=$(grpcurl -plaintext -d '{"path": "/test.txt"}' localhost:50051 content.ContentService/GetContent)
+          if ! echo "$response" | grep -q "Content for path"; then
+            echo "Error: GetContent method failed"
+            echo "Response: $response"
+            docker logs grpc-content-server
+            exit 1
+          fi
+
+          # Test GetProtectedContent method
+          echo "Testing GetProtectedContent method..."
+          response=$(grpcurl -plaintext -d '{"path": "/protected"}' localhost:50051 content.ContentService/GetProtectedContent)
+          if ! echo "$response" | grep -q "This is Protected Content"; then
+            echo "Error: GetProtectedContent method failed"
+            echo "Response: $response"
+            docker logs grpc-content-server
+            exit 1
+          fi
+
+          # Test GetFreeContent method
+          echo "Testing GetFreeContent method..."
+          response=$(grpcurl -plaintext -d '{"path": "/free"}' localhost:50051 content.ContentService/GetFreeContent)
+          if ! echo "$response" | grep -q "Free Content"; then
+            echo "Error: GetFreeContent method failed"
+            echo "Response: $response"
+            docker logs grpc-content-server
+            exit 1
+          fi
+
+          # Test gRPC through nginx proxy (L402 protected)
+          echo "Testing gRPC through nginx proxy with L402 protection..."
+          
+          # First test without L402 header - should get 402
+          echo "Testing gRPC endpoint without L402 header..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -H "Content-Type: application/grpc" -H "grpc-timeout: 60S" -X POST http://0.0.0.0:8000/content.ContentService/GetProtectedContent)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: gRPC endpoint without L402 returned status $status_code, expected 402"
+            echo "$response"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+          
+          # Check if WWW-Authenticate header is present
+          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
+            echo "Error: WWW-Authenticate header is missing in the 402 response for gRPC"
+            echo "$response"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+
+          # Test with valid L402 credentials for gRPC
+          echo "Testing gRPC endpoint with valid L402 credentials..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -H "Content-Type: application/grpc" -H "grpc-timeout: 60S" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" -X POST http://0.0.0.0:8000/content.ContentService/GetProtectedContent)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: gRPC endpoint with valid L402 returned status $status_code, expected 200"
+            echo "$response"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+
+          echo "All gRPC tests completed successfully!"
 
       - name: Stop LNURL service
         run: |

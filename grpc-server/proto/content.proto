@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package content;
+
+service ContentService {
+  rpc GetContent (ContentRequest) returns (ContentResponse);
+  rpc GetProtectedContent (ContentRequest) returns (ContentResponse);
+  rpc GetFreeContent (ContentRequest) returns (ContentResponse);
+}
+
+message ContentRequest {
+  string path = 1;
+}
+
+message ContentResponse {
+  string title = 1;
+  string body = 2;
+  string status = 3;
+  string timestamp = 4;
+}
