@@ -1,4 +1,5 @@
 use tonic::{transport::Server, Request, Response, Status};
+use log::info;
 use tonic_reflection::server::Builder as ReflectionBuilder;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -86,10 +87,13 @@ impl ContentService for ContentServiceImpl {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logger
+    env_logger::init();
+    
     let addr = "[::]:50051".parse()?;
     let service = ContentServiceImpl::default();
 
-    println!("gRPC server listening on {}", addr);
+    info!("🚀 gRPC content server listening on {}", addr);
 
     let reflection_service = ReflectionBuilder::configure()
         .register_encoded_file_descriptor_set(&content_descriptor::FILE_DESCRIPTOR_SET[..])

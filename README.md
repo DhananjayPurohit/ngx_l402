@@ -86,6 +86,11 @@ Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.redb
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
+
+# For logging
+Environment=RUST_LOG=info  # For more detailed logs, configure debug
+# OR for module-specific debug logs only:
+Environment=RUST_LOG=ngx_l402_lib=debug,info
 ...
 ```
 > **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
@@ -103,18 +108,18 @@ sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.redb
 sudo chmod 660 /var/lib/nginx/cashu_wallet.redb
 ```
 
-## Debugging and Monitoring
+## 📋 Logging
 
-To monitor the L402 module and troubleshoot issues, use these commands:
-
-### View Nginx Error Logs
+### View Logs
 ```bash
+# Module initialization and system logs
+sudo journalctl -u nginx
+
+# Nginx error logs
 sudo tail -f /var/log/nginx/error.log
-```
 
-### Check Nginx Service Status
-```bash
-sudo systemctl status nginx
+# Docker logs
+docker logs container-name -f
 ```
 
 ## Building from Source

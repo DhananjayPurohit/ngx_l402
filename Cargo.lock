@@ -2137,6 +2137,7 @@ dependencies = [
  "cdk-redb",
  "futures",
  "l402_middleware",
+ "log",
  "macaroon",
  "ngx",
  "once_cell",

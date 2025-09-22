@@ -23,6 +23,7 @@ use redis::Commands;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use macaroon::Verifier;
+use log::{info, warn, error, debug};
 
 mod cashu;
 
@@ -36,33 +37,33 @@ pub struct L402Module {
 
 impl L402Module {
     pub async fn new() -> Self {
-        println!("Creating new L402Module");
+        info!("🚀 Creating new L402Module");
         
         // Initialize Redis client if URL is configured
         if let Ok(redis_url) = std::env::var("REDIS_URL") {
             match RedisClient::open(redis_url.clone()) {
                 Ok(redis_client) => {
                     if let Ok(_) = REDIS_CLIENT.set(Mutex::new(redis_client)) {
-                        println!("Connected to Redis at {}", redis_url);
+                        info!("✅ Connected to Redis at {}", redis_url);
                     } else {
-                        println!("Failed to set Redis client in OnceLock");
+                        error!("❌ Failed to set Redis client in OnceLock");
                     }
                 },
-                Err(e) => println!("Failed to create Redis client: {}", e)
+                Err(e) => error!("❌ Failed to create Redis client: {}", e)
             }
         } else {
-            println!("No Redis URL configured, dynamic pricing disabled");
+            info!("ℹ️ No Redis URL configured, dynamic pricing disabled");
         }
 
         // Get environment variables
         let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
-        println!("Using LN client type: {}", ln_client_type);
+        info!("⚡ Using LN client type: {}", ln_client_type);
         
         let ln_client_config = match ln_client_type.as_str() {
             "LNURL" => {
-                println!("Configuring LNURL client");
+                info!("🔧 Configuring LNURL client");
                 let address = std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "lnurl_address".to_string());
-                println!("Using LNURL address: {}", address);
+                info!("🔗 Using LNURL address: {}", address);
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: None,
@@ -78,9 +79,9 @@ impl L402Module {
                 }
             },
             "LND" => {
-                println!("Configuring LND client");
+                info!("🔧 Configuring LND client");
                 let address = std::env::var("LND_ADDRESS").unwrap_or_else(|_| "localhost:10009".to_string());
-                println!("Using LND address: {}", address);
+                info!("🔗 Using LND address: {}", address);
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: Some(lnd::LNDOptions {
@@ -98,9 +99,9 @@ impl L402Module {
                 }
             },
             "NWC" => {
-                println!("Configuring NWC client");
+                info!("🔧 Configuring NWC client");
                 let uri = std::env::var("NWC_URI").unwrap_or_else(|_| "nwc_uri".to_string());
-                println!("Using NWC URI: {}", uri);
+                info!("🔗 Using NWC URI: {}", uri);
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: None,
@@ -116,9 +117,9 @@ impl L402Module {
                 }
             },
             "CLN" => {
-                println!("Configuring CLN client");
+                info!("🔧 Configuring CLN client");
                 let lightning_dir = std::env::var("CLN_LIGHTNING_RPC_FILE_PATH").unwrap_or_else(|_| "CLN_LIGHTNING_RPC_FILE_PATH".to_string());
-                println!("Using CLN LIGHTNING RPC FILE PATH: {}", lightning_dir);
+                info!("🖾 Using CLN LIGHTNING RPC FILE PATH: {}", lightning_dir);
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: None,
@@ -134,9 +135,9 @@ impl L402Module {
                 }
             },
             _ => {
-                println!("Unknown client type, defaulting to LNURL");
+                warn!("⚠️ Unknown client type, defaulting to LNURL");
                 let address = std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "lnurl_address".to_string());
-                println!("Using LNURL address: {}", address);
+                info!("🔗 Using LNURL address: {}", address);
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: None,
@@ -153,7 +154,7 @@ impl L402Module {
             },
         };
 
-        println!("Creating L402 middleware");
+        info!("🔧 Creating L402 middleware");
         let middleware = L402Middleware::new_l402_middleware(
             ln_client_config.clone(),
             Arc::new(move |_| {
@@ -182,11 +183,11 @@ impl L402Module {
             ln_client: self.middleware.ln_client.clone(),
         };
 
-        println!("invoice value: {}", amount_msat);
+        debug!("🧦 Invoice value: {} msat", amount_msat);
 
         match ln_client_conn.generate_invoice(ln_invoice).await {
             Ok((invoice, payment_hash)) => {
-                println!("invoice: {}", invoice);
+                debug!("📜 Generated invoice: {}", invoice);
 
                 // Only add expiry time caveat if timeout_secs > 0
                 if timeout_secs > 0 {
@@ -200,17 +201,17 @@ impl L402Module {
                 match macaroon_util::get_macaroon_as_string(payment_hash, caveats, self.middleware.root_key.clone()) {
                     Ok(macaroon_string) => {
                         let header_value = format!("L402 macaroon=\"{}\", invoice=\"{}\"", macaroon_string, invoice);
-                        println!("header value: {}", header_value);
+                        debug!("🍪 Generated macaroon header: {}", header_value);
                         Some(header_value)
                     },
                     Err(error) => {
-                        println!("Error generating macaroon: {}", error);
+                        error!("❌ Error generating macaroon: {}", error);
                         None
                     }
                 }
             },
             Err(e) => {
-                println!("Error generating invoice: {:?}", e);
+                error!("❌ Error generating invoice: {:?}", e);
                 None
             }
         }
@@ -238,7 +239,7 @@ impl HTTPModule for L402Module {
     type LocConf = ModuleConfig;
 
     unsafe extern "C" fn postconfiguration(cf: *mut ngx_conf_t) -> ngx_int_t {
-        println!("Initializing L402 module handler");
+        info!("🚀 Initializing L402 module handler");
         let cmcf = ngx_http_conf_get_module_main_conf(cf, &*addr_of!(ngx_http_core_module));
         let h = ngx_array_push(&mut (*cmcf).phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers) as *mut ngx_http_handler_pt;
 
@@ -448,11 +449,11 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
         MODULE.as_ref().expect("Module not initialized")
     };
 
-    println!("Processing request - Method: {:?}, URI: {:?}", method, uri);
+    debug!("🔍 Processing request - Method: {:?}, URI: {:?}", method, uri);
     
     if let Some(auth_str) = auth_header {
-        println!("Found authorization header");
-        println!("Authorization: {}", auth_str);
+        debug!("🔑 Found authorization header");
+        debug!("🔑 Authorization header: {}", auth_str);
 
         if auth_str.starts_with("Cashu ") {
             let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
@@ -475,11 +476,11 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
                     return NGX_DECLINED.try_into().unwrap();
                 },
                 Ok(false) => {
-                    eprintln!("Cashu token verification failed");
+                    warn!("⚠️ Cashu token verification failed");
                     return 401;
                 },
                 Err(e) => {
-                    eprintln!("Error verifying Cashu token: {:?}", e);
+                    error!("❌ Error verifying Cashu token: {:?}", e);
                     return 401;
                 }
             }
@@ -518,45 +519,43 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
 
                     match l402::verify_l402_with_verifier(&mac, &mut verifier, module.middleware.root_key.clone(), preimage) {
                         Ok(_) => {
-                            println!("L402 verification successful");
+                            info!("✅ L402 verification successful");
                             return NGX_DECLINED.try_into().unwrap();
                         },
                         Err(e) => {
-                            eprintln!("L402 verification failed: {:?}", e);
+                            warn!("⚠️ L402 verification failed: {:?}", e);
                             return 401;
                         }
                     }
                 },
                 Err(e) => {
-                    println!("Failed to parse L402 header: {:?}", e);
+                    warn!("⚠️ Failed to parse L402 header: {:?}", e);
                     return 401;
                 }
             }
         }
     }
 
-    println!("No authorization header found, sending L402 challenge");
+    debug!("🚨 No authorization header found, sending L402 challenge");
     402
 }
 
 pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
-    println!("Starting module initialization");
+    if cycle.is_null() {
+        return -1;
+    }
 
     let log = (*cycle).log;
     
+    info!("🚀 Starting L402 module initialization");
     ngx_log_error!(NGX_LOG_INFO, log, "Starting module initialization");
-    
-    if cycle.is_null() {
-        println!("Error: Cycle pointer is null");
-        return -1;
-    }
 
     // Check if Cashu eCash support is enabled
     let cashu_ecash_support_var = std::env::var("CASHU_ECASH_SUPPORT").unwrap_or_else(|_| "false".to_string());
     let cashu_ecash_support = cashu_ecash_support_var.trim().to_lowercase() == "true";
     
     if cashu_ecash_support {
-        println!("Cashu eCash support is enabled");
+        info!("🪙 Cashu eCash support is enabled");
 
         // Initialize Cashu database
         let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.redb".to_string());
@@ -571,11 +570,11 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             }
         }
     } else {
-        println!("Cashu eCash support is disabled");
+        info!("ℹ️ Cashu eCash support is disabled");
     }
 
     INIT.call_once(|| {
-        println!("Initializing runtime and L402Module");
+        info!("🔄 Initializing runtime and L402Module");
         match std::panic::catch_unwind(|| {
             let rt = Runtime::new().expect("Failed to create runtime");
             let module = rt.block_on(async {
@@ -585,11 +584,11 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             unsafe {
                 MODULE = Some(module);
             }
-            println!("L402Module initialized successfully");
+            info!("✅ L402Module initialized successfully");
         }) {
             Ok(_) => (),
             Err(e) => {
-                println!("Panic during initialization: {:?}", e);
+                error!("💥 Panic during initialization: {:?}", e);
                 unsafe {
                     MODULE = None;
                 }
@@ -597,7 +596,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         }
     });
 
-    println!("Module initialization complete");
+    info!("✅ L402 module initialization complete");
 
     let redeem_on_lightning = std::env::var("CASHU_REDEEM_ON_LIGHTNING")
         .unwrap_or_else(|_| "false".to_string())
@@ -620,7 +619,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         let _ =std::thread::Builder::new()
             .name("cashu_redemption".into())
             .spawn(move || {
-                println!("Starting redemption task");
+                info!("🔄 Starting Cashu redemption task");
                 
                 // Create a new runtime for this thread
                 let thread_rt = Runtime::new().expect("Failed to create thread runtime");
@@ -632,12 +631,12 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                         };
 
                         match cashu::redeem_to_lightning(&ln_client_conn).await {
-                            Ok(true) => println!("Successfully redeemed Cashu tokens"),
-                            Ok(false) => println!("No tokens to redeem"), 
-                            Err(e) => eprintln!("Error redeeming tokens: {}", e)
+                            Ok(true) => info!("✅ Successfully redeemed Cashu tokens"),
+                            Ok(false) => info!("ℹ️ No Cashu tokens to redeem"), 
+                            Err(e) => error!("❌ Error redeeming Cashu tokens: {}", e)
                         }
 
-                        println!("Sleeping for {} seconds", interval_secs);
+                        debug!("😴 Cashu redemption task sleeping for {} seconds", interval_secs);
                         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
                     }
                 });
@@ -684,10 +683,10 @@ pub unsafe extern "C" fn ngx_http_l402_amount_set(
         match val.parse::<i64>() {
             Ok(amount) if amount > 0 => {
                 conf.amount_msat = amount;
-                println!("Set L402 amount_msat to {}", amount);
+                info!("⚙️ Set L402 amount_msat to {}", amount);
             },
             _ => {
-                println!("Invalid amount_msat value: {}", val);
+                error!("❌ Invalid amount_msat configuration value: {}", val);
                 return std::ptr::null_mut();
             }
         }
@@ -711,13 +710,13 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
             Ok(timeout) if timeout >= 0 => {  // Allow 0 (no timeout)
                 conf.macaroon_timeout = timeout;
                 if timeout == 0 {
-                    println!("Set L402 macaroon timeout to never expire (0)");
+                    info!("⚙️ Set L402 macaroon timeout to never expire (0)");
                 } else {
-                    println!("Set L402 macaroon timeout to {} seconds", timeout);
+                    info!("⚙️ Set L402 macaroon timeout to {} seconds", timeout);
                 }
             },
             _ => {
-                println!("Invalid macaroon_timeout value: {}", val);
+                error!("❌ Invalid macaroon_timeout configuration value: {}", val);
                 return std::ptr::null_mut();
             }
         }
