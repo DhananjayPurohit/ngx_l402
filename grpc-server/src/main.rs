@@ -1,9 +1,15 @@
 use tonic::{transport::Server, Request, Response, Status};
+use tonic_reflection::server::Builder as ReflectionBuilder;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Import the generated protobuf code
 pub mod content {
     tonic::include_proto!("content");
+}
+
+// Include the file descriptor set for reflection
+pub mod content_descriptor {
+    include!(concat!(env!("OUT_DIR"), "/content_descriptor.rs"));
 }
 
 use content::content_service_server::{ContentService, ContentServiceServer};
@@ -85,8 +91,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("gRPC server listening on {}", addr);
 
+    let reflection_service = ReflectionBuilder::configure()
+        .register_encoded_file_descriptor_set(&content_descriptor::FILE_DESCRIPTOR_SET[..])
+        .build()?;
+
     Server::builder()
         .add_service(ContentServiceServer::new(service))
+        .add_service(reflection_service)
         .serve(addr)
         .await?;
 
