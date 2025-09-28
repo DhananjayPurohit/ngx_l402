@@ -476,7 +476,7 @@ pub fn l402_access_handler(auth_header: Option<String>, uri: String, method: u32
                     return NGX_DECLINED.try_into().unwrap();
                 },
                 Ok(false) => {
-                    warn!("⚠️ Cashu token verification failed");
+                    info!("⚠️ Cashu token verification failed");
                     return 401;
                 },
                 Err(e) => {
@@ -568,6 +568,21 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             Err(e) => {
                 ngx_log_error!(NGX_LOG_ERR, log, "Failed to initialize Cashu: {}", e);
             }
+        }
+
+        // Initialize whitelisted mints if configured
+        if let Ok(whitelisted_mints) = std::env::var("CASHU_WHITELISTED_MINTS") {
+            ngx_log_error!(NGX_LOG_INFO, log, "CASHU_WHITELISTED_MINTS: '{}'", whitelisted_mints);
+            match cashu::initialize_whitelisted_mints(&whitelisted_mints) {
+                Ok(_) => {
+                    ngx_log_error!(NGX_LOG_INFO, log, "Whitelisted mints initialized successfully");
+                },
+                Err(e) => {
+                    ngx_log_error!(NGX_LOG_ERR, log, "Failed to initialize whitelisted mints: {}", e);
+                }
+            }
+        } else {
+            info!("ℹ️ No whitelisted mints configured - all mints will be accepted");
         }
     } else {
         info!("ℹ️ Cashu eCash support is disabled");

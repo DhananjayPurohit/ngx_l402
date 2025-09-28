@@ -86,6 +86,8 @@ Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.redb
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
+# Optional: Whitelist specific Cashu mints (comma-separated URLs)
+Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
 
 # For logging
 Environment=RUST_LOG=info  # For more detailed logs, configure debug
@@ -94,6 +96,8 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 ...
 ```
 > **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
+
+> **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted. If configured with comma-separated mint URLs, only tokens from those specific mints will be accepted.
 
 > **Note**: The module supports dynamic pricing through Redis, allowing you to change endpoint prices in real-time without restarting Nginx. When Redis is configured, the module will check Redis for a price override before using the default price specified in the nginx configuration.
 

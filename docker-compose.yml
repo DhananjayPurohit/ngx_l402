@@ -187,6 +187,7 @@ services:
       - CASHU_DB_PATH=/app/data/cashu_wallet.redb
       - CASHU_REDEEM_ON_LIGHTNING=true
       - CASHU_REDEMPTION_INTERVAL_SECS=90
+      - CASHU_WHITELISTED_MINTS=http://cashu-mint:3338,http://cashu-mint1:3338
       - REDIS_URL=redis://redis:6379
     volumes:
       - lndnode-data:/root/.lnd:ro
