@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "ngx_l402"
-version = "0.2.0"
+version = "1.0.9"
 dependencies = [
  "base64 0.22.1",
  "bip39",
