@@ -742,6 +742,48 @@ jobs:
             exit 1
           fi
           
+          # Test whitelisted mints functionality
+          echo "Testing whitelisted mints functionality..."
+          
+          # Test with token from non-whitelisted mint
+          echo "Testing with token from non-whitelisted mint (https://nofees.testnut.cashu.space)..."
+          
+          # Create a token with a non-whitelisted mint URL
+          NON_WHITELISTED_TOKEN='{
+            "token": [
+              {
+                "mint": "https://nofees.testnut.cashu.space",
+                "proofs": [
+                  {
+                    "id": "test-proof",
+                    "amount": 10,
+                    "secret": "test-secret",
+                    "C": "test-commitment"
+                  }
+                ]
+              }
+            ]
+          }'
+          
+          # Encode the non-whitelisted token
+          ENCODED_NON_WHITELISTED_TOKEN=$(echo -n "$NON_WHITELISTED_TOKEN" | base64 -w 0)
+
+          sleep 5
+          
+          # Test with the non-whitelisted token
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_NON_WHITELISTED_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          
+          # This should fail verification due to non-whitelisted mint
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Protected route with non-whitelisted Cashu token returned status $status_code, expected 401"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          
+          echo "✅ Non-whitelisted mint token (https://nofees.testnut.cashu.space) correctly rejected!"
+          
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
 

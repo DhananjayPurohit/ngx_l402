@@ -22,6 +22,9 @@ const MSAT_PER_SAT: u64 = 1000;
 // Database singleton
 static CASHU_DB: OnceLock<Arc<cdk_redb::wallet::WalletRedbDatabase>> = OnceLock::new();
 
+// Whitelisted mints singleton
+static WHITELISTED_MINTS: OnceLock<HashSet<String>> = OnceLock::new();
+
 pub fn initialize_cashu(db_path: &str) -> Result<(), String> {
     // Initialize PROCESSED_TOKENS with empty HashSet
     PROCESSED_TOKENS.with(|tokens| {
@@ -46,6 +49,48 @@ pub fn initialize_cashu(db_path: &str) -> Result<(), String> {
             }
         }
     })
+}
+
+pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), String> {
+    if whitelisted_mints_str.trim().is_empty() {
+        info!("ℹ️ Empty whitelisted mints string provided");
+        return Ok(());
+    }
+
+    let mut whitelisted_set = HashSet::new();
+    
+    // Split by comma and trim each mint URL
+    for mint_url in whitelisted_mints_str.split(',') {
+        let trimmed_mint = mint_url.trim();
+        if !trimmed_mint.is_empty() {
+            whitelisted_set.insert(trimmed_mint.to_string());
+            info!("✅ Added whitelisted mint: {}", trimmed_mint);
+        }
+    }
+
+    if whitelisted_set.is_empty() {
+        return Err("No valid mint URLs found in whitelisted mints".to_string());
+    }
+
+    match WHITELISTED_MINTS.set(whitelisted_set) {
+        Ok(_) => {
+            info!("✅ Whitelisted mints initialized successfully");
+            Ok(())
+        },
+        Err(_) => {
+            Err("Failed to set whitelisted mints - already initialized".to_string())
+        }
+    }
+}
+
+pub fn is_mint_whitelisted(mint_url: &str) -> bool {
+    // If no whitelisted mints are configured, allow all mints
+    if let Some(whitelisted_mints) = WHITELISTED_MINTS.get() {
+        whitelisted_mints.contains(mint_url)
+    } else {
+        info!("ℹ️ No whitelisted mints configured - allowing all mints");
+        true
+    }
 }
 
 pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, String> {
@@ -106,6 +151,14 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
     // Extract mint URL from the token
     let mint_url = token_decoded.mint_url()
         .map_err(|e| format!("Failed to get mint URL: {}", e))?;
+
+    // Check if the mint is whitelisted
+    if !is_mint_whitelisted(&mint_url.to_string()) {
+        info!("⚠️ Cashu token from non-whitelisted mint: {}", mint_url);
+        return Ok(false);
+    }
+
+    info!("✅ Cashu token from whitelisted mint: {}", mint_url);
 
     let unit = token_decoded.unit().unwrap();
     
