@@ -130,20 +130,26 @@ docker logs container-name -f
 
 To build the module from source:
 
-1. Install Rust and Cargo if not already installed:
+1. Install required dependencies:
+
+```bash
+sudo apt-get install -y build-essential clang libclang-dev libc6-dev zlib1g-dev pkg-config libssl-dev nginx
+```
+
+2. Install Rust and Cargo if not already installed:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-2. Clone the repository:
+3. Clone the repository:
 
 ```bash
 git clone https://github.com/DhananjayPurohit/ngx_l402.git
 cd ngx_l402
 ```
 
-3. Build the module:
+4. Build the module:
 
 ```bash
 cargo build --release --features export-modules

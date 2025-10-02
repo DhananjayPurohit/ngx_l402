@@ -547,6 +547,9 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
 
     let log = (*cycle).log;
     
+    // Initialize logger - this is critical for RUST_LOG to work
+    let _ = env_logger::try_init();
+    
     info!("🚀 Starting L402 module initialization");
     ngx_log_error!(NGX_LOG_INFO, log, "Starting module initialization");
 
