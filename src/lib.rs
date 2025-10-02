@@ -24,6 +24,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use macaroon::Verifier;
 use log::{info, warn, error, debug};
+use env_logger;
 
 mod cashu;
 
