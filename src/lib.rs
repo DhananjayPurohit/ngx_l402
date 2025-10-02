@@ -644,18 +644,33 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                 let thread_rt = Runtime::new().expect("Failed to create thread runtime");
                 
                 thread_rt.block_on(async move {
+                    let mut iteration = 0;
                     loop {
+                        iteration += 1;
+                        eprintln!("🔄 [CASHU REDEMPTION] Iteration #{} starting at {:?}", iteration, std::time::SystemTime::now());
+                        info!("🔄 Cashu redemption iteration #{} starting...", iteration);
+                        
                         let ln_client_conn = lnclient::LNClientConn {
                             ln_client: ln_client.clone(),
                         };
 
                         match cashu::redeem_to_lightning(&ln_client_conn).await {
-                            Ok(true) => info!("✅ Successfully redeemed Cashu tokens"),
-                            Ok(false) => info!("ℹ️ No Cashu tokens to redeem"), 
-                            Err(e) => error!("❌ Error redeeming Cashu tokens: {}", e)
+                            Ok(true) => {
+                                eprintln!("✅ [CASHU REDEMPTION] Successfully redeemed tokens");
+                                info!("✅ Successfully redeemed Cashu tokens");
+                            },
+                            Ok(false) => {
+                                eprintln!("ℹ️ [CASHU REDEMPTION] No tokens to redeem");
+                                info!("ℹ️ No Cashu tokens to redeem");
+                            }, 
+                            Err(e) => {
+                                eprintln!("❌ [CASHU REDEMPTION] Error: {}", e);
+                                error!("❌ Error redeeming Cashu tokens: {}", e);
+                            }
                         }
 
-                        debug!("😴 Cashu redemption task sleeping for {} seconds", interval_secs);
+                        eprintln!("😴 [CASHU REDEMPTION] Sleeping for {} seconds", interval_secs);
+                        info!("😴 Cashu redemption task sleeping for {} seconds", interval_secs);
                         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
                     }
                 });
