@@ -11,6 +11,7 @@ use cdk::cdk_database::WalletDatabase;
 use std::path::Path;
 use bip39::Mnemonic;
 use log::{info, warn, error, debug};
+use crate::cashu_redemption_logger;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -193,6 +194,7 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
 }
 
 pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Result<bool, String> {
+    cashu_redemption_logger::log_redemption("🚀 Starting Cashu token redemption process...");
     info!("🚀 Starting Cashu token redemption process...");
     
     // Get database
@@ -204,10 +206,12 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
     let mint_urls_map = db.get_mints().await
         .map_err(|e| format!("Failed to get mint URLs: {}", e))?;
         
-    info!("📊 Found {} mint URLs in database: {:?}", 
+    let msg = format!("📊 Found {} mint URLs in database: {:?}", 
         mint_urls_map.len(), 
         mint_urls_map.keys().collect::<Vec<_>>()
     );
+    cashu_redemption_logger::log_redemption(&msg);
+    info!("{}", msg);
 
     // Use a consistent seed for the multi-mint wallet (same as token verification)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
@@ -247,6 +251,7 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
 
         if total_amount == 0 {
             debug!("ℹ️ Total amount is 0 for mint {}", wallet.mint_url);
+            cashu_redemption_logger::log_redemption(&format!("ℹ️ Total amount is 0 for mint {}", wallet.mint_url));
             continue;
         }
 
@@ -254,13 +259,16 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         let proofs = match wallet_clone.get_unspent_proofs().await {
             Ok(p) => p,
             Err(e) => {
-                error!("❌ Failed to get spendable proofs for {}: {}", wallet.mint_url, e);
+                let msg = format!("❌ Failed to get spendable proofs for {}: {}", wallet.mint_url, e);
+                error!("{}", msg);
+                cashu_redemption_logger::log_redemption(&msg);
                 continue;
             }
         };
 
         if proofs.is_empty() {
             debug!("ℹ️ No spendable proofs found for mint {}", wallet.mint_url);
+            cashu_redemption_logger::log_redemption(&format!("ℹ️ No spendable proofs found for mint {}", wallet.mint_url));
             continue;
         }
 
@@ -271,19 +279,27 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
             total_amount
         };
 
-        info!("💰 Found {} proofs with total value {} msat for mint {}", 
+        let msg = format!("💰 Found {} proofs with total value {} msat for mint {}", 
             proofs.len(), total_amount_msat, wallet.mint_url);
+        info!("{}", msg);
+        cashu_redemption_logger::log_redemption(&msg);
 
         // Generate a Lightning invoice
         let memo = format!("Redeeming {} tokens from {}", proofs.len(), wallet.mint_url);
+        cashu_redemption_logger::log_redemption(&format!("📝 Generating Lightning invoice for {} msat", total_amount_msat));
         let (invoice, payment_hash) = match ln_client_conn.generate_invoice(lnrpc::Invoice {
             value_msat: total_amount_msat as i64,
             memo: memo.clone(),
             ..Default::default()
         }).await {
-            Ok((invoice, payment_hash)) => (invoice, payment_hash),
+            Ok((invoice, payment_hash)) => {
+                cashu_redemption_logger::log_redemption(&format!("✅ Generated invoice: payment_hash={}", payment_hash));
+                (invoice, payment_hash)
+            },
             Err(e) => {
-                error!("❌ Failed to generate invoice for {}: {}", wallet.mint_url, e);
+                let msg = format!("❌ Failed to generate invoice for {}: {}", wallet.mint_url, e);
+                error!("{}", msg);
+                cashu_redemption_logger::log_redemption(&msg);
                 continue;
             }
         };
@@ -291,20 +307,27 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         debug!("📜 Generated invoice for {} msat: {}", total_amount_msat, invoice);
 
         // Melt the proofs to redeem on Lightning
+        cashu_redemption_logger::log_redemption(&format!("🔥 Attempting to melt {} proofs...", proofs.len()));
         match wallet_clone.melt_quote(invoice, None).await {
             Ok(_result) => {
-                info!("✅ Successfully redeemed {} proofs ({} msat) for payment hash {}", 
+                let msg = format!("✅ Successfully redeemed {} proofs ({} msat) for payment hash {}", 
                     proofs.len(), total_amount_msat, payment_hash);
+                info!("{}", msg);
+                cashu_redemption_logger::log_redemption(&msg);
                 total_redeemed += proofs.len();
                 total_amount_redeemed_msat += total_amount_msat;
             },
             Err(e) => {
-                error!("❌ Failed to melt proofs for {}: {}", wallet.mint_url, e);
+                let msg = format!("❌ Failed to melt proofs for {}: {}", wallet.mint_url, e);
+                error!("{}", msg);
+                cashu_redemption_logger::log_redemption(&msg);
             }
         }
     }
 
-    info!("✅ Cashu redemption process completed. Redeemed {} proofs totaling {} msat", 
+    let msg = format!("✅ Cashu redemption process completed. Redeemed {} proofs totaling {} msat", 
         total_redeemed, total_amount_redeemed_msat);
+    info!("{}", msg);
+    cashu_redemption_logger::log_redemption(&msg);
     Ok(total_redeemed > 0)
 }

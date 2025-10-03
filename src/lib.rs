@@ -27,6 +27,7 @@ use log::{info, warn, error, debug};
 use env_logger;
 
 mod cashu;
+mod cashu_redemption_logger;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
@@ -644,10 +645,13 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                 let thread_rt = Runtime::new().expect("Failed to create thread runtime");
                 
                 thread_rt.block_on(async move {
+                    cashu_redemption_logger::log_redemption("🔄 Cashu redemption task started");
+                    
                     let mut iteration = 0;
                     loop {
                         iteration += 1;
-                        eprintln!("🔄 [CASHU REDEMPTION] Iteration #{} starting at {:?}", iteration, std::time::SystemTime::now());
+                        let msg = format!("🔄 Iteration #{} starting", iteration);
+                        cashu_redemption_logger::log_redemption(&msg);
                         info!("🔄 Cashu redemption iteration #{} starting...", iteration);
                         
                         let ln_client_conn = lnclient::LNClientConn {
@@ -656,20 +660,22 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
 
                         match cashu::redeem_to_lightning(&ln_client_conn).await {
                             Ok(true) => {
-                                eprintln!("✅ [CASHU REDEMPTION] Successfully redeemed tokens");
+                                cashu_redemption_logger::log_redemption("✅ Successfully redeemed Cashu tokens");
                                 info!("✅ Successfully redeemed Cashu tokens");
                             },
                             Ok(false) => {
-                                eprintln!("ℹ️ [CASHU REDEMPTION] No tokens to redeem");
+                                cashu_redemption_logger::log_redemption("ℹ️ No Cashu tokens to redeem");
                                 info!("ℹ️ No Cashu tokens to redeem");
                             }, 
                             Err(e) => {
-                                eprintln!("❌ [CASHU REDEMPTION] Error: {}", e);
+                                let msg = format!("❌ Error redeeming Cashu tokens: {}", e);
+                                cashu_redemption_logger::log_redemption(&msg);
                                 error!("❌ Error redeeming Cashu tokens: {}", e);
                             }
                         }
 
-                        eprintln!("😴 [CASHU REDEMPTION] Sleeping for {} seconds", interval_secs);
+                        let msg = format!("😴 Sleeping for {} seconds", interval_secs);
+                        cashu_redemption_logger::log_redemption(&msg);
                         info!("😴 Cashu redemption task sleeping for {} seconds", interval_secs);
                         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
                     }
