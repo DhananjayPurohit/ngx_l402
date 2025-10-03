@@ -226,19 +226,17 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         .ok_or_else(|| "Cashu database not initialized".to_string())?
         .clone();
     
-     // Get mint URLs from database
-    let mint_urls_map = db.get_mints().await
-        .map_err(|e| format!("Failed to get mint URLs: {}", e))?;
-        
-    let msg = format!("📊 Found {} mint URLs in database: {:?}", 
-        mint_urls_map.len(), 
-        mint_urls_map.keys().collect::<Vec<_>>()
+    // Use whitelisted mints for redemption check
+    // If no whitelisted mints are configured, we can't redeem
+    let whitelisted_mints = WHITELISTED_MINTS.get()
+        .ok_or_else(|| "No whitelisted mints configured".to_string())?;
+    
+    let msg = format!("📊 Checking {} whitelisted mints for tokens: {:?}", 
+        whitelisted_mints.len(), 
+        whitelisted_mints.iter().collect::<Vec<_>>()
     );
     cashu_redemption_logger::log_redemption(&msg);
     info!("{}", msg);
-    
-    // Debug: Check if database has any data
-    cashu_redemption_logger::log_redemption(&format!("DEBUG: mint_urls_map details: {:?}", mint_urls_map));
 
     // Use a consistent seed for the multi-mint wallet (same as token verification)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
@@ -253,16 +251,15 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
 
     debug!("💼 Mint wallets: {:?}", multi_mint_wallet);
 
-    // Create wallets for each mint URL
-    for (mint_url, _mint_info) in mint_urls_map {
-
+    // Create wallets for each whitelisted mint
+    for mint_url_str in whitelisted_mints.iter() {
         // Keeping this as Sat for now but a wallet can hold any unit
         let unit = cdk::nuts::CurrencyUnit::Sat;
 
         multi_mint_wallet
-            .create_and_add_wallet(&mint_url.to_string(), unit, None)
+            .create_and_add_wallet(mint_url_str, unit, None)
             .await
-            .map_err(|e| format!("Failed to create wallet for {}: {}", mint_url, e))?;
+            .map_err(|e| format!("Failed to create wallet for {}: {}", mint_url_str, e))?;
     }
 
     let mut total_redeemed = 0;
