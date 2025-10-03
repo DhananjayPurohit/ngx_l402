@@ -170,10 +170,28 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
         
     // Use a consistent seed for all wallets (same as redemption process)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
-    let seed = seed_hash.as_bytes().clone();
-    debug!("🔑 Using seed for mint {}: {:?}", mint_url, &seed[..8]); // Log first 8 bytes for debugging
-    let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), &seed, None)
+    let mut full_seed = [0u8; 64];
+    full_seed[..32].copy_from_slice(seed_hash.as_bytes());
+    debug!("🔑 Using seed for receiving token from mint {}: {:?}", mint_url, &full_seed[..8]);
+    
+    // Use MultiMintWallet to ensure the mint gets registered properly
+    let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
+        db.clone(),
+        Arc::new(full_seed),
+        vec![],
+    );
+    
+    // Create and add wallet for this mint (or get existing one)
+    multi_mint_wallet
+        .create_and_add_wallet(&mint_url.to_string(), unit, None)
+        .await
         .map_err(|e| format!("Failed to create wallet for mint {}: {}", mint_url, e))?;
+    
+    // Now get the wallet we just created
+    let wallets = multi_mint_wallet.get_wallets().await;
+    let wallet = wallets.into_iter()
+        .find(|w| w.mint_url.to_string() == mint_url.to_string())
+        .ok_or_else(|| format!("Failed to find wallet for mint {}", mint_url))?;
 
     match wallet.receive(token, cdk::wallet::ReceiveOptions::default()).await {
         Ok(_) => {
