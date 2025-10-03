@@ -683,9 +683,11 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                     info!("😴 Cashu redemption task sleeping for {} seconds", interval_secs);
                     
                     // Use std::thread::sleep instead of tokio::time::sleep
+                    cashu_redemption_logger::log_redemption("💤 About to sleep...");
                     let sleep_result = std::panic::catch_unwind(|| {
                         std::thread::sleep(std::time::Duration::from_secs(interval_secs));
                     });
+                    cashu_redemption_logger::log_redemption("💤 Sleep completed");
                     
                     if sleep_result.is_err() {
                         cashu_redemption_logger::log_redemption("❌ Sleep panicked!");
@@ -696,6 +698,8 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                     cashu_redemption_logger::log_redemption("⏰ Woke up from sleep, starting next iteration");
                     info!("⏰ Woke up from sleep");
                 }
+                cashu_redemption_logger::log_redemption("🛑 Loop exited! This should never happen!");
+                error!("🛑 Redemption loop exited unexpectedly!");
             });
     }
     0
