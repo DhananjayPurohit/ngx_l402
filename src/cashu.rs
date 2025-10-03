@@ -172,12 +172,18 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
     let seed = seed_hash.as_bytes().clone();
     debug!("🔑 Using seed for mint {}: {:?}", mint_url, &seed[..8]); // Log first 8 bytes for debugging
-    let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db, &seed, None)
+    let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), &seed, None)
         .map_err(|e| format!("Failed to create wallet for mint {}: {}", mint_url, e))?;
 
     match wallet.receive(token, cdk::wallet::ReceiveOptions::default()).await {
         Ok(_) => {
             info!("✅ Cashu token received successfully from mint: {}", mint_url);
+            
+            // Debug: Check what mints are in the database after receiving
+            if let Ok(mints_after) = db.get_mints().await {
+                debug!("DEBUG: After receive, mints in DB: {:?}", mints_after.keys().collect::<Vec<_>>());
+            }
+            
             // Add token to processed set after successful receive
             PROCESSED_TOKENS.with(|tokens| {
                 if let Some(set) = tokens.borrow_mut().as_mut() {
@@ -212,6 +218,9 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
     );
     cashu_redemption_logger::log_redemption(&msg);
     info!("{}", msg);
+    
+    // Debug: Check if database has any data
+    cashu_redemption_logger::log_redemption(&format!("DEBUG: mint_urls_map details: {:?}", mint_urls_map));
 
     // Use a consistent seed for the multi-mint wallet (same as token verification)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
