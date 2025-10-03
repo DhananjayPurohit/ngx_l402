@@ -677,7 +677,11 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                         let msg = format!("😴 Sleeping for {} seconds", interval_secs);
                         cashu_redemption_logger::log_redemption(&msg);
                         info!("😴 Cashu redemption task sleeping for {} seconds", interval_secs);
+                        
                         tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
+                        
+                        cashu_redemption_logger::log_redemption("⏰ Woke up from sleep, starting next iteration");
+                        info!("⏰ Woke up from sleep");
                     }
                 });
             });
