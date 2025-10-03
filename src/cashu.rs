@@ -170,14 +170,13 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
         
     // Use a consistent seed for all wallets (same as redemption process)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
-    let mut full_seed = [0u8; 64];
-    full_seed[..32].copy_from_slice(seed_hash.as_bytes());
-    debug!("🔑 Using seed for receiving token from mint {}: {:?}", mint_url, &full_seed[..8]);
+    let seed = seed_hash.as_bytes().clone();
+    debug!("🔑 Using seed for receiving token from mint {}: {:?}", mint_url, &seed[..8]);
     
     // Use MultiMintWallet to ensure the mint gets registered properly
     let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
         db.clone(),
-        Arc::new(full_seed),
+        Arc::new(seed),
         vec![],
     );
     
@@ -240,12 +239,11 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
 
     // Use a consistent seed for the multi-mint wallet (same as token verification)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
-    let mut full_seed = [0u8; 64];
-    full_seed[..32].copy_from_slice(seed_hash.as_bytes());
-    debug!("🔑 Using seed for multi-mint wallet: {:?}", &full_seed[..8]); // Log first 8 bytes for debugging
+    let seed = seed_hash.as_bytes().clone();
+    debug!("🔑 Using seed for multi-mint wallet: {:?}", &seed[..8]); // Log first 8 bytes for debugging
     let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
         db.clone(),
-        Arc::new(full_seed),
+        Arc::new(seed),
         vec![],
     );
 
