@@ -333,7 +333,11 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         // Melt the proofs to redeem on Lightning
         cashu_redemption_logger::log_redemption(&format!("🔥 Attempting to melt {} proofs...", proofs.len()));
         match wallet_clone.melt_quote(invoice, None).await {
-            Ok(_result) => {
+            Ok(result) => {
+                let result_msg = format!("🔍 Melt result: {:?}", result);
+                debug!("{}", result_msg);
+                cashu_redemption_logger::log_redemption(&result_msg);
+                
                 let msg = format!("✅ Successfully redeemed {} proofs ({} msat) for payment hash {}", 
                     proofs.len(), total_amount_msat, payment_hash);
                 info!("{}", msg);
