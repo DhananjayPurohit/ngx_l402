@@ -330,7 +330,23 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
 
         // Melt the proofs to redeem on Lightning
         cashu_redemption_logger::log_redemption(&format!("🔥 Attempting to melt {} proofs...", proofs.len()));
-        match wallet_clone.melt_quote(invoice, None).await {
+        
+        // First get a melt quote
+        let quote = match wallet_clone.melt_quote(invoice.clone(), None).await {
+            Ok(q) => {
+                cashu_redemption_logger::log_redemption(&format!("📋 Melt quote created: {:?}", q));
+                q
+            },
+            Err(e) => {
+                let msg = format!("❌ Failed to create melt quote for {}: {}", wallet.mint_url, e);
+                error!("{}", msg);
+                cashu_redemption_logger::log_redemption(&msg);
+                continue;
+            }
+        };
+        
+        // Now actually melt the proofs using the quote
+        match wallet_clone.melt(&quote.id).await {
             Ok(result) => {
                 let result_msg = format!("🔍 Melt result: {:?}", result);
                 debug!("{}", result_msg);
