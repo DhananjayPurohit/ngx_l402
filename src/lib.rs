@@ -648,6 +648,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                 
                 let mut iteration = 0;
                 loop {
+                    cashu_redemption_logger::log_redemption(&format!("DEBUG: Loop iteration starting, iteration was {}", iteration));
                     iteration += 1;
                     let msg = format!("🔄 Iteration #{} starting", iteration);
                     cashu_redemption_logger::log_redemption(&msg);
@@ -682,7 +683,15 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                     info!("😴 Cashu redemption task sleeping for {} seconds", interval_secs);
                     
                     // Use std::thread::sleep instead of tokio::time::sleep
-                    std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+                    let sleep_result = std::panic::catch_unwind(|| {
+                        std::thread::sleep(std::time::Duration::from_secs(interval_secs));
+                    });
+                    
+                    if sleep_result.is_err() {
+                        cashu_redemption_logger::log_redemption("❌ Sleep panicked!");
+                        error!("❌ Sleep panicked!");
+                        continue;
+                    }
                     
                     cashu_redemption_logger::log_redemption("⏰ Woke up from sleep, starting next iteration");
                     info!("⏰ Woke up from sleep");
