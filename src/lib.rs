@@ -562,9 +562,9 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     if cashu_ecash_support {
         info!("🪙 Cashu eCash support is enabled");
 
-        // Initialize Cashu PostgreSQL database
-        let db_url = std::env::var("CASHU_DATABASE_URL").unwrap_or_else(|_| "postgres://cashu_user:password@localhost:5432/cashu_db?connect_timeout=10&keepalives=1&keepalives_idle=30".to_string());
-        ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DATABASE_URL: '{}'", db_url);
+        // Initialize Cashu SQLite database
+        let db_url = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_tokens.db".to_string());
+        ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DB_PATH: '{}'", db_url);
 
         match cashu::initialize_cashu(&db_url) {
             Ok(_) => {

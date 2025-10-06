@@ -16,11 +16,10 @@ serde_json = "1.0"
 reqwest = { version = "0.12.12", features = ["blocking"] }
 tonic_openssl_lnd = "0.2.0"
 once_cell = "1.20.3"
-cdk = { git = "https://github.com/DhananjayPurohit/cdk", branch = "main" }
+cdk = { git = "https://github.com/cashubtc/cdk", branch = "main", features = ["wallet"] }
+cdk-sqlite = { git = "https://github.com/cashubtc/cdk", branch = "main", features = ["wallet"] }
 base64 = "0.22.1"
 rand = "0.9.0"
-cdk-postgres = { git = "https://github.com/DhananjayPurohit/cdk", branch = "main", features = ["wallet"] }
-tokio-postgres = "0.7.13"
 bip39 = { version = "2.1.0", features = ["rand"] }
 redis = "0.32.2"
 macaroon = "0.3.0"
