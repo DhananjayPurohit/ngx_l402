@@ -81,7 +81,7 @@ Environment=REDIS_URL=redis://127.0.0.1:6379
 
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
-Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.redb
+Environment=CASHU_DATABASE_URL=postgres://cashu_user:password@localhost:5432/cashu_db
 # Optional: Enable automatic redemption of Cashu tokens to Lightning (default: false)
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
@@ -106,10 +106,15 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 sudo systemctl restart nginx
 ```
 
-6. (Only if accepting Cashu tokens) Provide permission to the Nginx user to access the Cashu database:
+6. (Only if accepting Cashu tokens) Set up PostgreSQL database:
 ```bash
-sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.redb
-sudo chmod 660 /var/lib/nginx/cashu_wallet.redb
+# Create PostgreSQL database and user
+sudo -u postgres psql -c "CREATE DATABASE cashu_db;"
+sudo -u postgres psql -c "CREATE USER cashu_user WITH PASSWORD 'password';"
+sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE cashu_db TO cashu_user;"
+
+# The cdk-postgres crate will automatically create the necessary tables
+# when the module initializes
 ```
 
 ## 📋 Logging

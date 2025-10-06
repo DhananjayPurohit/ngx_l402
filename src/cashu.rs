@@ -1,5 +1,4 @@
 use cdk;
-use rand::Rng;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::str::FromStr;
@@ -8,8 +7,7 @@ use tokio::runtime::Runtime;
 use l402_middleware::lnclient;
 use tonic_openssl_lnd::lnrpc;
 use cdk::cdk_database::WalletDatabase;
-use std::path::Path;
-use bip39::Mnemonic;
+use cdk::mint_url::MintUrl;
 use log::{info, warn, error, debug};
 use crate::cashu_redemption_logger;
 
@@ -21,12 +19,12 @@ thread_local! {
 const MSAT_PER_SAT: u64 = 1000;
 
 // Database singleton
-static CASHU_DB: OnceLock<Arc<cdk_redb::wallet::WalletRedbDatabase>> = OnceLock::new();
+static CASHU_DB: OnceLock<Arc<cdk_postgres::WalletPgDatabase>> = OnceLock::new();
 
 // Whitelisted mints singleton
 static WHITELISTED_MINTS: OnceLock<HashSet<String>> = OnceLock::new();
 
-pub fn initialize_cashu(db_path: &str) -> Result<(), String> {
+pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     // Initialize PROCESSED_TOKENS with empty HashSet
     PROCESSED_TOKENS.with(|tokens| {
         *tokens.borrow_mut() = Some(HashSet::new());
@@ -35,16 +33,16 @@ pub fn initialize_cashu(db_path: &str) -> Result<(), String> {
     // Create runtime for async initialization
     let rt = Runtime::new().expect("Failed to create runtime");
     
-    // Initialize database
+    // Initialize PostgreSQL database
     rt.block_on(async {
-        match cdk_redb::wallet::WalletRedbDatabase::new(Path::new(db_path)) {
+        match cdk_postgres::WalletPgDatabase::new(db_url).await {
             Ok(db) => {
-                info!("✅ Cashu database initialized successfully");
+                info!("✅ Cashu PostgreSQL database initialized successfully");
                 let _ = CASHU_DB.set(Arc::new(db));
                 Ok(())
             },
             Err(e) => {
-                let error = format!("Failed to create Cashu database: {:?}", e);
+                let error = format!("Failed to create Cashu PostgreSQL database: {:?}", e);
                 error!("❌ {}", error);
                 Err(error)
             }
@@ -95,6 +93,8 @@ pub fn is_mint_whitelisted(mint_url: &str) -> bool {
 }
 
 pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, String> {
+    // Log database status
+    debug!("🔍 Verifying Cashu token, checking database connection...");
     // Check if token was already processed
     let token_already_processed = PROCESSED_TOKENS.with(|tokens| {
         if let Some(set) = tokens.borrow().as_ref() {
@@ -118,8 +118,9 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
         }
     };
     
-    // Check if the token is valid
-    if token_decoded.proofs().is_empty() {
+    // Check if the token is valid - we'll need to get proofs later with proper keysets
+    // For now, just check if token has the basic structure
+    if token_decoded.proofs(&[]).is_err() {
         return Ok(false);
     }
     
@@ -144,8 +145,7 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
         return Ok(false);
     }
     
-    info!("✅ Successfully decoded Cashu token with {} proofs and {} msat (required: {} msat)", 
-        token_decoded.proofs().len(),
+    info!("✅ Successfully decoded Cashu token with {} msat (required: {} msat)", 
         total_amount_msat,
         amount_msat);
     
@@ -170,27 +170,19 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
         
     // Use a consistent seed for all wallets (same as redemption process)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
-    let seed = seed_hash.as_bytes().clone();
+    let mut seed = [0u8; 64];
+    seed[..32].copy_from_slice(seed_hash.as_bytes());
     debug!("🔑 Using seed for receiving token from mint {}: {:?}", mint_url, &seed[..8]);
     
-    // Use MultiMintWallet to ensure the mint gets registered properly
-    let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
+    // Create wallet directly for this specific mint
+    let wallet = cdk::wallet::Wallet::new(
+        &mint_url.to_string(),
+        unit,
         db.clone(),
-        Arc::new(seed),
-        vec![],
-    );
-    
-    // Create and add wallet for this mint (or get existing one)
-    multi_mint_wallet
-        .create_and_add_wallet(&mint_url.to_string(), unit, None)
-        .await
-        .map_err(|e| format!("Failed to create wallet for mint {}: {}", mint_url, e))?;
-    
-    // Now get the wallet we just created
-    let wallets = multi_mint_wallet.get_wallets().await;
-    let wallet = wallets.into_iter()
-        .find(|w| w.mint_url.to_string() == mint_url.to_string())
-        .ok_or_else(|| format!("Failed to find wallet for mint {}", mint_url))?;
+        seed,
+        None,
+    )
+    .map_err(|e| format!("Failed to create wallet: {}", e))?;
 
     match wallet.receive(token, cdk::wallet::ReceiveOptions::default()).await {
         Ok(_) => {
@@ -237,35 +229,42 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
     cashu_redemption_logger::log_redemption(&msg);
     info!("{}", msg);
 
-    // Use a consistent seed for the multi-mint wallet (same as token verification)
+    // Use a consistent seed for wallets (same as token verification)
     let seed_hash = blake3::hash(b"nginx_cashu_wallet");
-    let seed = seed_hash.as_bytes().clone();
-    debug!("🔑 Using seed for multi-mint wallet: {:?}", &seed[..8]); // Log first 8 bytes for debugging
-    let multi_mint_wallet = cdk::wallet::MultiMintWallet::new(
-        db.clone(),
-        Arc::new(seed),
-        vec![],
-    );
-
-    debug!("💼 Mint wallets: {:?}", multi_mint_wallet);
-
-    // Create wallets for each whitelisted mint
-    for mint_url_str in whitelisted_mints.iter() {
-        // Keeping this as Sat for now but a wallet can hold any unit
-        let unit = cdk::nuts::CurrencyUnit::Sat;
-
-        multi_mint_wallet
-            .create_and_add_wallet(mint_url_str, unit, None)
-            .await
-            .map_err(|e| format!("Failed to create wallet for {}: {}", mint_url_str, e))?;
-    }
+    let mut seed = [0u8; 64];
+    seed[..32].copy_from_slice(seed_hash.as_bytes());
+    debug!("🔑 Using seed for wallets: {:?}", &seed[..8]); // Log first 8 bytes for debugging
 
     let mut total_redeemed = 0;
     let mut total_amount_redeemed_msat = 0;
 
-    debug!("🔗 Mint URLs: {:?}", multi_mint_wallet.get_wallets().await);
+    // Process each whitelisted mint
+    for mint_url_str in whitelisted_mints.iter() {
+        // Convert string to MintUrl
+        let mint_url = match MintUrl::from_str(mint_url_str) {
+            Ok(url) => url,
+            Err(e) => {
+                warn!("⚠️ Invalid mint URL {}: {}", mint_url_str, e);
+                continue;
+            }
+        };
 
-    for wallet in multi_mint_wallet.get_wallets().await {
+        // Create wallet for this mint
+        let wallet = match cdk::wallet::Wallet::new(
+            mint_url_str,
+            cdk::nuts::CurrencyUnit::Sat,
+            db.clone(),
+            seed,
+            None,
+        ) {
+            Ok(w) => w,
+            Err(e) => {
+                warn!("⚠️ Failed to create wallet for {}: {}", mint_url_str, e);
+                continue;
+            }
+        };
+
+        debug!("💼 Created wallet for mint: {}", mint_url_str);
         let wallet_clone = wallet.clone();
 
         // Calculate total amount

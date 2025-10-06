@@ -562,11 +562,11 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     if cashu_ecash_support {
         info!("🪙 Cashu eCash support is enabled");
 
-        // Initialize Cashu database
-        let db_path = std::env::var("CASHU_DB_PATH").unwrap_or_else(|_| "/var/lib/nginx/cashu_wallet.redb".to_string());
-        ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DB_PATH: '{}'", db_path);
+        // Initialize Cashu PostgreSQL database
+        let db_url = std::env::var("CASHU_DATABASE_URL").unwrap_or_else(|_| "postgres://cashu_user:password@localhost:5432/cashu_db?connect_timeout=10&keepalives=1&keepalives_idle=30".to_string());
+        ngx_log_error!(NGX_LOG_INFO, log, "CASHU_DATABASE_URL: '{}'", db_url);
 
-        match cashu::initialize_cashu(&db_path) {
+        match cashu::initialize_cashu(&db_url) {
             Ok(_) => {
                 ngx_log_error!(NGX_LOG_INFO, log, "Cashu database initialized successfully");
             },
@@ -698,8 +698,6 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                     cashu_redemption_logger::log_redemption("⏰ Woke up from sleep, starting next iteration");
                     info!("⏰ Woke up from sleep");
                 }
-                cashu_redemption_logger::log_redemption("🛑 Loop exited! This should never happen!");
-                error!("🛑 Redemption loop exited unexpectedly!");
             });
     }
     0
