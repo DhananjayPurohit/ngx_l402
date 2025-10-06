@@ -670,8 +670,9 @@ checksum = "325918d6fe32f23b19878fe4b34794ae41fc19ddbe53b10571a4874d44ffd39b"
 
 [[package]]
 name = "cashu"
-version = "0.13.0"
-source = "git+https://github.com/cashubtc/cdk?branch=main#c30a078a12be3e9e2e6cb5906dc31c51851586ef"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65fe506a581569e5294cd3dabad7f54503a08d1d73aec17e11f4b3c8bcaada20"
 dependencies = [
  "bitcoin 0.32.5",
  "cbor-diag",
@@ -734,12 +735,14 @@ dependencies = [
 
 [[package]]
 name = "cdk"
-version = "0.13.0"
-source = "git+https://github.com/cashubtc/cdk?branch=main#c30a078a12be3e9e2e6cb5906dc31c51851586ef"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b91e06069935fd4b63a9ee36be8e4cb70e8e43485fd65169926fbdaa38f8bc76"
 dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "bech32 0.9.1",
  "bitcoin 0.32.5",
  "cbor-diag",
  "cdk-common",
@@ -760,6 +763,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "sync_wrapper 0.1.2",
  "thiserror 2.0.12",
  "tokio",
  "tokio-tungstenite",
@@ -775,8 +779,9 @@ dependencies = [
 
 [[package]]
 name = "cdk-common"
-version = "0.13.0"
-source = "git+https://github.com/cashubtc/cdk?branch=main#c30a078a12be3e9e2e6cb5906dc31c51851586ef"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95954291a2fab72ea4e63153ced1c6c2c3b1da651af861c42675b7d1e8b5e9d3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -799,8 +804,9 @@ dependencies = [
 
 [[package]]
 name = "cdk-signatory"
-version = "0.13.0"
-source = "git+https://github.com/cashubtc/cdk?branch=main#c30a078a12be3e9e2e6cb5906dc31c51851586ef"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bff58811ad1426a11920d47b7ec62a20ebd2393fe0486d967f9d50f3c507c4e7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -823,8 +829,9 @@ dependencies = [
 
 [[package]]
 name = "cdk-sql-common"
-version = "0.13.0"
-source = "git+https://github.com/cashubtc/cdk?branch=main#c30a078a12be3e9e2e6cb5906dc31c51851586ef"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a1088e25f6102c320053193ba656cd091bcac67a535284a11a07cb920569bec"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",
@@ -840,8 +847,9 @@ dependencies = [
 
 [[package]]
 name = "cdk-sqlite"
-version = "0.13.0"
-source = "git+https://github.com/cashubtc/cdk?branch=main#c30a078a12be3e9e2e6cb5906dc31c51851586ef"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f91920013b9958f92d5c730c2d2a9f9e6fcbbb7f7df00abb007174a185b23ee7"
 dependencies = [
  "async-trait",
  "bitcoin 0.32.5",

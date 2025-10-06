@@ -35,14 +35,7 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     
     // Initialize SQLite database with WAL mode
     rt.block_on(async {
-        // Create database with WAL mode enabled
-        let db_url_with_wal = if db_url.contains("?") {
-            format!("{}&journal_mode=WAL", db_url)
-        } else {
-            format!("{}?journal_mode=WAL", db_url)
-        };
-        
-        match cdk_sqlite::WalletSqliteDatabase::new(db_url_with_wal.as_str()).await {
+        match cdk_sqlite::WalletSqliteDatabase::new(db_url).await {
             Ok(db) => {
                 info!("✅ Cashu SQLite database initialized successfully with WAL mode");
                 let _ = CASHU_DB.set(Arc::new(db));
@@ -190,11 +183,6 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
         Ok(_) => {
             info!("✅ Cashu token received successfully from mint: {}", mint_url);
             
-            // Debug: Check what mints are in the database after receiving
-            if let Ok(mints_after) = db.get_mints().await {
-                debug!("DEBUG: After receive, mints in DB: {:?}", mints_after.keys().collect::<Vec<_>>());
-            }
-            
             // Add token to processed set after successful receive
             PROCESSED_TOKENS.with(|tokens| {
                 if let Some(set) = tokens.borrow_mut().as_mut() {
@@ -243,14 +231,11 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
 
     // Process each whitelisted mint
     for mint_url_str in whitelisted_mints.iter() {
-        // Convert string to MintUrl
-        let _mint_url = match MintUrl::from_str(mint_url_str) {
-            Ok(url) => url,
-            Err(e) => {
-                warn!("⚠️ Invalid mint URL {}: {}", mint_url_str, e);
-                continue;
-            }
-        };
+        // Validate mint URL format
+        if MintUrl::from_str(mint_url_str).is_err() {
+            warn!("⚠️ Invalid mint URL format: {}", mint_url_str);
+            continue;
+        }
 
         // Create wallet for this mint
         let wallet = match cdk::wallet::Wallet::new(
@@ -267,7 +252,6 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
             }
         };
 
-        debug!("💼 Created wallet for mint: {}", mint_url_str);
         let wallet_clone = wallet.clone();
 
         // Calculate total amount
@@ -359,8 +343,6 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
             }
         };
 
-        debug!("📜 Generated invoice for {} msat: {}", redeemable_amount_msat, invoice);
-
         // Melt the proofs to redeem on Lightning
         cashu_redemption_logger::log_redemption(&format!("🔥 Attempting to melt {} proofs with smart fee management...", proofs.len()));
         
@@ -398,7 +380,7 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         match wallet_clone.melt(&quote.id).await {
             Ok(result) => {
                 let result_msg = format!("🔍 Melt result: {:?}", result);
-                debug!("{}", result_msg);
+                info!("{}", result_msg);
                 cashu_redemption_logger::log_redemption(&result_msg);
                 
                 let actual_fees_msat: u64 = quote.fee_reserve.into();
