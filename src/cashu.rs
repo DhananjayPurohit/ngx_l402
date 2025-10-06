@@ -163,11 +163,16 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
         .ok_or_else(|| "Cashu database not initialized".to_string())?
         .clone();
         
-    // Use a consistent seed for all wallets (same as redemption process)
-    let seed_hash = blake3::hash(b"nginx_cashu_wallet");
+    // Use seed from environment variable (CASHU_WALLET_SECRET)
+    let wallet_secret = std::env::var("CASHU_WALLET_SECRET")
+        .unwrap_or_else(|_| {
+            warn!("⚠️ CASHU_WALLET_SECRET not set! Using insecure default. Set this in production!");
+            "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string()
+        });
+    let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
-    debug!("🔑 Using seed for receiving token from mint {}: {:?}", mint_url, &seed[..8]);
+    debug!("🔑 Using seed for receiving token from mint {}", mint_url);
     
     // Create wallet directly for this specific mint
     let wallet = cdk::wallet::Wallet::new(
@@ -219,11 +224,15 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
     cashu_redemption_logger::log_redemption(&msg);
     info!("{}", msg);
 
-    // Use a consistent seed for wallets (same as token verification)
-    let seed_hash = blake3::hash(b"nginx_cashu_wallet");
+    // Use seed from environment variable (must match token verification)
+    let wallet_secret = std::env::var("CASHU_WALLET_SECRET")
+        .unwrap_or_else(|_| {
+            warn!("⚠️ CASHU_WALLET_SECRET not set! Using insecure default. Set this in production!");
+            "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string()
+        });
+    let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
-    debug!("🔑 Using seed for wallets: {:?}", &seed[..8]); // Log first 8 bytes for debugging
 
     let mut total_redeemed = 0;
     let mut total_amount_redeemed_msat = 0;
