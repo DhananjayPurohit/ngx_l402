@@ -7,7 +7,6 @@ use tokio::runtime::Runtime;
 use l402_middleware::lnclient;
 use tonic_openssl_lnd::lnrpc;
 use cdk::mint_url::MintUrl;
-use cdk::cdk_database::WalletDatabase;
 use log::{info, warn, error, debug};
 use crate::cashu_redemption_logger;
 
