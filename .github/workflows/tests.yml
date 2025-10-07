@@ -627,7 +627,7 @@ jobs:
           # Ensure the Cashu database has proper permissions
           echo "Setting up Cashu database permissions..."
           docker exec nginx-lnd chmod 770 /app/data
-          docker exec nginx-lnd chmod 660 /app/data/cashu_wallet.redb
+          docker exec nginx-lnd chmod 660 /app/data/cashu_wallet.db
           echo "Cashu database permissions set successfully"
           
           # Check mint logs
