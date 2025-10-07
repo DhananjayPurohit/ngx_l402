@@ -125,6 +125,7 @@ services:
       - LNURL_ADDRESS=${LNURL_ADDRESS}
     depends_on:
       - redis
+      - grpc-content-server
 
   nginx-cln:
     container_name: nginx-cln
