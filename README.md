@@ -143,6 +143,9 @@ sudo journalctl -u nginx
 # Nginx error logs
 sudo tail -f /var/log/nginx/error.log
 
+# Cashu redemption logs
+sudo tail -f /var/log/nginx/cashu_redemption.log
+
 # Docker logs
 docker logs container-name -f
 ```
@@ -154,7 +157,7 @@ To build the module from source:
 1. Install required dependencies:
 
 ```bash
-sudo apt-get install -y build-essential clang libclang-dev libc6-dev zlib1g-dev pkg-config libssl-dev nginx
+sudo apt-get install -y build-essential clang libclang-dev libc6-dev zlib1g-dev pkg-config libssl-dev protobuf-compiler nginx
 ```
 
 2. Install Rust and Cargo if not already installed:
