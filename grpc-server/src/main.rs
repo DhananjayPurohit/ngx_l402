@@ -90,14 +90,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
     
-    let addr = "[::]:50051".parse()?;
+    let addr = "0.0.0.0:50051".parse()?;
     let service = ContentServiceImpl::default();
 
+    info!("🚀 Starting gRPC content server...");
     info!("🚀 gRPC content server listening on {}", addr);
 
     let reflection_service = ReflectionBuilder::configure()
         .register_encoded_file_descriptor_set(&content_descriptor::FILE_DESCRIPTOR_SET[..])
         .build()?;
+
+    info!("✅ gRPC server configured, starting to serve...");
 
     Server::builder()
         .add_service(ContentServiceServer::new(service))

@@ -125,6 +125,7 @@ services:
       - LNURL_ADDRESS=${LNURL_ADDRESS}
     depends_on:
       - redis
+      - grpc-content-server
 
   nginx-cln:
     container_name: nginx-cln
@@ -184,7 +185,8 @@ services:
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode:10009
       - CASHU_ECASH_SUPPORT=true
-      - CASHU_DB_PATH=/app/data/cashu_wallet.redb
+      - CASHU_DB_PATH=/app/data/cashu_tokens.db
+      - CASHU_WALLET_SECRET=${CASHU_WALLET_SECRET}
       - CASHU_REDEEM_ON_LIGHTNING=true
       - CASHU_REDEMPTION_INTERVAL_SECS=90
       - CASHU_WHITELISTED_MINTS=http://cashu-mint:3338,http://cashu-mint1:3338

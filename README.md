@@ -81,7 +81,10 @@ Environment=REDIS_URL=redis://127.0.0.1:6379
 
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
-Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_wallet.redb
+Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
+Environment=CASHU_WALLET_SECRET=<your-secret-random-string>
+# IMPORTANT: Change CASHU_WALLET_SECRET to a unique random string!
+# Generate one with: openssl rand -hex 32
 # Optional: Enable automatic redemption of Cashu tokens to Lightning (default: false)
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
@@ -97,20 +100,38 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 ```
 > **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
 
+> **⚠️ SECURITY**: The `CASHU_WALLET_SECRET` environment variable is **CRITICAL** for security. This secret is used to generate the wallet seed. Anyone with access to this secret can steal your tokens! 
+> - **Generate a strong random secret**: `openssl rand -hex 32`
+> - **Never commit this to Git**
+> - **Keep it in a secure environment variable or secrets manager**
+> - **Different for each deployment/environment**
+
 > **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted. If configured with comma-separated mint URLs, only tokens from those specific mints will be accepted.
 
 > **Note**: The module supports dynamic pricing through Redis, allowing you to change endpoint prices in real-time without restarting Nginx. When Redis is configured, the module will check Redis for a price override before using the default price specified in the nginx configuration.
 
-5. Restart Nginx:
+5. Set up SQLite database directory (if accepting Cashu tokens):
 ```bash
-sudo systemctl restart nginx
+# One-time setup: Create directory for SQLite database
+# These commands only need to be run once and persist across restarts
+sudo mkdir -p /var/lib/nginx
+sudo chown nginx:nginx /var/lib/nginx
+
+# Set proper permissions
+sudo chmod 755 /var/lib/nginx
 ```
 
-6. (Only if accepting Cashu tokens) Provide permission to the Nginx user to access the Cashu database:
+6. Restart and reload Nginx:
 ```bash
-sudo chown nginx:nginx /var/lib/nginx/cashu_wallet.redb
-sudo chmod 660 /var/lib/nginx/cashu_wallet.redb
+sudo systemctl restart nginx
+sudo systemctl reload nginx
 ```
+
+**Note:** The directory setup above is **one-time only** and persists across nginx restarts. You only need to run these commands once after installation.
+
+**Important:** Both `restart` and `reload` are needed to ensure the Cashu redemption task starts properly and you can see redemption logs.
+
+The cdk-sqlite crate will automatically create the database file and tables when the module initializes. SQLite uses WAL mode for better concurrency. Database location: `/var/lib/nginx/cashu_tokens.db`
 
 ## 📋 Logging
 
@@ -121,6 +142,9 @@ sudo journalctl -u nginx
 
 # Nginx error logs
 sudo tail -f /var/log/nginx/error.log
+
+# Cashu redemption logs
+sudo tail -f /var/log/nginx/cashu_redemption.log
 
 # Docker logs
 docker logs container-name -f
@@ -133,7 +157,7 @@ To build the module from source:
 1. Install required dependencies:
 
 ```bash
-sudo apt-get install -y build-essential clang libclang-dev libc6-dev zlib1g-dev pkg-config libssl-dev nginx
+sudo apt-get install -y build-essential clang libclang-dev libc6-dev zlib1g-dev pkg-config libssl-dev protobuf-compiler nginx
 ```
 
 2. Install Rust and Cargo if not already installed:

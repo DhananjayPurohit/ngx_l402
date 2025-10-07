@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.70 as builder
+FROM rust:1.80 as builder
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ COPY . .
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 # Install necessary runtime dependencies
 RUN apt-get update && apt-get install -y \
