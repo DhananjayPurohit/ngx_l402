@@ -85,12 +85,39 @@ Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
 Environment=CASHU_WALLET_SECRET=<your-secret-random-string>
 # IMPORTANT: Change CASHU_WALLET_SECRET to a unique random string!
 # Generate one with: openssl rand -hex 32
+# Optional: Whitelist specific Cashu mints (comma-separated URLs)
+Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
+
 # Optional: Enable automatic redemption of Cashu tokens to Lightning (default: false)
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
-# Optional: Whitelist specific Cashu mints (comma-separated URLs)
-Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
+# Optional: Configure melt/redemption fee handling (percentage-based with minimum fallback)
+# Minimum balance to attempt melting (default: 10 sats)
+Environment=CASHU_MELT_MIN_BALANCE_SATS=10
+# Percentage to reserve for fees (default: 1%)
+Environment=CASHU_MELT_FEE_RESERVE_PERCENT=1
+# Minimum fee reserve when percentage is small (default: 4 sats)
+Environment=CASHU_MELT_MIN_FEE_RESERVE_SATS=4
+# Maximum number of proofs to melt per operation (default: 0 = unlimited)
+# Example: 2000 proofs > 1000 limit → melt first 1000 proofs, rest remain for next cycle
+Environment=CASHU_MAX_PROOFS_PER_MELT=1000
+
+# Optional: Enable P2PK mode for optimized verification (NUT-11 + NUT-24)
+# PERFORMANCE OPTIMIZATION - Requires P2PK-locked tokens from clients
+# When enabled, the proxy will:
+# - Derive public key from private key and send it in X-Cashu header (NUT-24)
+# - Require clients to create P2PK-locked tokens to that public key
+# - Verify tokens are locked to our public key (NUT-11)
+# - Unlock proofs using private key (local operation - instant!)
+# - Store unlocked proofs in CDK database (no mint swap call!)
+# - Track accepted tokens in memory cache for double-spend protection
+# - Regular redemption task redeems via wallet.melt() (same flow as standard mode)
+# NOTE: When P2PK mode is enabled, CASHU_WHITELISTED_MINTS is REQUIRED
+Environment=CASHU_P2PK_MODE=true
+Environment=CASHU_P2PK_PRIVATE_KEY=<your-private-key-hex>
+# Generate a private key with: openssl rand -hex 32
+# Public key is derived automatically from this private key
 
 # For logging
 Environment=RUST_LOG=info  # For more detailed logs, configure debug
@@ -98,15 +125,68 @@ Environment=RUST_LOG=info  # For more detailed logs, configure debug
 Environment=RUST_LOG=ngx_l402_lib=debug,info
 ...
 ```
-> **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
+> **Note**: Cashu eCash support has two modes:
+> - **Standard mode** (default): Accepts any Cashu tokens by synchronously calling `wallet.receive()` which contacts the mint to swap tokens during the request. Secure but slower per-request due to blocking mint API calls.
+> - **P2PK mode** (optional): **P2PK-locked token mode** (NUT-11) that requires tokens to be locked to the proxy's public key. The proxy:
+>   1. Derives a public key from `CASHU_P2PK_PRIVATE_KEY` and sends it in the X-Cashu header (NUT-24)
+>   2. Clients must create P2PK-locked tokens to this public key
+>   3. Proxy verifies tokens are locked to its public key and unlocks them with the private key
+>   4. Stores unlocked proofs directly in CDK database using cached keysets (no mint swap call!)
+>   5. Regular redemption task finds and redeems them via `wallet.melt()`
+>   
+>   Much faster per-request (milliseconds), ideal for high-traffic scenarios. Proofs stored in same CDK tables.
 
 > **⚠️ SECURITY**: The `CASHU_WALLET_SECRET` environment variable is **CRITICAL** for security. This secret is used to generate the wallet seed. Anyone with access to this secret can steal your tokens! 
 > - **Generate a strong random secret**: `openssl rand -hex 32`
 > - **Never commit this to Git**
 > - **Keep it in a secure environment variable or secrets manager**
 > - **Different for each deployment/environment**
+>
+> **⚠️ SECURITY**: The `CASHU_P2PK_PRIVATE_KEY` is **EQUALLY CRITICAL** when P2PK mode is enabled. This key is used to unlock P2PK-locked tokens. Anyone with access to this key can spend tokens locked to your public key!
+> - **Generate securely**: `openssl rand -hex 32`
+> - **Never commit to Git or share publicly**
+> - **Keep it secure alongside CASHU_WALLET_SECRET**
 
-> **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted. If configured with comma-separated mint URLs, only tokens from those specific mints will be accepted.
+> **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted in standard mode. **In P2PK mode, whitelisted mints are REQUIRED** for security and the payment request (NUT-24).
+
+> **Note on Fee Configuration**: The melt/redemption fee handling uses a **percentage-based approach with a minimum fallback** and **optional proof count limiting**:
+> - `CASHU_MELT_MIN_BALANCE_SATS`: Minimum balance (in sats) required before attempting to melt tokens to Lightning. Balances below this are skipped to avoid wasting fees on tiny amounts. Default: 10 sats.
+> - `CASHU_MELT_FEE_RESERVE_PERCENT`: Percentage of total balance to reserve for melt fees. The system calculates `fee_reserve = total_amount × (percent / 100)`. Default: 1%.
+> - `CASHU_MELT_MIN_FEE_RESERVE_SATS`: Minimum fee reserve (in sats) used when the percentage calculation results in a very small amount. Final reserve = `max(percentage_fee, minimum_fee)`. Default: 4 sats.
+> - `CASHU_MAX_PROOFS_PER_MELT`: Maximum number of proofs to melt in a single operation. **Logic**: `if (proof_count > limit) then select_first(limit_proofs)`. Calculates total value of selected proofs and generates invoice for that amount. Remaining proofs stay for the next redemption cycle. Set to 0 to disable (default). **Use case**: Prevent hitting mint proof limits per melt operation (e.g., mint.coinos.io has 1000 proof limit).
+>
+> **Example 1** - Large balance (500 sats) with 1% fee reserve:
+> - Percentage fee: `500 × 1% = 5 sats`
+> - Minimum fee: `4 sats`
+> - Used reserve: `max(5, 4) = 5 sats`
+> - Redeemable: `500 - 5 = 495 sats` to Lightning invoice
+>
+> **Example 2** - Small balance (50 sats) with 1% fee reserve:
+> - Percentage fee: `50 × 1% = 0.5 sats`
+> - Minimum fee: `4 sats`
+> - Used reserve: `max(0.5, 4) = 4 sats` ← Minimum kicks in!
+> - Redeemable: `50 - 4 = 46 sats` to Lightning invoice
+>
+> **Example 3** - Proof count limiting when exceeds mint limit:
+> - **Scenario**: Have `1282 proofs` worth 13,588 sats total
+> - **Setting**: `CASHU_MAX_PROOFS_PER_MELT=1000`
+> - **Check**: `1282 proofs > 1000 limit` → ✅ **Limiting triggered**
+> - **Action**: Select first `1000 proofs` worth ~10,600 sats
+> - **Invoice**: Generate invoice for `10,600 sats` (value of selected 1000 proofs)
+> - **Melt**: Send only those 1000 proofs to mint
+> - **Remaining**: `282 proofs` (~2,988 sats) stay for next cycle
+> - **Next cycle**: `282 proofs < 1000 limit` → melts all remaining proofs
+>
+> Actual melt quote fees are verified against the reserve; warnings appear if the reserve was insufficient.
+
+> **Performance Note**: P2PK mode **eliminates the mint swap call** during request processing. The proxy derives a public key and sends it to clients via the X-Cashu header. Clients create P2PK-locked tokens to that public key. When the proxy receives a token:
+>   1. Validates it locally (structure, amount, whitelist)
+>   2. Verifies proofs are locked to its public key (NUT-11)
+>   3. Uses cached keysets to extract proofs (one-time fetch per mint, then cached)
+>   4. Unlocks proofs with private key (local cryptographic operation)
+>   5. Stores unlocked proofs directly in CDK database via `wallet.receive_proofs()`
+>
+>   No mint swap API call! The automatic redemption task finds these proofs via `wallet.get_unspent_proofs()` and redeems them to Lightning via `wallet.melt()`. This dramatically reduces response time (from seconds to milliseconds), prevents mint overload, and enables much higher request rates.
 
 > **Note**: The module supports dynamic pricing through Redis, allowing you to change endpoint prices in real-time without restarting Nginx. When Redis is configured, the module will check Redis for a price override before using the default price specified in the nginx configuration.
 

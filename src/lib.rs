@@ -220,7 +220,38 @@ impl L402Module {
     }
 
     pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
-        cashu::verify_cashu_token(token, amount_msat).await
+        // Check if P2PK mode is enabled (use initialized state, not env vars)
+        if cashu::is_p2pk_mode_enabled() {
+            info!("🔐 Using P2PK local verification mode");
+            cashu::verify_cashu_token_p2pk(token, amount_msat).await
+        } else {
+            info!("💰 Using standard Cashu verification (with mint receive)");
+            cashu::verify_cashu_token(token, amount_msat).await
+        }
+    }
+    
+    pub fn get_cashu_payment_request(&self, amount_msat: i64) -> Option<String> {
+        // Check if P2PK mode is enabled (use initialized state, not env vars)
+        if !cashu::is_p2pk_mode_enabled() {
+            return None;
+        }
+        
+        // Get whitelisted mints
+        if let Some(whitelisted_mints) = cashu::get_whitelisted_mints() {
+            match cashu::generate_payment_request(amount_msat, whitelisted_mints) {
+                Ok(req) => {
+                    info!("✅ Generated X-Cashu payment request (P2PK): {}", &req[..50.min(req.len())]);
+                    Some(req)
+                },
+                Err(e) => {
+                    error!("❌ Failed to generate payment request: {}", e);
+                    None
+                }
+            }
+        } else {
+            error!("❌ No whitelisted mints configured for P2PK mode");
+            None
+        }
     }
 
     pub fn get_dynamic_price(&self, path: &str) -> i64 {
@@ -423,7 +454,34 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 .expect("tokio runtime init")
         });
         
-        // Use block_on as getting better performance than spawn + channel
+        // Check if Cashu is enabled and P2PK mode is active
+        // Use initialized state instead of reading env vars (workers don't have access to env)
+        let cashu_ecash_support = cashu::is_cashu_ecash_enabled();
+        let p2pk_mode = cashu::is_p2pk_mode_enabled();
+        
+        ngx_log_error!(NGX_LOG_INFO, log_ref, "cashu_ecash_support={} p2pk_mode={}", 
+            cashu_ecash_support, p2pk_mode);
+        
+        // If P2PK mode is enabled, send X-Cashu header (NUT-24)
+        if cashu_ecash_support && p2pk_mode {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "P2PK mode enabled - generating X-Cashu header (NUT-24)");
+            
+            if let Some(cashu_payment_request) = module.get_cashu_payment_request(final_amount) {
+                unsafe {
+                    let req = Request::from_ngx_http_request(request);
+                    req.add_header_out("X-Cashu", &cashu_payment_request);
+                    ngx_log_error!(NGX_LOG_INFO, log_ref, "✅ Set X-Cashu header: {}", 
+                        &cashu_payment_request[..50.min(cashu_payment_request.len())]);
+                }
+            } else {
+                ngx_log_error!(NGX_LOG_ERR, log_ref, "❌ Failed to generate X-Cashu payment request");
+            }
+        } else {
+            ngx_log_error!(NGX_LOG_INFO, log_ref, "X-Cashu header not sent (cashu={} p2pk={})", 
+                cashu_ecash_support, p2pk_mode);
+        }
+        
+        // Always send L402 header as well (for Lightning payments)
         let header_result = rt.block_on(async {
             module.get_l402_header(caveats.clone(), final_amount, macaroon_timeout).await
         });
@@ -431,7 +489,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         match header_result {
             Some(header_value) => {
                 unsafe {
-                    ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402 header");
+                    ngx_log_error!(NGX_LOG_INFO, log_ref, "Setting L402/WWW-Authenticate header");
                     let req = Request::from_ngx_http_request(request);
                     req.add_header_out("WWW-Authenticate", &header_value);
                 }
@@ -588,6 +646,16 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             }
         } else {
             info!("ℹ️ No whitelisted mints configured - all mints will be accepted");
+        }
+        
+        // Initialize P2PK mode if enabled
+        match cashu::initialize_p2pk_mode() {
+            Ok(_) => {
+                ngx_log_error!(NGX_LOG_INFO, log, "P2PK mode initialization completed");
+            },
+            Err(e) => {
+                ngx_log_error!(NGX_LOG_ERR, log, "Failed to initialize P2PK mode: {}", e);
+            }
         }
     } else {
         info!("ℹ️ Cashu eCash support is disabled");
