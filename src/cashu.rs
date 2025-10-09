@@ -512,8 +512,23 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         .unwrap_or(4); // Default to 4 sats minimum fee reserve
     let min_fee_reserve_msat = min_fee_reserve_sats * MSAT_PER_SAT;
     
-    let msg = format!("⚙️ Melt config: min_balance={} sats, fee_reserve={}%, min_fee_reserve={} sats", 
-        min_balance_sats, fee_reserve_percent, min_fee_reserve_sats);
+    let max_invoice_amount_sats = std::env::var("CASHU_MELT_MAX_INVOICE_AMOUNT_SATS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0); // Default to 0 (no limit)
+    let max_invoice_amount_msat = if max_invoice_amount_sats > 0 {
+        max_invoice_amount_sats * MSAT_PER_SAT
+    } else {
+        0
+    };
+    
+    let msg = if max_invoice_amount_msat > 0 {
+        format!("⚙️ Melt config: min_balance={} sats, fee_reserve={}%, min_fee_reserve={} sats, max_invoice_limit={} sats (if proofs > {})", 
+            min_balance_sats, fee_reserve_percent, min_fee_reserve_sats, max_invoice_amount_sats, max_invoice_amount_sats)
+    } else {
+        format!("⚙️ Melt config: min_balance={} sats, fee_reserve={}%, min_fee_reserve={} sats, max_invoice_limit=disabled", 
+            min_balance_sats, fee_reserve_percent, min_fee_reserve_sats)
+    };
     info!("{}", msg);
     cashu_redemption_logger::log_redemption(&msg);
 
@@ -613,12 +628,27 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         }
 
         // Calculate redeemable amount
-        let redeemable_amount_msat = total_amount_msat - fee_reserve_msat;
+        let mut redeemable_amount_msat = total_amount_msat - fee_reserve_msat;
         
-        let msg = format!("💡 Redemption plan: {} msat total - {} msat fee reserve = {} msat redeemable", 
-            total_amount_msat, fee_reserve_msat, redeemable_amount_msat);
-        info!("{}", msg);
-        cashu_redemption_logger::log_redemption(&msg);
+        // Apply max invoice amount cap based on proof count if configured
+        if max_invoice_amount_sats > 0 && proofs.len() > max_invoice_amount_sats as usize {
+            let original_redeemable = total_amount_msat - fee_reserve_msat;
+            let msg = format!("⚠️ Have {} proofs (>{} limit) - capping invoice amount to {} sats instead of {} sats", 
+                proofs.len(), max_invoice_amount_sats, max_invoice_amount_sats, original_redeemable / MSAT_PER_SAT);
+            info!("{}", msg);
+            cashu_redemption_logger::log_redemption(&msg);
+            redeemable_amount_msat = max_invoice_amount_msat;
+            
+            let msg = format!("💡 Generating invoice for {} sats only - wallet will auto-select proofs, rest remain for next cycle", 
+                max_invoice_amount_sats);
+            info!("{}", msg);
+            cashu_redemption_logger::log_redemption(&msg);
+        } else {
+            let msg = format!("💡 Redemption plan: {} proofs → {} msat total - {} msat fee reserve = {} msat redeemable", 
+                proofs.len(), total_amount_msat, fee_reserve_msat, redeemable_amount_msat);
+            info!("{}", msg);
+            cashu_redemption_logger::log_redemption(&msg);
+        }
 
         // Generate Lightning invoice for the redeemable amount
         let memo = format!("Redeeming {} tokens from {} ({} msat after {} msat fee reserve)", 
