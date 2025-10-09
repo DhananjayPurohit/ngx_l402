@@ -512,21 +512,16 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         .unwrap_or(4); // Default to 4 sats minimum fee reserve
     let min_fee_reserve_msat = min_fee_reserve_sats * MSAT_PER_SAT;
     
-    let max_invoice_amount_sats = std::env::var("CASHU_MELT_MAX_INVOICE_AMOUNT_SATS")
+    let max_proofs_per_melt = std::env::var("CASHU_MAX_PROOFS_PER_MELT")
         .ok()
-        .and_then(|v| v.parse::<u64>().ok())
+        .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0); // Default to 0 (no limit)
-    let max_invoice_amount_msat = if max_invoice_amount_sats > 0 {
-        max_invoice_amount_sats * MSAT_PER_SAT
-    } else {
-        0
-    };
     
-    let msg = if max_invoice_amount_msat > 0 {
-        format!("⚙️ Melt config: min_balance={} sats, fee_reserve={}%, min_fee_reserve={} sats, max_invoice_limit={} sats (if proofs > {})", 
-            min_balance_sats, fee_reserve_percent, min_fee_reserve_sats, max_invoice_amount_sats, max_invoice_amount_sats)
+    let msg = if max_proofs_per_melt > 0 {
+        format!("⚙️ Melt config: min_balance={} sats, fee_reserve={}%, min_fee_reserve={} sats, max_proofs_per_melt={}", 
+            min_balance_sats, fee_reserve_percent, min_fee_reserve_sats, max_proofs_per_melt)
     } else {
-        format!("⚙️ Melt config: min_balance={} sats, fee_reserve={}%, min_fee_reserve={} sats, max_invoice_limit=disabled", 
+        format!("⚙️ Melt config: min_balance={} sats, fee_reserve={}%, min_fee_reserve={} sats, max_proofs_per_melt=unlimited", 
             min_balance_sats, fee_reserve_percent, min_fee_reserve_sats)
     };
     info!("{}", msg);
@@ -627,32 +622,52 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
             continue;
         }
 
-        // Calculate redeemable amount
-        let mut redeemable_amount_msat = total_amount_msat - fee_reserve_msat;
-        
-        // Apply max invoice amount cap based on proof count if configured
-        if max_invoice_amount_sats > 0 && proofs.len() > max_invoice_amount_sats as usize {
-            let original_redeemable = total_amount_msat - fee_reserve_msat;
-            let msg = format!("⚠️ Have {} proofs (>{} limit) - capping invoice amount to {} sats instead of {} sats", 
-                proofs.len(), max_invoice_amount_sats, max_invoice_amount_sats, original_redeemable / MSAT_PER_SAT);
-            info!("{}", msg);
-            cashu_redemption_logger::log_redemption(&msg);
-            redeemable_amount_msat = max_invoice_amount_msat;
+        // Select proofs to melt based on configured limit
+        let (proofs_to_melt, selected_total_msat) = if max_proofs_per_melt > 0 && proofs.len() > max_proofs_per_melt {
+            // Limit exceeded - select only the configured number of proofs
+            let selected_proofs: Vec<_> = proofs.iter().take(max_proofs_per_melt).cloned().collect();
             
-            let msg = format!("💡 Generating invoice for {} sats only - wallet will auto-select proofs, rest remain for next cycle", 
-                max_invoice_amount_sats);
+            // Calculate total value of selected proofs
+            let selected_total: u64 = selected_proofs.iter()
+                .map(|p| {
+                    let amount: u64 = p.amount.into();
+                    if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
+                        amount * MSAT_PER_SAT
+                    } else {
+                        amount
+                    }
+                })
+                .sum();
+            
+            let msg = format!("⚠️ Have {} proofs (>{} limit) - selecting first {} proofs worth {} sats", 
+                proofs.len(), max_proofs_per_melt, selected_proofs.len(), selected_total / MSAT_PER_SAT);
             info!("{}", msg);
             cashu_redemption_logger::log_redemption(&msg);
+            
+            let msg = format!("💡 {} proofs ({} sats) will remain for next redemption cycle", 
+                proofs.len() - selected_proofs.len(), (total_amount_msat - selected_total) / MSAT_PER_SAT);
+            info!("{}", msg);
+            cashu_redemption_logger::log_redemption(&msg);
+            
+            (selected_proofs, selected_total)
         } else {
-            let msg = format!("💡 Redemption plan: {} proofs → {} msat total - {} msat fee reserve = {} msat redeemable", 
-                proofs.len(), total_amount_msat, fee_reserve_msat, redeemable_amount_msat);
-            info!("{}", msg);
-            cashu_redemption_logger::log_redemption(&msg);
-        }
+            // No limit or under limit - use all proofs
+            (proofs.clone(), total_amount_msat)
+        };
+        
+        // Calculate fee reserve based on selected proofs
+        let percentage_fee_selected = ((selected_total_msat as f64) * (fee_reserve_percent / 100.0)) as u64;
+        let fee_reserve_selected_msat = percentage_fee_selected.max(min_fee_reserve_msat);
+        let redeemable_amount_msat = selected_total_msat - fee_reserve_selected_msat;
+        
+        let msg = format!("💡 Redemption plan: {} proofs → {} msat total - {} msat fee reserve = {} msat redeemable", 
+            proofs_to_melt.len(), selected_total_msat, fee_reserve_selected_msat, redeemable_amount_msat);
+        info!("{}", msg);
+        cashu_redemption_logger::log_redemption(&msg);
 
         // Generate Lightning invoice for the redeemable amount
-        let memo = format!("Redeeming {} tokens from {} ({} msat after {} msat fee reserve)", 
-            proofs.len(), wallet.mint_url, redeemable_amount_msat, fee_reserve_msat);
+        let memo = format!("Redeeming {} proofs from {}", 
+            proofs_to_melt.len(), wallet.mint_url);
         cashu_redemption_logger::log_redemption(&format!("📝 Generating Lightning invoice for {} msat", redeemable_amount_msat));
         
         let (invoice, _payment_hash) = match ln_client_conn.generate_invoice(lnrpc::Invoice {
@@ -673,7 +688,7 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         };
 
         // Get melt quote with the redeemable amount
-        cashu_redemption_logger::log_redemption(&format!("🔥 Getting melt quote for {} proofs...", proofs.len()));
+        cashu_redemption_logger::log_redemption(&format!("🔥 Getting melt quote for {} proofs...", proofs_to_melt.len()));
         
         let quote = match wallet_clone.melt_quote(invoice.clone(), None).await {
             Ok(q) => {
@@ -690,23 +705,23 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
                 };
                 
                 let msg = format!("📋 Melt quote: amount={} sats ({} msat), actual_fee_reserve={} sats ({} msat), we reserved {} msat", 
-                    amount_sats, amount_msat, actual_fee_reserve_sats, actual_fee_reserve_msat, fee_reserve_msat);
+                    amount_sats, amount_msat, actual_fee_reserve_sats, actual_fee_reserve_msat, fee_reserve_selected_msat);
                 info!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
                 
                 // Verify our fee reserve was sufficient
                 let required_total_msat = amount_msat + actual_fee_reserve_msat;
-                if total_amount_msat < required_total_msat {
+                if selected_total_msat < required_total_msat {
                     let msg = format!("⚠️ Fee reserve insufficient: {} msat available < {} msat required ({} + {})", 
-                        total_amount_msat, required_total_msat, amount_msat, actual_fee_reserve_msat);
+                        selected_total_msat, required_total_msat, amount_msat, actual_fee_reserve_msat);
                     warn!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
                     continue;
                 }
                 
-                if actual_fee_reserve_msat > fee_reserve_msat {
+                if actual_fee_reserve_msat > fee_reserve_selected_msat {
                     let msg = format!("⚠️ Actual fees ({} msat) higher than reserve ({} msat) - consider increasing fee reserve percentage", 
-                        actual_fee_reserve_msat, fee_reserve_msat);
+                        actual_fee_reserve_msat, fee_reserve_selected_msat);
                     warn!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
                 }
@@ -725,17 +740,17 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         let melt_result = if is_p2pk_mode_enabled() {
             if let Some(private_key_hex) = P2PK_PRIVATE_KEY.get() {
                 if let Ok(private_key) = cdk::nuts::SecretKey::from_hex(private_key_hex) {
-                    info!("🔓 Melting P2PK-locked proofs with witness signature");
+                    info!("🔓 Melting {} P2PK-locked proofs with witness signature", proofs_to_melt.len());
                     
-                    // Sign the proofs with our private key
-                    let mut signed_proofs = proofs.clone();
+                    // Sign the selected proofs with our private key
+                    let mut signed_proofs = proofs_to_melt.clone();
                     for proof in &mut signed_proofs {
                         if let Err(e) = proof.sign_p2pk(private_key.clone()) {
                             error!("❌ Failed to sign proof: {:?}", e);
                         }
                     }
                     
-                    // Use melt_proofs with signed proofs
+                    // Use melt_proofs with signed selected proofs
                     wallet_clone.melt_proofs(&quote.id, signed_proofs).await
                 } else {
                     // Fallback to regular melt
@@ -765,10 +780,10 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
                 total_fees_paid_msat += actual_fees_msat;
                 
                 let msg = format!("✅ Successfully redeemed {} proofs: {} msat to Lightning, {} msat fees, {} msat total", 
-                    proofs.len(), redeemable_amount_msat, actual_fees_msat, total_amount_msat);
+                    proofs_to_melt.len(), redeemable_amount_msat, actual_fees_msat, selected_total_msat);
                 info!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
-                total_redeemed += proofs.len();
+                total_redeemed += proofs_to_melt.len();
                 total_amount_redeemed_msat += redeemable_amount_msat;
             },
             Err(e) => {

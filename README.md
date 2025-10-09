@@ -99,9 +99,9 @@ Environment=CASHU_MELT_MIN_BALANCE_SATS=10
 Environment=CASHU_MELT_FEE_RESERVE_PERCENT=1
 # Minimum fee reserve when percentage is small (default: 4 sats)
 Environment=CASHU_MELT_MIN_FEE_RESERVE_SATS=4
-# Maximum invoice amount in sats - if proof count exceeds this, cap invoice to this amount (default: 0 = disabled)
-# Example: 2000 proofs > 1000 limit → generate 1000 sat invoice, rest of proofs remain for next cycle
-Environment=CASHU_MELT_MAX_INVOICE_AMOUNT_SATS=1000
+# Maximum number of proofs to melt per operation (default: 0 = unlimited)
+# Example: 2000 proofs > 1000 limit → melt first 1000 proofs, rest remain for next cycle
+Environment=CASHU_MAX_PROOFS_PER_MELT=1000
 
 # Optional: Enable P2PK mode for optimized verification (NUT-11 + NUT-24)
 # PERFORMANCE OPTIMIZATION - Requires P2PK-locked tokens from clients
@@ -149,11 +149,11 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 
 > **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted in standard mode. **In P2PK mode, whitelisted mints are REQUIRED** for security and the payment request (NUT-24).
 
-> **Note on Fee Configuration**: The melt/redemption fee handling uses a **percentage-based approach with a minimum fallback** and **optional invoice amount capping**:
+> **Note on Fee Configuration**: The melt/redemption fee handling uses a **percentage-based approach with a minimum fallback** and **optional proof count limiting**:
 > - `CASHU_MELT_MIN_BALANCE_SATS`: Minimum balance (in sats) required before attempting to melt tokens to Lightning. Balances below this are skipped to avoid wasting fees on tiny amounts. Default: 10 sats.
 > - `CASHU_MELT_FEE_RESERVE_PERCENT`: Percentage of total balance to reserve for melt fees. The system calculates `fee_reserve = total_amount × (percent / 100)`. Default: 1%.
 > - `CASHU_MELT_MIN_FEE_RESERVE_SATS`: Minimum fee reserve (in sats) used when the percentage calculation results in a very small amount. Final reserve = `max(percentage_fee, minimum_fee)`. Default: 4 sats.
-> - `CASHU_MELT_MAX_INVOICE_AMOUNT_SATS`: Invoice amount cap based on proof count. **Logic**: `if (proof_count > this_value) then generate_invoice_for(this_value_in_sats)`. The wallet auto-selects which proofs to use. Remaining proofs stay for the next redemption cycle. Set to 0 to disable (default). **Use case**: Prevent hitting mint proof limits per melt operation.
+> - `CASHU_MAX_PROOFS_PER_MELT`: Maximum number of proofs to melt in a single operation. **Logic**: `if (proof_count > limit) then select_first(limit_proofs)`. Calculates total value of selected proofs and generates invoice for that amount. Remaining proofs stay for the next redemption cycle. Set to 0 to disable (default). **Use case**: Prevent hitting mint proof limits per melt operation (e.g., mint.coinos.io has 1000 proof limit).
 >
 > **Example 1** - Large balance (500 sats) with 1% fee reserve:
 > - Percentage fee: `500 × 1% = 5 sats`
@@ -167,15 +167,15 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 > - Used reserve: `max(0.5, 4) = 4 sats` ← Minimum kicks in!
 > - Redeemable: `50 - 4 = 46 sats` to Lightning invoice
 >
-> **Example 3** - Invoice capping when proof count exceeds limit:
-> - **Scenario**: Have `2000 proofs` worth 20,000 sats total
-> - **Setting**: `CASHU_MELT_MAX_INVOICE_AMOUNT_SATS=1000`
-> - **Check**: `2000 proofs > 1000 limit` → ✅ **Capping triggered**
-> - **Action**: Generate invoice for `1000 sats` (not 20,000 sats)
-> - **Result**: Wallet auto-selects ~1000 sats worth of proofs + fees
-> - **Remaining**: ~19,000 sats (in remaining proofs) stay for next cycle
-> - **Next cycle**: Still have >1000 proofs → another 1000 sat invoice
-> - **Continues**: Until proof count ≤ 1000, then melts all remaining
+> **Example 3** - Proof count limiting when exceeds mint limit:
+> - **Scenario**: Have `1282 proofs` worth 13,588 sats total
+> - **Setting**: `CASHU_MAX_PROOFS_PER_MELT=1000`
+> - **Check**: `1282 proofs > 1000 limit` → ✅ **Limiting triggered**
+> - **Action**: Select first `1000 proofs` worth ~10,600 sats
+> - **Invoice**: Generate invoice for `10,600 sats` (value of selected 1000 proofs)
+> - **Melt**: Send only those 1000 proofs to mint
+> - **Remaining**: `282 proofs` (~2,988 sats) stay for next cycle
+> - **Next cycle**: `282 proofs < 1000 limit` → melts all remaining proofs
 >
 > Actual melt quote fees are verified against the reserve; warnings appear if the reserve was insufficient.
 
