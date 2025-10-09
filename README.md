@@ -92,21 +92,60 @@ Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
 # Optional: Whitelist specific Cashu mints (comma-separated URLs)
 Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
 
+# Optional: Enable P2PK mode for optimized verification (NUT-11 + NUT-24)
+# PERFORMANCE OPTIMIZATION - Requires P2PK-locked tokens from clients
+# When enabled, the proxy will:
+# - Derive public key from private key and send it in X-Cashu header (NUT-24)
+# - Require clients to create P2PK-locked tokens to that public key
+# - Verify tokens are locked to our public key (NUT-11)
+# - Unlock proofs using private key (local operation - instant!)
+# - Store unlocked proofs in CDK database (no mint swap call!)
+# - Track accepted tokens in memory cache for double-spend protection
+# - Regular redemption task redeems via wallet.melt() (same flow as standard mode)
+# NOTE: When P2PK mode is enabled, CASHU_WHITELISTED_MINTS is REQUIRED
+Environment=CASHU_P2PK_MODE=true
+Environment=CASHU_P2PK_PRIVATE_KEY=<your-private-key-hex>
+# Generate a private key with: openssl rand -hex 32
+# Public key is derived automatically from this private key
+
 # For logging
 Environment=RUST_LOG=info  # For more detailed logs, configure debug
 # OR for module-specific debug logs only:
 Environment=RUST_LOG=ngx_l402_lib=debug,info
 ...
 ```
-> **Note**: Cashu eCash support is currently in testing phase. While it allows accepting Cashu tokens as payment for L402 challenges, it does not currently implement local double-spend protection. Use this feature with caution in production environments.
+> **Note**: Cashu eCash support has two modes:
+> - **Standard mode** (default): Accepts any Cashu tokens by synchronously calling `wallet.receive()` which contacts the mint to swap tokens during the request. Secure but slower per-request due to blocking mint API calls.
+> - **P2PK mode** (optional): **P2PK-locked token mode** (NUT-11) that requires tokens to be locked to the proxy's public key. The proxy:
+>   1. Derives a public key from `CASHU_P2PK_PRIVATE_KEY` and sends it in the X-Cashu header (NUT-24)
+>   2. Clients must create P2PK-locked tokens to this public key
+>   3. Proxy verifies tokens are locked to its public key and unlocks them with the private key
+>   4. Stores unlocked proofs directly in CDK database using cached keysets (no mint swap call!)
+>   5. Regular redemption task finds and redeems them via `wallet.melt()`
+>   
+>   Much faster per-request (milliseconds), ideal for high-traffic scenarios. Proofs stored in same CDK tables.
 
 > **⚠️ SECURITY**: The `CASHU_WALLET_SECRET` environment variable is **CRITICAL** for security. This secret is used to generate the wallet seed. Anyone with access to this secret can steal your tokens! 
 > - **Generate a strong random secret**: `openssl rand -hex 32`
 > - **Never commit this to Git**
 > - **Keep it in a secure environment variable or secrets manager**
 > - **Different for each deployment/environment**
+>
+> **⚠️ SECURITY**: The `CASHU_P2PK_PRIVATE_KEY` is **EQUALLY CRITICAL** when P2PK mode is enabled. This key is used to unlock P2PK-locked tokens. Anyone with access to this key can spend tokens locked to your public key!
+> - **Generate securely**: `openssl rand -hex 32`
+> - **Never commit to Git or share publicly**
+> - **Keep it secure alongside CASHU_WALLET_SECRET**
 
-> **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted. If configured with comma-separated mint URLs, only tokens from those specific mints will be accepted.
+> **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted in standard mode. **In P2PK mode, whitelisted mints are REQUIRED** for security and the payment request (NUT-24).
+
+> **Performance Note**: P2PK mode **eliminates the mint swap call** during request processing. The proxy derives a public key and sends it to clients via the X-Cashu header. Clients create P2PK-locked tokens to that public key. When the proxy receives a token:
+>   1. Validates it locally (structure, amount, whitelist)
+>   2. Verifies proofs are locked to its public key (NUT-11)
+>   3. Uses cached keysets to extract proofs (one-time fetch per mint, then cached)
+>   4. Unlocks proofs with private key (local cryptographic operation)
+>   5. Stores unlocked proofs directly in CDK database via `wallet.receive_proofs()`
+>
+>   No mint swap API call! The automatic redemption task finds these proofs via `wallet.get_unspent_proofs()` and redeems them to Lightning via `wallet.melt()`. This dramatically reduces response time (from seconds to milliseconds), prevents mint overload, and enables much higher request rates.
 
 > **Note**: The module supports dynamic pricing through Redis, allowing you to change endpoint prices in real-time without restarting Nginx. When Redis is configured, the module will check Redis for a price override before using the default price specified in the nginx configuration.
 
