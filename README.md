@@ -85,12 +85,20 @@ Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
 Environment=CASHU_WALLET_SECRET=<your-secret-random-string>
 # IMPORTANT: Change CASHU_WALLET_SECRET to a unique random string!
 # Generate one with: openssl rand -hex 32
+# Optional: Whitelist specific Cashu mints (comma-separated URLs)
+Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
+
 # Optional: Enable automatic redemption of Cashu tokens to Lightning (default: false)
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
-# Optional: Whitelist specific Cashu mints (comma-separated URLs)
-Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
+# Optional: Configure melt/redemption fee handling (percentage-based with minimum fallback)
+# Minimum balance to attempt melting (default: 10 sats)
+Environment=CASHU_MELT_MIN_BALANCE_SATS=10
+# Percentage to reserve for fees (default: 1%)
+Environment=CASHU_MELT_FEE_RESERVE_PERCENT=1
+# Minimum fee reserve when percentage is small (default: 4 sats)
+Environment=CASHU_MELT_MIN_FEE_RESERVE_SATS=4
 
 # Optional: Enable P2PK mode for optimized verification (NUT-11 + NUT-24)
 # PERFORMANCE OPTIMIZATION - Requires P2PK-locked tokens from clients
@@ -137,6 +145,25 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 > - **Keep it secure alongside CASHU_WALLET_SECRET**
 
 > **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted in standard mode. **In P2PK mode, whitelisted mints are REQUIRED** for security and the payment request (NUT-24).
+
+> **Note on Fee Configuration**: The melt/redemption fee handling uses a **percentage-based approach with a minimum fallback**:
+> - `CASHU_MELT_MIN_BALANCE_SATS`: Minimum balance (in sats) required before attempting to melt tokens to Lightning. Balances below this are skipped to avoid wasting fees on tiny amounts. Default: 10 sats.
+> - `CASHU_MELT_FEE_RESERVE_PERCENT`: Percentage of total balance to reserve for melt fees. The system calculates `fee_reserve = total_amount × (percent / 100)`. Default: 1%.
+> - `CASHU_MELT_MIN_FEE_RESERVE_SATS`: Minimum fee reserve (in sats) used when the percentage calculation results in a very small amount. Final reserve = `max(percentage_fee, minimum_fee)`. Default: 4 sats.
+>
+> **Example 1** - Large balance (500 sats) with 1% fee reserve:
+> - Percentage fee: `500 × 1% = 5 sats`
+> - Minimum fee: `4 sats`
+> - Used reserve: `max(5, 4) = 5 sats`
+> - Redeemable: `500 - 5 = 495 sats` to Lightning invoice
+>
+> **Example 2** - Small balance (50 sats) with 1% fee reserve:
+> - Percentage fee: `50 × 1% = 0.5 sats`
+> - Minimum fee: `4 sats`
+> - Used reserve: `max(0.5, 4) = 4 sats` ← Minimum kicks in!
+> - Redeemable: `50 - 4 = 46 sats` to Lightning invoice
+>
+> Actual melt quote fees are verified against the reserve; warnings appear if the reserve was insufficient.
 
 > **Performance Note**: P2PK mode **eliminates the mint swap call** during request processing. The proxy derives a public key and sends it to clients via the X-Cashu header. Clients create P2PK-locked tokens to that public key. When the proxy receives a token:
 >   1. Validates it locally (structure, amount, whitelist)
