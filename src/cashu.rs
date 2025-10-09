@@ -647,10 +647,20 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
         
         let quote = match wallet_clone.melt_quote(invoice.clone(), None).await {
             Ok(q) => {
-                let actual_fee_reserve_msat: u64 = q.fee_reserve.into();
-                let amount_msat: u64 = q.amount.into();
-                let msg = format!("📋 Melt quote: amount={} msat, actual_fee_reserve={} msat (we reserved {} msat)", 
-                    amount_msat, actual_fee_reserve_msat, fee_reserve_msat);
+                // Quote amounts are in the wallet's unit (sats), need to convert to msat for comparison
+                let actual_fee_reserve_sats: u64 = q.fee_reserve.into();
+                let amount_sats: u64 = q.amount.into();
+                
+                // Convert to msat based on wallet unit
+                let (actual_fee_reserve_msat, amount_msat) = if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
+                    (actual_fee_reserve_sats * MSAT_PER_SAT, amount_sats * MSAT_PER_SAT)
+                } else {
+                    // Already in msat
+                    (actual_fee_reserve_sats, amount_sats)
+                };
+                
+                let msg = format!("📋 Melt quote: amount={} sats ({} msat), actual_fee_reserve={} sats ({} msat), we reserved {} msat", 
+                    amount_sats, amount_msat, actual_fee_reserve_sats, actual_fee_reserve_msat, fee_reserve_msat);
                 info!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
                 
@@ -715,10 +725,16 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
                 info!("{}", result_msg);
                 cashu_redemption_logger::log_redemption(&result_msg);
                 
-                let actual_fees_msat: u64 = quote.fee_reserve.into();
+                // Convert actual fees from quote (in sats) to msat
+                let actual_fees_sats: u64 = quote.fee_reserve.into();
+                let actual_fees_msat = if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
+                    actual_fees_sats * MSAT_PER_SAT
+                } else {
+                    actual_fees_sats
+                };
                 total_fees_paid_msat += actual_fees_msat;
                 
-                let msg = format!("✅ Successfully redeemed {} proofs: {} msat to Lightning + {} msat fees = {} msat total", 
+                let msg = format!("✅ Successfully redeemed {} proofs: {} msat to Lightning, {} msat fees, {} msat total", 
                     proofs.len(), redeemable_amount_msat, actual_fees_msat, total_amount_msat);
                 info!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
