@@ -213,6 +213,14 @@ sudo systemctl reload nginx
 
 The cdk-sqlite crate will automatically create the database file and tables when the module initializes. SQLite uses WAL mode for better concurrency. Database location: `/var/lib/nginx/cashu_tokens.db`
 
+## ⚡ L402 Protocol Notes
+
+This module implements the [L402 protocol](https://docs.lightning.engineering/the-lightning-network/l402) using standard Lightning Network payments. The implementation:
+
+- **Preimage Requirement**: Only supports standard 32-byte (256-bit) Lightning preimages, as specified by the Lightning Network protocol. The preimage is verified against the payment_hash using SHA256 hashing.
+- **Payment Verification**: When a client provides an L402 authorization header with a preimage, it must be exactly 32 bytes to match the Lightning Network standard.
+- **Wallet Compatibility**: ⚠️ Note that some wallets like [Wallet of Satoshi](https://www.walletofsatoshi.com/) provide 48-byte preimages (non-standard), which are **not compatible** with this module. For payment use wallets that provide standard 32-byte Lightning preimages.
+
 ## 📋 Logging
 
 ### View Logs
