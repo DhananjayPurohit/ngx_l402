@@ -178,6 +178,7 @@ pub fn generate_payment_request(
         "a": amount_msat / 1000, // Convert to sats
         "u": "sat",
         "m": mints_array,
+        "t": [], // Empty transport array = in-band transport (X-Cashu header)
         "nut10": {
             "k": "P2PK",           // NUT-10 secret kind
             "d": public_key_str    // NUT-10 secret data - our public key!
