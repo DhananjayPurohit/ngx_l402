@@ -27,6 +27,139 @@ graph TD;
 
 > **Note**: This module requires **NGINX version 1.28.0** or later. Earlier versions will cause module version mismatch errors.
 
+### Option 1: Using Docker Images (Recommended)
+
+The easiest way to deploy the L402 Nginx module is by using our official Docker images:
+
+```bash
+# Pull the image
+docker pull ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
+#### Quick Start Examples
+
+**1. LNURL Backend (Simple Setup)**
+```bash
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LNURL \
+  -e LNURL_ADDRESS=https://your-lnurl-server.com \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
+**2. LND Backend with Cashu Support**
+```bash
+# Create data directory for credentials
+mkdir -p ~/l402-data
+
+# Copy your LND credentials
+cp ~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon ~/l402-data/
+cp ~/.lnd/tls.cert ~/l402-data/
+
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LND \
+  -e LND_ADDRESS=your-lnd-ip:10009 \
+  -e MACAROON_FILE_PATH=/app/data/admin.macaroon \
+  -e CERT_FILE_PATH=/app/data/tls.cert \
+  -e CASHU_ECASH_SUPPORT=true \
+  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
+  -e CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com \
+  -e CASHU_REDEEM_ON_LIGHTNING=true \
+  -e REDIS_URL=redis://redis:6379 \
+  -v ~/l402-data:/app/data \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
+**3. CLN Backend (Core Lightning)**
+```bash
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=CLN \
+  -e CLN_LIGHTNING_RPC_FILE_PATH=/app/data/lightning-rpc \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  -e CASHU_ECASH_SUPPORT=true \
+  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
+  -v ~/.lightning/bitcoin/lightning-rpc:/app/data/lightning-rpc:ro \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
+**4. NWC Backend (Nostr Wallet Connect)**
+```bash
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=NWC \
+  -e NWC_URI=nostr+walletconnect://your-pubkey?relay=wss://relay.damus.io&secret=your-secret \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
+**5. High-Performance P2PK Mode (Recommended for Production)**
+```bash
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LND \
+  -e LND_ADDRESS=your-lnd-ip:10009 \
+  -e MACAROON_FILE_PATH=/app/data/admin.macaroon \
+  -e CERT_FILE_PATH=/app/data/tls.cert \
+  -e CASHU_ECASH_SUPPORT=true \
+  -e CASHU_P2PK_MODE=true \
+  -e CASHU_P2PK_PRIVATE_KEY=your-32-byte-hex-private-key \
+  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
+  -e CASHU_WHITELISTED_MINTS=https://mint1.example.com \
+  -e CASHU_REDEEM_ON_LIGHTNING=true \
+  -e REDIS_URL=redis://redis:6379 \
+  -v ~/l402-data:/app/data \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
+#### Required Secrets Generation
+
+Before running, generate the required secrets:
+
+```bash
+# Generate ROOT_KEY (required for all setups)
+openssl rand -hex 32
+
+# Generate CASHU_WALLET_SECRET (for Cashu support)
+openssl rand -hex 32
+
+# Generate CASHU_P2PK_PRIVATE_KEY (for P2PK mode)
+openssl rand -hex 32
+```
+
+#### Testing Your Setup
+
+```bash
+# Test free endpoint
+curl http://localhost:8000/
+
+# Test protected endpoint (should return 402 with L402 header)
+curl -i http://localhost:8000/protected
+
+# Check container logs
+docker logs l402-nginx -f
+
+# Stop the container
+docker stop l402-nginx
+```
+
+For specific versions:
+```bash
+docker pull ghcr.io/dhananjaypurohit/ngx_l402:v1.1.2
+```
+
+### Option 2: Manual Installation
+
 1. Download the module file `libngx_l402_lib.so` from the [latest release](https://github.com/DhananjayPurohit/ngx_l402/releases/latest) and copy it to your Nginx modules directory (typically `/etc/nginx/modules/`)
 
 2. Enable the module in your nginx.conf:
