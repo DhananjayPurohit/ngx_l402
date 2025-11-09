@@ -830,8 +830,19 @@ jobs:
           echo "Generated Cashu token: $CASHU_TOKEN: 50 sats"
 
           echo "using cashu token to access protected route..."
-          curl -s -w "\n%{http_code}" --max-time 15 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected > /tmp/cashu_response.txt
-          echo "Cashu token used successfully"
+          echo "Cashu token format check: ${CASHU_TOKEN:0:100}..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 15 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          RESPONSE_CODE=$(echo "$RESPONSE" | tail -n1)
+          echo "Response code: $RESPONSE_CODE"
+          if [ "$RESPONSE_CODE" = "200" ]; then
+            echo "Cashu token used successfully"
+          else
+            echo "❌ Cashu token rejected (code: $RESPONSE_CODE)"
+            echo "Debugging token response..."
+            echo "$RESPONSE" | head -n -1
+            docker logs nginx-lnd 2>&1 | tail -10
+            exit 1
+          fi
 
           sleep 1
 
@@ -847,8 +858,10 @@ jobs:
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
           echo "Cashu redemption interval is set to: ${REDEMPTION_INTERVAL} seconds"
 
-          echo "Waiting 30 seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
-          sleep 30
+          # Wait for at least one redemption cycle + buffer
+          WAIT_TIME=$((REDEMPTION_INTERVAL + 15))
+          echo "Waiting ${WAIT_TIME} seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
+          sleep $WAIT_TIME
 
           INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
           echo "Initial LND confirmed balance: $INITIAL_BALANCE sats"
