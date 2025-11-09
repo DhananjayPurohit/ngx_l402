@@ -470,8 +470,9 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
-          # Start the remaining services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
+          docker-compose -f docker-compose.yml up -d --no-deps \
+            -e CASHU_REDEMPTION_INTERVAL_SECS=5 \
+            nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
         run: |
@@ -790,68 +791,57 @@ jobs:
         run: |
           echo "Testing Cashu redeem on lightning feature..."
 
-          echo "Checking initial LND wallet balance..."
-          docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance'
+          if docker exec nginx-lnd env | grep -q "CASHU_REDEEM_ON_LIGHTNING=true"; then
+            echo "✅ Cashu redeem on lightning is enabled"
+          else
+            echo "❌ Cashu redeem on lightning is not enabled"
+            exit 1
+          fi
 
-          # Ensure enough tokens are in the database for redemption
-          echo "Minting tokens for redemption testing..."
+          if docker exec nginx-lnd env | grep -q "CASHU_WALLET_SECRET="; then
+            echo "✅ Cashu wallet secret is configured"
+          else
+            echo "❌ Cashu wallet secret is not configured"
+            exit 1
+          fi
 
-          # Mint tokens in parallel for speed
-          echo "Minting tokens in parallel..."
-          docker exec cashu-mint poetry run cashu invoice 100 &
-          docker exec cashu-mint poetry run cashu invoice 10 &
-          wait
-          echo "Minting completed"
+          if docker exec nginx-lnd env | grep -q "CASHU_WHITELISTED_MINTS="; then
+            echo "✅ Cashu whitelisted mints are configured"
+          else
+            echo "❌ Cashu whitelisted mints are not configured"
+            exit 1
+          fi
 
-          # Generate token for redemption testing
           echo "Generating Cashu token for redemption testing..."
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 65)
-          echo "Generated Cashu token: 65 sats"
 
-          # Use token to accumulate database balance
-          echo "Using Cashu token to accumulate database balance..."
-          curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected > /tmp/cashu_response.txt
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu invoice 50 && docker exec cashu-mint poetry run cashu send 50)
+          echo "Generated Cashu token: 50 sats"
+
+          echo "using cashu token to access protected route..."
+          curl -s -w "\n%{http_code}" --max-time 15 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected > /tmp/cashu_response.txt
           echo "Cashu token used successfully"
 
-          # Minimal sleep for database operations
           sleep 1
-
-          # Check that tokens were accepted and stored in database
-          echo "Checking Cashu database contents..."
-          docker exec nginx-lnd ls -la /app/data/ || echo "Database directory not accessible"
 
           # Test 1: Verify tokens are stored in database
           echo "Test 1: Verifying tokens are stored in Cashu database..."
           if docker exec nginx-lnd test -f /app/data/cashu_tokens.db; then
             echo "✅ Cashu database exists and contains tokens"
           else
-            echo "❌ Cashu database not found"
+            echo "Cashu database not found"
             exit 1
           fi
 
-          # Test 2: Manual redemption trigger test
-          echo "Test 2: Testing manual redemption trigger..."
+          # Redemption is configured to run every 5 seconds
+          echo "Waiting 10 seconds for redemption process to initialize..."
+          sleep 10
 
-          # Quick wait for automatic redemption to potentially start
-          echo "Waiting 5 seconds for redemption process to initialize..."
-          sleep 5
-
-          # Check nginx logs for redemption activity
           echo "Checking nginx logs for redemption activity..."
           docker logs nginx-lnd 2>&1 | grep -i "redemption\|redeem\|melt" || echo "No redemption activity found in logs yet"
 
-          # Test 3: Verify LND received payments from redeemed tokens
-          echo "Test 3: Verifying LND received payments from token redemption..."
-
-          # Get initial balance
           INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
           echo "Initial LND confirmed balance: $INITIAL_BALANCE sats"
 
-          # Optimized wait for redemption process (reduced from 30s)
-          echo "Waiting 10 seconds for redemption process to complete..."
-          sleep 10
-
-          # Check final balance
           FINAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
           echo "Final LND confirmed balance: $FINAL_BALANCE sats"
 
@@ -860,75 +850,14 @@ jobs:
           echo "Balance difference: $BALANCE_DIFFERENCE sats"
 
           if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
-            echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
+            echo "LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
           else
-            echo "No payments received yet (redemption may still be in progress or threshold not met)"
-            echo "Checking redemption logs for more details..."
+            echo "LND did not receive any payments from Cashu token redemption yet"
             docker logs nginx-lnd 2>&1 | grep -i "redemption\|redeem\|melt" | tail -5 || echo "No redemption activity found"
-          fi
-
-          # Test 4: Test redemption configuration validation
-          echo "Test 4: Testing redemption configuration..."
-
-          # Check that redemption is enabled
-          if docker exec nginx-lnd env | grep -q "CASHU_REDEEM_ON_LIGHTNING=true"; then
-            echo "✅ Cashu redeem on lightning is enabled"
-          else
-            echo "❌ Cashu redeem on lightning is not enabled"
             exit 1
           fi
 
-          # Check that wallet secret is configured
-          if docker exec nginx-lnd env | grep -q "CASHU_WALLET_SECRET="; then
-            echo "✅ Cashu wallet secret is configured"
-          else
-            echo "❌ Cashu wallet secret is not configured"
-            exit 1
-          fi
-
-          # Check that whitelisted mints are configured
-          if docker exec nginx-lnd env | grep -q "CASHU_WHITELISTED_MINTS="; then
-            echo "✅ Cashu whitelisted mints are configured"
-          else
-            echo "❌ Cashu whitelisted mints are not configured"
-            exit 1
-          fi
-
-          # Test 5: Test redemption fee calculation
-          echo "Test 5: Testing redemption fee calculation logic..."
-
-          # Look for fee calculation messages in logs
-          docker logs nginx-lnd 2>&1 | grep -i "fee.*calculation\|fee.*reserve" || echo "No fee calculation logs found (normal if no redemption occurred)"
-
-          # Test 6: Verify redemption task is running (background process)
-          echo "Test 6: Verifying redemption task is running..."
-
-          # Check logs for redemption task initialization
-          if docker logs nginx-lnd 2>&1 | grep -q "redemption.*task\|smart.*redemption"; then
-            echo "✅ Redemption task is initialized"
-          else
-            echo "ℹ️ Redemption task initialization not found in logs"
-          fi
-
-          # Final verification: Comprehensive log analysis
-          echo "Final verification: Analyzing complete redemption flow..."
-
-          # Extract all Cashu-related log entries
-          echo "=== Cashu Redemption Log Analysis ==="
-          docker logs nginx-lnd 2>&1 | grep -i "cashu\|redemption\|redeem\|melt" | tail -20 || echo "No Cashu redemption logs found"
-          echo "=== End Log Analysis ==="
-
-          # Check LND payments for any redemption-related transactions
-          echo "Checking LND payment transactions..."
-          docker exec lndnode lncli -n regtest listpayments | jq '.payments[] | select(.memo | contains("Redeeming"))' || echo "No redemption payments found"
-
-          echo "✅ All Cashu redeem on lightning integration tests completed!"
-          echo "Test Summary:"
-          echo "  - Token acceptance and database storage: ✅"
-          echo "  - Redemption configuration validation: ✅"
-          echo "  - Fee calculation setup: ✅"
-          echo "  - Background redemption task: ✅"
-          echo "  - LND payment integration: ✅ (if threshold met)"
+          echo "✅ Cashu redeem on lightning integration tests completed!"
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
