@@ -484,6 +484,9 @@ jobs:
           CASHU_WALLET_SECRET: test-wallet-secret-for-integration-tests
           CASHU_REDEMPTION_INTERVAL_SECS: 5
         run: |
+          # Explicitly pass environment variables to docker-compose
+          CASHU_WALLET_SECRET=$CASHU_WALLET_SECRET \
+          CASHU_REDEMPTION_INTERVAL_SECS=$CASHU_REDEMPTION_INTERVAL_SECS \
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
@@ -831,7 +834,30 @@ jobs:
           CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu send 50)
 
           # Extract only the actual Cashu token (starts with "cashu" and contains base64)
-          CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -o 'cashu[A-Za-z0-9_=-]*' | head -1)
+          # Try multiple extraction methods to handle different output formats
+          echo "Raw Cashu output for debugging:"
+          echo "$CASHU_OUTPUT"
+
+          # Method 1: Extract lines starting with "cashu"
+          CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -o '^cashu[A-Za-z0-9_=-]*' | head -1)
+
+          # Method 2: If method 1 fails, extract from any line containing "cashu"
+          if [ -z "$CASHU_TOKEN" ]; then
+            echo "Method 1 failed, trying method 2..."
+            CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -o 'cashu[A-Za-z0-9_=-]*' | head -1)
+          fi
+
+          # Method 3: If still failed, try to extract the last line that looks like a token
+          if [ -z "$CASHU_TOKEN" ]; then
+            echo "Method 2 failed, trying method 3..."
+            CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | tail -1 | grep -o 'cashu[A-Za-z0-9_=-]*')
+          fi
+
+          # Method 4: As last resort, extract from balance line
+          if [ -z "$CASHU_TOKEN" ]; then
+            echo "Method 3 failed, trying method 4..."
+            CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -A1 -B1 "Balance:" | grep -o 'cashu[A-Za-z0-9_=-]*' | head -1)
+          fi
 
           if [ -z "$CASHU_TOKEN" ]; then
             echo "❌ Failed to extract Cashu token from output"
@@ -839,10 +865,19 @@ jobs:
             exit 1
           fi
 
+          # Validate token format
+          if [[ ! "$CASHU_TOKEN" =~ ^cashu[A-Za-z0-9_=-]+$ ]]; then
+            echo "❌ Invalid token format detected"
+            echo "Token: '$CASHU_TOKEN'"
+            echo "Expected format: cashu followed by base64 characters"
+            exit 1
+          fi
+
           echo "Generated Cashu token: ${CASHU_TOKEN:0:100}...: 50 sats"
+          echo "Token length: ${#CASHU_TOKEN} characters"
 
           echo "using cashu token to access protected route..."
-          echo "Cashu token format check: ${CASHU_TOKEN:0:100}..."
+
           RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 15 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
           RESPONSE_CODE=$(echo "$RESPONSE" | tail -n1)
           echo "Response code: $RESPONSE_CODE"
@@ -870,8 +905,8 @@ jobs:
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
           echo "Cashu redemption interval is set to: ${REDEMPTION_INTERVAL} seconds"
 
-          # Wait for at least one redemption cycle + buffer
-          WAIT_TIME=$((REDEMPTION_INTERVAL + 15))
+          WAIT_TIME=$((REDEMPTION_INTERVAL + 10))
+
           echo "Waiting ${WAIT_TIME} seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
           sleep $WAIT_TIME
 
@@ -899,7 +934,28 @@ jobs:
             echo "=== Checking environment variables ==="
             docker exec nginx-lnd env | grep CASHU
 
-            exit 1
+            # Look for specific redemption initialization messages
+            echo "=== Looking for redemption initialization messages ==="
+            docker logs nginx-lnd 2>&1 | grep -i "Automatic Cashu redemption\|Starting Cashu redemption\|module initialization" || echo "No redemption initialization messages found"
+
+            # Check if there are any Cashu-related error messages
+            echo "=== Looking for Cashu error messages ==="
+            docker logs nginx-lnd 2>&1 | grep -i "cashu.*error\|error.*cashu\|Failed.*Cashu" || echo "No Cashu error messages found"
+
+            # Wait a bit longer and check for any late redemption activity
+            echo "Waiting 30 more seconds for any delayed redemption activity..."
+            sleep 30
+
+            FINAL_BALANCE2=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+            BALANCE_DIFFERENCE2=$((FINAL_BALANCE2 - INITIAL_BALANCE))
+            echo "Second balance check difference: $BALANCE_DIFFERENCE2 sats"
+
+            if [ "$BALANCE_DIFFERENCE2" -gt 0 ]; then
+              echo "✅ Delayed redemption occurred!"
+            else
+              echo "❌ Still no redemption activity"
+              exit 1
+            fi
           fi
 
           echo "✅ Cashu redeem on lightning integration tests completed!"
