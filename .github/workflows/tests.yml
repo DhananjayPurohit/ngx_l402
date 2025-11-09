@@ -482,7 +482,7 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
-          CASHU_REDEMPTION_INTERVAL_SECS=5 docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
         run: |
@@ -842,9 +842,8 @@ jobs:
             exit 1
           fi
 
-          # Redemption is configured to run every 5 seconds
-          echo "Waiting 10 seconds for redemption process to initialize..."
-          sleep 10
+          echo "Waiting 30 seconds for redemption process to complete..."
+          sleep 30
 
           echo "Checking nginx logs for redemption activity..."
           docker logs nginx-lnd 2>&1 | grep -i "redemption\|redeem\|melt" || echo "No redemption activity found in logs yet"
