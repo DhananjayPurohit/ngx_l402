@@ -481,6 +481,8 @@ jobs:
         env:
           CURRENCY: USD
           AMOUNT: 0.01
+          CASHU_WALLET_SECRET: test-wallet-secret-for-integration-tests
+          CASHU_REDEMPTION_INTERVAL_SECS: 5
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
@@ -824,8 +826,20 @@ jobs:
 
           echo "Generating Cashu token for redemption testing..."
 
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu invoice 50 && docker exec cashu-mint poetry run cashu send 50)
-          echo "Generated Cashu token: $CASHU_TOKEN: 50 sats"
+          # Generate Cashu token and extract only the token part (skip human-readable output)
+          docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
+          CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu send 50)
+
+          # Extract only the actual Cashu token (starts with "cashu" and contains base64)
+          CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -o 'cashu[A-Za-z0-9_=-]*' | head -1)
+
+          if [ -z "$CASHU_TOKEN" ]; then
+            echo "❌ Failed to extract Cashu token from output"
+            echo "Raw output: $CASHU_OUTPUT"
+            exit 1
+          fi
+
+          echo "Generated Cashu token: ${CASHU_TOKEN:0:100}...: 50 sats"
 
           echo "using cashu token to access protected route..."
           echo "Cashu token format check: ${CASHU_TOKEN:0:100}..."
