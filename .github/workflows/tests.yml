@@ -481,6 +481,8 @@ jobs:
         env:
           CURRENCY: USD
           AMOUNT: 0.01
+          CASHU_WALLET_SECRET: test-wallet-secret-for-integration-tests
+          CASHU_REDEMPTION_INTERVAL_SECS: 5
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
@@ -825,7 +827,7 @@ jobs:
           echo "Generating Cashu token for redemption testing..."
 
           CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu invoice 50 && docker exec cashu-mint poetry run cashu send 50)
-          echo "Generated Cashu token: 50 sats"
+          echo "Generated Cashu token: $CASHU_TOKEN: 50 sats"
 
           echo "using cashu token to access protected route..."
           curl -s -w "\n%{http_code}" --max-time 15 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected > /tmp/cashu_response.txt
@@ -842,11 +844,11 @@ jobs:
             exit 1
           fi
 
-          echo "Waiting 30 seconds for redemption process to complete..."
-          sleep 30
+          REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
+          echo "Cashu redemption interval is set to: ${REDEMPTION_INTERVAL} seconds"
 
-          echo "Checking nginx logs for redemption activity..."
-          docker logs nginx-lnd 2>&1 | grep -i "redemption\|redeem\|melt" || echo "No redemption activity found in logs yet"
+          echo "Waiting 30 seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
+          sleep 30
 
           INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
           echo "Initial LND confirmed balance: $INITIAL_BALANCE sats"
@@ -859,10 +861,19 @@ jobs:
           echo "Balance difference: $BALANCE_DIFFERENCE sats"
 
           if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
-            echo "LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
+            echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
           else
-            echo "LND did not receive any payments from Cashu token redemption yet"
-            docker logs nginx-lnd 2>&1 | grep -i "redemption\|redeem\|melt" | tail -5 || echo "No redemption activity found"
+            echo "❌ LND did not receive any payments from Cashu token redemption yet"
+            echo "Debugging redemption process..."
+
+            # Check full nginx logs for any redemption-related activity
+            echo "=== Full nginx logs for debugging ==="
+            docker logs nginx-lnd 2>&1 | tail -50
+
+            # Check if the redemption timer is actually configured
+            echo "=== Checking environment variables ==="
+            docker exec nginx-lnd env | grep CASHU
+
             exit 1
           fi
 
