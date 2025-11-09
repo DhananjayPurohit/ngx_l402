@@ -483,10 +483,12 @@ jobs:
           AMOUNT: 0.01
           CASHU_WALLET_SECRET: test-wallet-secret-for-integration-tests
           CASHU_REDEMPTION_INTERVAL_SECS: 5
+          CASHU_NUT_VERSION: 04
         run: |
           # Explicitly pass environment variables to docker-compose
           CASHU_WALLET_SECRET=$CASHU_WALLET_SECRET \
           CASHU_REDEMPTION_INTERVAL_SECS=$CASHU_REDEMPTION_INTERVAL_SECS \
+          CASHU_NUT_VERSION=$CASHU_NUT_VERSION \
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
@@ -830,6 +832,20 @@ jobs:
           echo "Generating Cashu token for redemption testing..."
 
           # Generate Cashu token and extract only the token part (skip human-readable output)
+          echo "🔧 Configuring Cashu mint for NUT-04 format (cashuA tokens)..."
+
+          # Verify NUT version configuration
+          echo "Environment CASHU_NUT_VERSION: $(docker exec cashu-mint env | grep CASHU_NUT_VERSION || echo 'not set')"
+
+          # Force NUT-04 configuration to generate cashuA tokens
+          echo "Setting mint to NUT-04..."
+          docker exec cashu-mint poetry run cashu config --nut 04 || echo "Cannot set NUT version via config"
+
+          # Check current mint info
+          echo "Mint info after configuration:"
+          docker exec cashu-mint poetry run cashu info || echo "Cannot check mint info"
+
+          echo "🪙 Generating Cashu token (expecting cashuA format)..."
           docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
           CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu send 50)
 
@@ -875,6 +891,22 @@ jobs:
 
           echo "Generated Cashu token: ${CASHU_TOKEN:0:100}...: 50 sats"
           echo "Token length: ${#CASHU_TOKEN} characters"
+
+          # Check token version format
+          if [[ "$CASHU_TOKEN" =~ ^cashuA ]]; then
+            echo "📋 Token format: Cashu Version A (NUT-00/01/02/03/04)"
+          elif [[ "$CASHU_TOKEN" =~ ^cashuB ]]; then
+            echo "📋 Token format: Cashu Version B (NUT-05+)"
+          else
+            echo "⚠️ Unknown token format, starts with: ${CASHU_TOKEN:0:10}"
+          fi
+
+          # Test if token needs URL decoding by checking for URL-encoded characters
+          if [[ "$CASHU_TOKEN" =~ %[0-9A-Fa-f]{2} ]]; then
+            echo "Token contains URL-encoded characters, decoding..."
+            CASHU_TOKEN=$(printf '%b' "${CASHU_TOKEN//%/\\x}")
+            echo "Decoded token: ${CASHU_TOKEN:0:100}..."
+          fi
 
           echo "using cashu token to access protected route..."
 
