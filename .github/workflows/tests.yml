@@ -795,25 +795,29 @@ jobs:
           docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance'
 
           # Ensure enough tokens are in the database for redemption
-          echo "Minting additional tokens for redemption testing..."
+          echo "Minting tokens for redemption testing..."
 
-          # Mint more tokens to accumulate sufficient balance for redemption
-          for i in {1..5}; do
-            echo "Minting batch $i..."
-            docker exec cashu-mint poetry run cashu invoice 50
-            sleep 2
-            docker exec cashu-mint poetry run cashu send 25 > /tmp/token_$i.txt
-            sleep 2
-          done
+          # Mint a single large token for redemption (above 10 sat threshold)
+          echo "Minting 100 sats worth of tokens..."
+          docker exec cashu-mint poetry run cashu invoice 100
+          sleep 3
 
-          # Use these tokens to make requests and accumulate them in the database
-          echo "Using tokens to accumulate database balance..."
-          for i in {1..5}; do
-            TOKEN=$(cat /tmp/token_$i.txt)
-            echo "Using token from batch $i..."
-            curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $TOKEN" http://0.0.0.0:8000/protected > /tmp/response_$i.txt || true
-            sleep 5
-          done
+          # Generate a single token with sufficient amount for redemption
+          echo "Generating single token for redemption..."
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 60)
+          echo "Generated Cashu token (60 sats)"
+
+          # Use the token to accumulate database balance above redemption threshold
+          echo "Using Cashu token to accumulate database balance..."
+          curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected > /tmp/cashu_response.txt || true
+          sleep 3
+
+          # Generate a small token for below-threshold testing
+          echo "Generating small token for below-threshold testing..."
+          docker exec cashu-mint poetry run cashu invoice 10
+          sleep 2
+          SMALL_TOKEN=$(docker exec cashu-mint poetry run cashu send 5)
+          echo "Generated small Cashu token (5 sats - below threshold)"
 
           # Check that tokens were accepted and stored in database
           echo "Checking Cashu database contents..."
@@ -861,7 +865,7 @@ jobs:
           if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
             echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
           else
-            echo "ℹ️ No payments received yet (redemption may still be in progress or threshold not met)"
+            echo "No payments received yet (redemption may still be in progress or threshold not met)"
             echo "Checking redemption logs for more details..."
             docker logs nginx-lnd 2>&1 | tail -20
           fi
@@ -869,15 +873,10 @@ jobs:
           # Test 4: Test with insufficient balance (below redemption threshold)
           echo "Test 4: Testing tokens below redemption threshold..."
 
-          # Mint a small amount below the default 10 sat threshold
-          docker exec cashu-mint poetry run cashu invoice 5
-          sleep 2
-          SMALL_TOKEN=$(docker exec cashu-mint poetry run cashu send 3)
-
-          # Use the small token
-          echo "Using small token (3 sats) - should be below redemption threshold..."
+          # Use the small token generated earlier (5 sats - below 10 sat threshold)
+          echo "Using small token (5 sats) - should be below redemption threshold..."
           curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $SMALL_TOKEN" http://0.0.0.0:8000/protected > /tmp/small_token_response.txt || true
-          sleep 5
+          sleep 3
 
           echo "Small token response: $(cat /tmp/small_token_response.txt)"
 
@@ -937,7 +936,7 @@ jobs:
           docker exec lndnode lncli -n regtest listpayments | jq '.payments[] | select(.memo | contains("Redeeming"))' || echo "No redemption payments found"
 
           echo "✅ All Cashu redeem on lightning integration tests completed!"
-          echo "📊 Test Summary:"
+          echo "Test Summary:"
           echo "  - Token acceptance and database storage: ✅"
           echo "  - Redemption configuration validation: ✅"
           echo "  - Fee calculation setup: ✅"
