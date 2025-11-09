@@ -481,8 +481,6 @@ jobs:
         env:
           CURRENCY: USD
           AMOUNT: 0.01
-          CASHU_WALLET_SECRET: test-wallet-secret-for-integration-tests
-          CASHU_REDEMPTION_INTERVAL_SECS: 5
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
