@@ -47,7 +47,8 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build module for l402
-        run: cargo build --release --features export-modules
+        run: |
+          cargo build --release --features export-modules
 
       - name: Set up Docker Compose
         env:
@@ -483,12 +484,10 @@ jobs:
           AMOUNT: 0.01
           CASHU_WALLET_SECRET: test-wallet-secret-for-integration-tests
           CASHU_REDEMPTION_INTERVAL_SECS: 5
-          CASHU_NUT_VERSION: 04
         run: |
           # Explicitly pass environment variables to docker-compose
           CASHU_WALLET_SECRET=$CASHU_WALLET_SECRET \
           CASHU_REDEMPTION_INTERVAL_SECS=$CASHU_REDEMPTION_INTERVAL_SECS \
-          CASHU_NUT_VERSION=$CASHU_NUT_VERSION \
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
@@ -672,8 +671,8 @@ jobs:
           
           # Get token from wallet
           echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
-          
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10 --legacy)
+
           echo "Cashu token: $CASHU_TOKEN"
 
           sleep 5
@@ -829,84 +828,14 @@ jobs:
             exit 1
           fi
 
-          echo "Generating Cashu token for redemption testing..."
-
-          # Generate Cashu token and extract only the token part (skip human-readable output)
-          echo "🔧 Configuring Cashu mint for NUT-04 format (cashuA tokens)..."
-
-          # Verify NUT version configuration
-          echo "Environment CASHU_NUT_VERSION: $(docker exec cashu-mint env | grep CASHU_NUT_VERSION || echo 'not set')"
-
-          # Force NUT-04 configuration to generate cashuA tokens
-          echo "Setting mint to NUT-04..."
-          docker exec cashu-mint poetry run cashu config --nut 04 || echo "Cannot set NUT version via config"
-
-          # Check current mint info
-          echo "Mint info after configuration:"
-          docker exec cashu-mint poetry run cashu info || echo "Cannot check mint info"
-
           echo "🪙 Generating Cashu token (expecting cashuA format)..."
           docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
-          CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu send 50)
+          CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
 
-          # Extract only the actual Cashu token (starts with "cashu" and contains base64)
-          # Try multiple extraction methods to handle different output formats
-          echo "Raw Cashu output for debugging:"
-          echo "$CASHU_OUTPUT"
+          echo "CASHU OUTPUT: $CASHU_OUTPUT"
 
           # Method 1: Extract lines starting with "cashu"
           CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -o '^cashu[A-Za-z0-9_=-]*' | head -1)
-
-          # Method 2: If method 1 fails, extract from any line containing "cashu"
-          if [ -z "$CASHU_TOKEN" ]; then
-            echo "Method 1 failed, trying method 2..."
-            CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -o 'cashu[A-Za-z0-9_=-]*' | head -1)
-          fi
-
-          # Method 3: If still failed, try to extract the last line that looks like a token
-          if [ -z "$CASHU_TOKEN" ]; then
-            echo "Method 2 failed, trying method 3..."
-            CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | tail -1 | grep -o 'cashu[A-Za-z0-9_=-]*')
-          fi
-
-          # Method 4: As last resort, extract from balance line
-          if [ -z "$CASHU_TOKEN" ]; then
-            echo "Method 3 failed, trying method 4..."
-            CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -A1 -B1 "Balance:" | grep -o 'cashu[A-Za-z0-9_=-]*' | head -1)
-          fi
-
-          if [ -z "$CASHU_TOKEN" ]; then
-            echo "❌ Failed to extract Cashu token from output"
-            echo "Raw output: $CASHU_OUTPUT"
-            exit 1
-          fi
-
-          # Validate token format
-          if [[ ! "$CASHU_TOKEN" =~ ^cashu[A-Za-z0-9_=-]+$ ]]; then
-            echo "❌ Invalid token format detected"
-            echo "Token: '$CASHU_TOKEN'"
-            echo "Expected format: cashu followed by base64 characters"
-            exit 1
-          fi
-
-          echo "Generated Cashu token: ${CASHU_TOKEN:0:100}...: 50 sats"
-          echo "Token length: ${#CASHU_TOKEN} characters"
-
-          # Check token version format
-          if [[ "$CASHU_TOKEN" =~ ^cashuA ]]; then
-            echo "📋 Token format: Cashu Version A (NUT-00/01/02/03/04)"
-          elif [[ "$CASHU_TOKEN" =~ ^cashuB ]]; then
-            echo "📋 Token format: Cashu Version B (NUT-05+)"
-          else
-            echo "⚠️ Unknown token format, starts with: ${CASHU_TOKEN:0:10}"
-          fi
-
-          # Test if token needs URL decoding by checking for URL-encoded characters
-          if [[ "$CASHU_TOKEN" =~ %[0-9A-Fa-f]{2} ]]; then
-            echo "Token contains URL-encoded characters, decoding..."
-            CASHU_TOKEN=$(printf '%b' "${CASHU_TOKEN//%/\\x}")
-            echo "Decoded token: ${CASHU_TOKEN:0:100}..."
-          fi
 
           echo "using cashu token to access protected route..."
 
