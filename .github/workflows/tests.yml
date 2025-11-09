@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -33,6 +33,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
+
+      - name: Cache Cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-export-modules-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Build module for l402
         run: cargo build --release --features export-modules
@@ -470,9 +482,7 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps \
-            -e CASHU_REDEMPTION_INTERVAL_SECS=5 \
-            nginx-lnd cashu-mint redis
+          CASHU_REDEMPTION_INTERVAL_SECS=5 docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
         run: |
