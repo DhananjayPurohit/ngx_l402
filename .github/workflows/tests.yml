@@ -849,8 +849,8 @@ jobs:
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
           echo "Cashu redemption interval is set to: ${REDEMPTION_INTERVAL} seconds"
 
+          WAIT_TIME=$((REDEMPTION_INTERVAL * 1.5))
           echo "Waiting ${WAIT_TIME} seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
-          WAIT_TIME=$((REDEMPTION_INTERVAL + 10))
 
           sleep $WAIT_TIME
 
