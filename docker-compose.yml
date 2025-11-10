@@ -107,9 +107,16 @@ services:
       - MINT_LISTEN_HOST=0.0.0.0
       - MINT_LISTEN_PORT=3338
       - MINT_PRIVATE_KEY=${ROOT_KEY}
-      - MINT_BACKEND_BOLT11_SAT=FakeWallet
+      - MINT_BACKEND_BOLT11_SAT=LND
       - MINT_URL=http://cashu-mint:3338
+      - LND_ADDRESS=lndnode:10009
+      - LND_CERT_FILE=/root/.lnd/tls.cert
+      - LND_MACAROON_FILE=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+    volumes:
+      - lndnode-data:/root/.lnd:ro
     command: ["poetry", "run", "mint"]
+    depends_on:
+      - lndnode
 
   nginx-lnurl:
     container_name: nginx-lnurl
