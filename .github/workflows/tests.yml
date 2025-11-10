@@ -823,13 +823,14 @@ jobs:
           echo "Generated Cashu token: $CASHU_TOKEN"
           echo "using cashu token to access protected route..."
 
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
 
           if [ "$status_code" = "200" ]; then
             echo "Cashu token used successfully"
           else
             echo "❌ Cashu token rejected (code: $status_code)"
+            docker logs nginx-lnurl
             exit 1
           fi
 
