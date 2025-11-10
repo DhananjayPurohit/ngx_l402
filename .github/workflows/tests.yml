@@ -482,12 +482,7 @@ jobs:
         env:
           CURRENCY: USD
           AMOUNT: 0.01
-          CASHU_WALLET_SECRET: test-wallet-secret-for-integration-tests
-          CASHU_REDEMPTION_INTERVAL_SECS: 5
         run: |
-          # Explicitly pass environment variables to docker-compose
-          CASHU_WALLET_SECRET=$CASHU_WALLET_SECRET \
-          CASHU_REDEMPTION_INTERVAL_SECS=$CASHU_REDEMPTION_INTERVAL_SECS \
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
@@ -671,7 +666,7 @@ jobs:
           
           # Get token from wallet
           echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10 --legacy)
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
 
           echo "Cashu token: $CASHU_TOKEN"
 
@@ -814,13 +809,6 @@ jobs:
             exit 1
           fi
 
-          if docker exec nginx-lnd env | grep -q "CASHU_WALLET_SECRET="; then
-            echo "✅ Cashu wallet secret is configured"
-          else
-            echo "❌ Cashu wallet secret is not configured"
-            exit 1
-          fi
-
           if docker exec nginx-lnd env | grep -q "CASHU_WHITELISTED_MINTS="; then
             echo "✅ Cashu whitelisted mints are configured"
           else
@@ -828,31 +816,25 @@ jobs:
             exit 1
           fi
 
-          echo "🪙 Generating Cashu token (expecting cashuA format)..."
+          echo "Generating Cashu token..."
           docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
-          CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
 
-          echo "CASHU OUTPUT: $CASHU_OUTPUT"
-
-          # Method 1: Extract lines starting with "cashu"
-          CASHU_TOKEN=$(echo "$CASHU_OUTPUT" | grep -o '^cashu[A-Za-z0-9_=-]*' | head -1)
-
+          echo "Generated Cashu token: $CASHU_TOKEN"
           echo "using cashu token to access protected route..."
 
-          RESPONSE=$(curl -s -w "\n%{http_code}" --max-time 15 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
-          RESPONSE_CODE=$(echo "$RESPONSE" | tail -n1)
-          echo "Response code: $RESPONSE_CODE"
-          if [ "$RESPONSE_CODE" = "200" ]; then
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+
+          if [ "$status_code" = "200" ]; then
             echo "Cashu token used successfully"
           else
-            echo "❌ Cashu token rejected (code: $RESPONSE_CODE)"
-            echo "Debugging token response..."
-            echo "$RESPONSE" | head -n -1
-            docker logs nginx-lnd 2>&1 | tail -10
+            echo "❌ Cashu token rejected (code: $status_code)"
             exit 1
           fi
 
-          sleep 1
+          INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+          echo "Initial LND confirmed balance: $INITIAL_BALANCE sats"
 
           # Test 1: Verify tokens are stored in database
           echo "Test 1: Verifying tokens are stored in Cashu database..."
@@ -866,57 +848,22 @@ jobs:
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
           echo "Cashu redemption interval is set to: ${REDEMPTION_INTERVAL} seconds"
 
+          echo "Waiting ${WAIT_TIME} seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
           WAIT_TIME=$((REDEMPTION_INTERVAL + 10))
 
-          echo "Waiting ${WAIT_TIME} seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
           sleep $WAIT_TIME
-
-          INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
-          echo "Initial LND confirmed balance: $INITIAL_BALANCE sats"
 
           FINAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
           echo "Final LND confirmed balance: $FINAL_BALANCE sats"
 
-          # Calculate difference
           BALANCE_DIFFERENCE=$((FINAL_BALANCE - INITIAL_BALANCE))
           echo "Balance difference: $BALANCE_DIFFERENCE sats"
 
           if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
             echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
           else
-            echo "❌ LND did not receive any payments from Cashu token redemption yet"
-            echo "Debugging redemption process..."
-
-            # Check full nginx logs for any redemption-related activity
-            echo "=== Full nginx logs for debugging ==="
-            docker logs nginx-lnd 2>&1 | tail -50
-
-            # Check if the redemption timer is actually configured
-            echo "=== Checking environment variables ==="
-            docker exec nginx-lnd env | grep CASHU
-
-            # Look for specific redemption initialization messages
-            echo "=== Looking for redemption initialization messages ==="
-            docker logs nginx-lnd 2>&1 | grep -i "Automatic Cashu redemption\|Starting Cashu redemption\|module initialization" || echo "No redemption initialization messages found"
-
-            # Check if there are any Cashu-related error messages
-            echo "=== Looking for Cashu error messages ==="
-            docker logs nginx-lnd 2>&1 | grep -i "cashu.*error\|error.*cashu\|Failed.*Cashu" || echo "No Cashu error messages found"
-
-            # Wait a bit longer and check for any late redemption activity
-            echo "Waiting 30 more seconds for any delayed redemption activity..."
-            sleep 30
-
-            FINAL_BALANCE2=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
-            BALANCE_DIFFERENCE2=$((FINAL_BALANCE2 - INITIAL_BALANCE))
-            echo "Second balance check difference: $BALANCE_DIFFERENCE2 sats"
-
-            if [ "$BALANCE_DIFFERENCE2" -gt 0 ]; then
-              echo "✅ Delayed redemption occurred!"
-            else
-              echo "❌ Still no redemption activity"
-              exit 1
-            fi
+            echo "No redemption activity"
+            exit 1
           fi
 
           echo "✅ Cashu redeem on lightning integration tests completed!"
