@@ -112,7 +112,7 @@ services:
       - MINT_LND_REST_ENDPOINT=https://lndnode:8080
       - MINT_LND_REST_CERT=/root/.lnd/tls.cert
       - MINT_LND_REST_MACAROON="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
-      - MINT_LND_REST_CERT_VERIFY=TRUE
+      - MINT_LND_REST_CERT_VERIFY=FALSE
     volumes:
       - lndnode-data:/root/.lnd:ro
     command: ["poetry", "run", "mint"]
