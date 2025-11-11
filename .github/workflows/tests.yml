@@ -478,6 +478,17 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-nwc cln
 
+      - name: Clean up LND volumes for fresh start
+        run: |
+          echo "Stopping LND containers..."
+          docker-compose -f docker-compose.yml stop lndnode lndnode-receiver || true
+          docker-compose -f docker-compose.yml rm -f lndnode lndnode-receiver || true
+          
+          echo "Removing LND volumes..."
+          docker volume rm ngx_l402_lndnode-data ngx_l402_lndnode-receiver-data || true
+          
+          echo "LND volumes cleaned up for fresh start"
+
       - name: Start nginx containers for LND and setup Bitcoin/Cashu
         env:
           CURRENCY: USD
