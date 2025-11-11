@@ -484,7 +484,7 @@ jobs:
           AMOUNT: 0.01
         run: |
           # Start the services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis lndnode-receiver
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
           
           # Start bitcoin-setup to fund cashu-mint
           echo "Starting bitcoin-setup to fund Cashu mint..."
@@ -492,7 +492,7 @@ jobs:
           
           # Wait for bitcoin-setup to complete
           echo "Waiting for bitcoin-setup to complete..."
-          max_wait=30
+          max_wait=180
           elapsed=0
           while [ $elapsed -lt $max_wait ]; do
             if docker logs bitcoin-setup 2>&1 | grep -q "✅ Bitcoin/LND/Cashu setup completed successfully!"; then
@@ -500,7 +500,7 @@ jobs:
               break
             fi
             echo "Waiting for setup... (${elapsed}s/${max_wait}s)"
-            sleep 5
+            sleep 10
             elapsed=$((elapsed + 10))
           done
           
