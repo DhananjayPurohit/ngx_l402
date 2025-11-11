@@ -484,11 +484,7 @@ jobs:
           AMOUNT: 0.01
         run: |          
           # Start the services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis lndnode lndnode-receiver
-          
-          # Start bitcoin-setup to fund cashu-mint
-          echo "Starting bitcoin-setup to fund Cashu mint..."
-          docker-compose -f docker-compose.yml up -d bitcoin-setup
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis lndnode lndnode-receiver bitcoin-setup
           
           # Wait for bitcoin-setup to complete
           echo "Waiting for bitcoin-setup to complete..."
@@ -507,6 +503,11 @@ jobs:
           if [ $elapsed -ge $max_wait ]; then
             echo "⚠️ Setup timeout - checking logs..."
             docker logs bitcoin-setup
+            echo "==========================="
+            docker logs lndnode
+            echo "==========================="
+            docker logs lndnode-receiver
+            echo "==========================="
           fi
           
           # Verify Cashu wallet has balance
