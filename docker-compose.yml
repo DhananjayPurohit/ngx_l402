@@ -266,44 +266,86 @@ services:
       - lndnode-receiver
     entrypoint: >
       sh -c "
-        apk add --no-cache jq curl;
+        apk add --no-cache jq curl
 
-        echo 'Waiting for Bitcoin daemon to be ready...';
+        echo 'Waiting for Bitcoin daemon to be ready...'
         while ! docker exec bitcoind bitcoin-cli -regtest getblockchaininfo >/dev/null 2>&1; do
-          echo 'Bitcoin daemon not ready, waiting...';
-          sleep 5;
-        done;
+          echo 'Bitcoin daemon not ready, waiting...'
+          sleep 5
+        done
 
-        echo 'Setting up Bitcoin wallet...';
+        echo 'Setting up Bitcoin wallet...'
         if ! docker exec bitcoind bitcoin-cli -regtest listwallets | grep -q 'default'; then
-          docker exec bitcoind bitcoin-cli -regtest createwallet 'default';
-        fi;
+          docker exec bitcoind bitcoin-cli -regtest createwallet 'default'
+        fi
 
-        echo 'Waiting for LND nodes to be ready...';
+        echo 'Waiting for LND nodes to be ready...'
         while ! docker exec lndnode lncli --network=regtest getinfo >/dev/null 2>&1; do
-          echo 'LND node not ready, waiting...';
-          sleep 5;
-        done;
-
+          echo 'LND node not ready, waiting...'
+          sleep 5
+        done
         while ! docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 getinfo >/dev/null 2>&1; do
-          echo 'LND receiver node not ready, waiting...';
-          sleep 5;
-        done;
+          echo 'LND receiver node not ready, waiting...'
+          sleep 5
+        done
 
-        echo 'Waiting for Cashu mint to be ready...';
+        echo 'Waiting for Cashu mint to be ready...'
         while ! docker exec cashu-mint curl -f http://localhost:3338/v1/info >/dev/null 2>&1; do
-          echo 'Cashu mint not ready, waiting...';
-          sleep 5;
-        done;
+          echo 'Cashu mint not ready, waiting...'
+          sleep 5
+        done
 
-        echo 'Mining 101 blocks to mature coinbase...';
-        docker exec bitcoind sh -c \"bitcoin-cli -regtest generatetoaddress 101 \\$\\(bitcoin-cli -regtest getnewaddress\\)\";
+        echo 'Mining 101 blocks to mature coinbase...'
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 101 \$$(bitcoin-cli -regtest getnewaddress)"
 
-        echo '✅ Bitcoin/LND/Cashu setup completed successfully!';
+        echo 'Funding lndnode...'
+        ADDR=$$(docker exec lndnode sh -c "lncli --network=regtest newaddress p2wkh | jq -r '.address'")
+        docker exec bitcoind bitcoin-cli -regtest sendtoaddress "$$ADDR" 1
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$$(bitcoin-cli -regtest getnewaddress)"
+
+        echo 'Opening channel to receiver node...'
+        RECEIVER_PUBKEY=$$(docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 getinfo | jq -r '.identity_pubkey')
+        docker exec lndnode lncli --network=regtest connect "$$RECEIVER_PUBKEY"@lndnode-receiver:9736 || true
+        docker exec lndnode lncli --network=regtest openchannel --node_key="$$RECEIVER_PUBKEY" --local_amt=1000000
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$$(bitcoin-cli -regtest getnewaddress)"
+
+        echo 'Funding receiver node...'
+        RECEIVER_ADDR=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 newaddress p2wkh | jq -r '.address'")
+        docker exec bitcoind bitcoin-cli -regtest sendtoaddress "$$RECEIVER_ADDR" 2
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$$(bitcoin-cli -regtest getnewaddress)"
+
+        echo 'Adding outbound capacity to receiver node...'
+        RECEIVER_INVOICE=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 addinvoice --amt=500000 | jq -r '.payment_request'")
+        docker exec lndnode lncli --network=regtest sendpayment --pay_req="$$RECEIVER_INVOICE" -f
+
+        echo 'Funding Cashu mint and creating tokens...'
+        sleep 5
+
+        echo 'Creating Cashu invoice...'
+        docker exec cashu-mint sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
+        CASHU_PID=$!
+        sleep 3
+        CASHU_INVOICE=$$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2 || true)
+        rm -f /tmp/cashu_output.txt
+
+        if [ -n "$$CASHU_INVOICE" ]; then
+          echo 'Paying Cashu mint invoice...'
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$$CASHU_INVOICE" -f
+          sleep 8
+          kill $$CASHU_PID 2>/dev/null || true
+        else
+          echo 'Could not create Cashu invoice, skipping token minting'
+          kill $$CASHU_PID 2>/dev/null || true
+        fi
+
+        CASHU_BALANCE=$$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep 'Balance:' | cut -d' ' -f2 || echo '0')
+        echo "Cashu user wallet balance: $$CASHU_BALANCE sat"
+
+        echo '✅ Bitcoin/LND/Cashu setup completed successfully!'
       "
-
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
 
 volumes:
   bitcoin_data:
