@@ -152,8 +152,11 @@ services:
       - MINT_LND_REST_CERT_VERIFY=FALSE
     volumes:
       - lndnode-data:/root/.lnd:ro
-    command: >
-      /bin/sh -c "echo 'Waiting for lndnode...' && sleep 10 && poetry run mint"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo 'Waiting for lndnode...' && sleep 10 && poetry run mint
     depends_on:
       - lndnode
       - lndnode-receiver
@@ -192,13 +195,16 @@ services:
     depends_on:
       - cln
       - redis
-    entrypoint: sh -c "
-      until [ -S /root/.lightning/regtest/lightning-rpc ]; do
-        echo 'Waiting for lightning-rpc...';
-        sleep 1;
-      done;
-      echo 'lightning-rpc found, starting nginx...';
-      exec nginx -g 'daemon off;'"
+    entrypoint:
+      - sh
+      - -c
+      - |
+        until [ -S /root/.lightning/regtest/lightning-rpc ]; do
+          echo 'Waiting for lightning-rpc...';
+          sleep 1;
+        done;
+        echo 'lightning-rpc found, starting nginx...';
+        exec nginx -g 'daemon off;'
 
   nginx-nwc:
     container_name: nginx-nwc
@@ -264,8 +270,10 @@ services:
       - bitcoind
       - lndnode
       - lndnode-receiver
-    entrypoint: >
-      sh -c "
+    entrypoint:
+      - sh
+      - -c
+      - |
         apk add --no-cache jq curl
 
         echo 'Waiting for Bitcoin daemon to be ready...'
@@ -323,7 +331,7 @@ services:
 
         echo 'Creating Cashu invoice...'
         docker exec cashu-mint sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
-        CASHU_PID=$!
+        CASHU_PID=$$!
         sleep 3
         CASHU_INVOICE=$$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2 || true)
         rm -f /tmp/cashu_output.txt
@@ -342,7 +350,6 @@ services:
         echo "Cashu user wallet balance: $$CASHU_BALANCE sat"
 
         echo '✅ Bitcoin/LND/Cashu setup completed successfully!'
-      "
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
