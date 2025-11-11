@@ -64,7 +64,6 @@ jobs:
         run: |
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
-          echo CASHU_WALLET_SECRET=test_secret_1234567890abcdef >> .env
           cat .env
 
       - name: Start LNURL service
