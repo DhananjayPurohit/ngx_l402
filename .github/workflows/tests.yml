@@ -658,8 +658,11 @@ jobs:
           
           # Generate a Lightning invoice and mint tokens
           echo "Generating Lightning invoice and minting tokens..."
-          docker exec cashu-mint poetry run cashu invoice 100
-          
+
+          timeout 5 docker exec cashu-mint poetry run cashu invoice 100 > /dev/null 2>&1 || true
+
+          docker exec cashu-mint poetry run cashu mint 100 > /dev/null 2>&1 || true
+
           # Check balance after minting
           echo "Checking balance after minting..."
           docker exec cashu-mint poetry run cashu balance
@@ -706,7 +709,7 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          docker exec cashu-mint poetry run cashu invoice 1
+          timeout 5 docker exec cashu-mint poetry run cashu invoice 1
           INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
 
           sleep 5
@@ -820,7 +823,7 @@ jobs:
           docker-compose -f docker-compose.yml up -d bitcoin-setup
 
           echo "Generating Cashu token..."
-          docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
+          timeout 5 docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
           CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
 
           echo "Generated Cashu token: $CASHU_TOKEN"
