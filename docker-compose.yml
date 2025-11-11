@@ -335,7 +335,7 @@ services:
         RECEIVER_INVOICE=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 addinvoice --amt=500000 | jq -r '.payment_request'")
         docker exec lndnode lncli --network=regtest sendpayment --pay_req="$$RECEIVER_INVOICE" -f
 
-        # Fund Cashu mint and pre-mint tokens for testing
+        # Fund Cashu mint and pre-mint tokefns for testing
         echo "Funding Cashu mint and creating tokens..."
         sleep 5  # Wait for routing updates
 

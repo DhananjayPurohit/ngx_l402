@@ -234,9 +234,9 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress bcrt1pcngfxjdkf4r2h26k52dh5nunxg8m68uf4lkfhmfjvjj6agfkm5jqmftw4e 0.0001
           docker logs bitcoind
 
-      - name: Start cln and lndnode
+      - name: Start cln, lndnode and lndnode-receiver
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode
+          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode lndnode-receiver
 
       - name: Start CLN service
         run: |
@@ -815,6 +815,9 @@ jobs:
             echo "❌ Cashu whitelisted mints are not configured"
             exit 1
           fi
+
+          echo "setting up cashu-mint and bitcoind for redeem on lightning tests..."
+          docker-compose -f docker-compose.yml up -d bitcoin-setup
 
           echo "Generating Cashu token..."
           docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
