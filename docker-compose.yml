@@ -311,29 +311,29 @@ services:
 
         # Fund lndnode
         echo "Funding lndnode..."
-        ADDR=$(docker exec lndnode sh -c "lncli --network=regtest newaddress p2wkh | jq -r '.address'")
+        ADDR=$$(docker exec lndnode sh -c "lncli --network=regtest newaddress p2wkh | jq -r '.address'")
 
-        docker exec bitcoind bitcoin-cli -regtest sendtoaddress $$ADDR 1
+        docker exec bitcoind bitcoin-cli -regtest sendtoaddress $${ADDR} 1
         docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$(bitcoin-cli -regtest getnewaddress)"
 
         # Open channel to receiver node
         echo "Opening channel to receiver node..."
         RECEIVER_PUBKEY=$$(docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 getinfo | jq -r '.identity_pubkey')
 
-        docker exec lndnode lncli --network=regtest connect $$RECEIVER_PUBKEY@lndnode-receiver:9736 || true
-        docker exec lndnode lncli --network=regtest openchannel --node_key=$$RECEIVER_PUBKEY --local_amt=1000000
+        docker exec lndnode lncli --network=regtest connect $${RECEIVER_PUBKEY}@lndnode-receiver:9736 || true
+        docker exec lndnode lncli --network=regtest openchannel --node_key=$${RECEIVER_PUBKEY} --local_amt=1000000
         docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$$(bitcoin-cli -regtest getnewaddress)"
 
         # Fund receiver node
         echo "Funding receiver node..."
         RECEIVER_ADDR=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 newaddress p2wkh | jq -r '.address'")
-        docker exec bitcoind bitcoin-cli -regtest sendtoaddress $$RECEIVER_ADDR 2
+        docker exec bitcoind bitcoin-cli -regtest sendtoaddress $${RECEIVER_ADDR} 2
         docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$(bitcoin-cli -regtest getnewaddress)"
 
         # Add outbound capacity to receiver node
         echo "Adding outbound capacity to receiver node..."
         RECEIVER_INVOICE=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 addinvoice --amt=500000 | jq -r '.payment_request'")
-        docker exec lndnode lncli --network=regtest sendpayment --pay_req="$$RECEIVER_INVOICE" -f
+        docker exec lndnode lncli --network=regtest sendpayment --pay_req="$${RECEIVER_INVOICE}" -f
 
         # Fund Cashu mint and pre-mint tokefns for testing
         echo "Funding Cashu mint and creating tokens..."
@@ -353,11 +353,11 @@ services:
         CASHU_INVOICE=$$(grep "Invoice:" /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2)
         rm -f /tmp/cashu_output.txt
 
-        if [ ! -z "$$CASHU_INVOICE" ]; then
+        if [ ! -z "$${CASHU_INVOICE}" ]; then
           echo "Paying Cashu mint invoice: $${CASHU_INVOICE:0:50}..."
 
           # Pay the invoice
-          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$$CASHU_INVOICE" -f
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$${CASHU_INVOICE}" -f
 
           # Wait for payment to be processed and tokens to be minted automatically
           sleep 8
@@ -371,7 +371,7 @@ services:
 
         # Verify Cashu user wallet balance
         CASHU_BALANCE=$$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep "Balance:" | cut -d' ' -f2 || echo "0")
-        echo "Cashu user wallet balance: $$CASHU_BALANCE sat"
+        echo "Cashu user wallet balance: $${CASHU_BALANCE} sat"
 
         echo "Bitcoin/LND/Cashu setup completed successfully!"
     volumes:
