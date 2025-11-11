@@ -478,12 +478,40 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-nwc cln
 
-      - name: Start nginx containers for LND
+      - name: Start nginx containers for LND and setup Bitcoin/Cashu
         env:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
+          # Start the services
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis lndnode-receiver
+          
+          # Start bitcoin-setup to fund cashu-mint
+          echo "Starting bitcoin-setup to fund Cashu mint..."
+          docker-compose -f docker-compose.yml up -d bitcoin-setup
+          
+          # Wait for bitcoin-setup to complete
+          echo "Waiting for bitcoin-setup to complete..."
+          max_wait=30
+          elapsed=0
+          while [ $elapsed -lt $max_wait ]; do
+            if docker logs bitcoin-setup 2>&1 | grep -q "✅ Bitcoin/LND/Cashu setup completed successfully!"; then
+              echo "✅ Bitcoin setup completed successfully!"
+              break
+            fi
+            echo "Waiting for setup... (${elapsed}s/${max_wait}s)"
+            sleep 5
+            elapsed=$((elapsed + 10))
+          done
+          
+          if [ $elapsed -ge $max_wait ]; then
+            echo "⚠️ Setup timeout - checking logs..."
+            docker logs bitcoin-setup
+          fi
+          
+          # Verify Cashu wallet has balance
+          echo "Checking Cashu wallet balance..."
+          docker exec cashu-mint poetry run cashu balance
 
       - name: Run Integration Tests - LND
         run: |
@@ -652,24 +680,22 @@ jobs:
           echo "Checking wallet info..."
           docker exec cashu-mint poetry run cashu info
           
-          # Check initial balance
-          echo "Checking initial balance..."
-          docker exec cashu-mint poetry run cashu balance
+          # Check balance (should have been funded by bitcoin-setup)
+          echo "Checking balance..."
+          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
+          echo "Current Cashu balance: $CASHU_BALANCE sat"
           
-          # Generate a Lightning invoice and mint tokens
-          echo "Generating Lightning invoice and minting tokens..."
-
-          timeout 5 docker exec cashu-mint poetry run cashu invoice 100 > /dev/null 2>&1 || true
-
-          docker exec cashu-mint poetry run cashu mint 100 > /dev/null 2>&1 || true
-
-          # Check balance after minting
-          echo "Checking balance after minting..."
-          docker exec cashu-mint poetry run cashu balance
+          if [ "$CASHU_BALANCE" -lt 50 ]; then
+            echo "⚠️ Insufficient Cashu balance ($CASHU_BALANCE sat), expected at least 50 sat"
+            echo "Checking bitcoin-setup logs..."
+            docker logs bitcoin-setup
+            echo "This might indicate bitcoin-setup didn't complete successfully"
+            exit 1
+          fi
           
-          # Get token from wallet
+          # Get token from wallet (using existing balance from bitcoin-setup)
           echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10 --legacy)
 
           echo "Cashu token: $CASHU_TOKEN"
 
@@ -709,8 +735,8 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          timeout 5 docker exec cashu-mint poetry run cashu invoice 1
-          INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
+          # Use existing balance from wallet
+          INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1 --legacy)
 
           sleep 5
           
@@ -819,11 +845,17 @@ jobs:
             exit 1
           fi
 
-          echo "setting up cashu-mint and bitcoind for redeem on lightning tests..."
-          docker-compose -f docker-compose.yml up -d bitcoin-setup
+          echo "Bitcoin-setup already ran, checking Cashu wallet balance..."
+          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
+          echo "Current Cashu balance: $CASHU_BALANCE sat"
+          
+          if [ "$CASHU_BALANCE" -lt 50 ]; then
+            echo "⚠️ Insufficient balance for redemption test ($CASHU_BALANCE sat)"
+            docker logs bitcoin-setup
+            exit 1
+          fi
 
-          echo "Generating Cashu token..."
-          timeout 5 docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
+          echo "Generating Cashu token from existing balance..."
           CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
 
           echo "Generated Cashu token: $CASHU_TOKEN"
