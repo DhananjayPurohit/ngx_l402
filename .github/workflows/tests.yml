@@ -482,9 +482,9 @@ jobs:
         env:
           CURRENCY: USD
           AMOUNT: 0.01
-        run: |
+        run: |          
           # Start the services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis lndnode lndnode-receiver
           
           # Start bitcoin-setup to fund cashu-mint
           echo "Starting bitcoin-setup to fund Cashu mint..."
