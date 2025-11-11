@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
 
   bitcoind:
@@ -89,6 +87,45 @@ services:
     depends_on:
       - bitcoind
 
+  lndnode-receiver:
+    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    container_name: lndnode-receiver
+    user: root
+    entrypoint: 
+      - sh
+      - -c
+      - |
+        if [[ ! -f /data/seed.txt ]]; then
+          lndinit gen-seed > /data/seed.txt
+        fi
+        if [[ ! -f /data/walletpassword.txt ]]; then
+          lndinit gen-password > /data/walletpassword.txt
+        fi
+        lndinit -v init-wallet \
+          --secret-source=file \
+          --file.seed=/data/seed.txt \
+          --file.wallet-password=/data/walletpassword.txt \
+          --init-file.output-wallet-dir=/root/.lnd/data/chain/bitcoin/regtest \
+          --init-file.validate-password
+        mkdir -p /data/.lnd
+        if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
+          touch "/data/.lnd/umbrel-lnd.conf"
+        fi
+        lnd --listen=0.0.0.0:9736 --rpclisten=0.0.0.0:10010 --restlisten=0.0.0.0:8081 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
+    ports:
+      - "9736:9736"
+      - "10010:10010"
+      - "8081:8081"
+    volumes:
+      - lndnode-receiver-data:/data/.lnd:rw
+      - lndnode-receiver-data:/root/.lnd:rw
+    restart: unless-stopped
+    environment:
+      HOME: /data
+    command: [ '/init-wallet-k8s.sh' ]
+    depends_on:
+      - bitcoind
+
   redis:
     image: redis:7.2
     container_name: redis
@@ -110,14 +147,16 @@ services:
       - MINT_URL=http://cashu-mint:3338
       - MINT_BACKEND_BOLT11_SAT=LndRestWallet
       - MINT_LND_REST_ENDPOINT=https://lndnode:8080
-      - MINT_LND_REST_CERT="/root/.lnd/tls.cert"
-      - MINT_LND_REST_MACAROON="/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
+      - MINT_LND_REST_CERT=/root/.lnd/tls.cert
+      - MINT_LND_REST_MACAROON=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - MINT_LND_REST_CERT_VERIFY=FALSE
     volumes:
       - lndnode-data:/root/.lnd:ro
-    command: ["poetry", "run", "mint"]
+    command: >
+      /bin/sh -c "echo 'Waiting for lndnode...' && sleep 10 && poetry run mint"
     depends_on:
       - lndnode
+      - lndnode-receiver
 
   nginx-lnurl:
     container_name: nginx-lnurl
@@ -218,9 +257,130 @@ services:
       - RUST_LOG=info
     restart: unless-stopped
 
+  bitcoin-setup:
+    container_name: bitcoin-setup
+    image: docker:24-cli
+    depends_on:
+      - bitcoind
+      - lndnode
+      - lndnode-receiver
+    entrypoint:
+      - sh
+      - -c
+      - |
+        # Install jq for JSON parsing
+        apk add --no-cache jq
+
+        echo "Waiting for Bitcoin daemon to be ready..."
+        while ! docker exec bitcoind bitcoin-cli -regtest getblockchaininfo >/dev/null 2>&1; do
+          echo "Bitcoin daemon not ready, waiting..."
+          sleep 5
+        done
+
+        # Create or load Bitcoin wallet
+        echo "Setting up Bitcoin wallet..."
+        if ! docker exec bitcoind bitcoin-cli -regtest listwallets | grep -q "default"; then
+          echo "Creating default Bitcoin wallet..."
+          docker exec bitcoind bitcoin-cli -regtest createwallet "default"
+        else
+          echo "Default Bitcoin wallet already exists"
+        fi
+
+        echo "Waiting for LND nodes to be ready..."
+        while ! docker exec lndnode lncli --network=regtest getinfo >/dev/null 2>&1; do
+          echo "LND node not ready, waiting..."
+          sleep 5
+        done
+
+        while ! docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 getinfo >/dev/null 2>&1; do
+          echo "LND receiver node not ready, waiting..."
+          sleep 5
+        done
+
+        echo "Waiting for Cashu mint to be ready..."
+        while ! docker exec cashu-mint curl -f http://localhost:3338/v1/info >/dev/null 2>&1; do
+          echo "Cashu mint not ready, waiting..."
+          sleep 5
+        done
+
+        echo "All nodes ready, proceeding with setup..."
+
+        # Mine 101 blocks to mature coinbase
+        echo "Mining 101 blocks to mature coinbase..."
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 101 \$(bitcoin-cli -regtest getnewaddress)"
+
+        # Fund lndnode
+        echo "Funding lndnode..."
+        ADDR=$(docker exec lndnode sh -c "lncli --network=regtest newaddress p2wkh | jq -r '.address'")
+
+        docker exec bitcoind bitcoin-cli -regtest sendtoaddress $$ADDR 1
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$(bitcoin-cli -regtest getnewaddress)"
+
+        # Open channel to receiver node
+        echo "Opening channel to receiver node..."
+        RECEIVER_PUBKEY=$$(docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 getinfo | jq -r '.identity_pubkey')
+
+        docker exec lndnode lncli --network=regtest connect $$RECEIVER_PUBKEY@lndnode-receiver:9736 || true
+        docker exec lndnode lncli --network=regtest openchannel --node_key=$$RECEIVER_PUBKEY --local_amt=1000000
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$$(bitcoin-cli -regtest getnewaddress)"
+
+        # Fund receiver node
+        echo "Funding receiver node..."
+        RECEIVER_ADDR=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 newaddress p2wkh | jq -r '.address'")
+        docker exec bitcoind bitcoin-cli -regtest sendtoaddress $$RECEIVER_ADDR 2
+        docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$(bitcoin-cli -regtest getnewaddress)"
+
+        # Add outbound capacity to receiver node
+        echo "Adding outbound capacity to receiver node..."
+        RECEIVER_INVOICE=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 addinvoice --amt=500000 | jq -r '.payment_request'")
+        docker exec lndnode lncli --network=regtest sendpayment --pay_req="$$RECEIVER_INVOICE" -f
+
+        # Fund Cashu mint and pre-mint tokens for testing
+        echo "Funding Cashu mint and creating tokens..."
+        sleep 5  # Wait for routing updates
+
+        # Use the simple approach that worked before - cashu CLI with direct output capture
+        echo "Creating Cashu invoice (this will wait for payment)..."
+
+        # Start cashu invoice in background and capture its output
+        docker exec cashu-mint sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
+        CASHU_PID=$!
+
+        # Wait for invoice to be created
+        sleep 3
+
+        # Extract invoice from output file
+        CASHU_INVOICE=$$(grep "Invoice:" /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2)
+        rm -f /tmp/cashu_output.txt
+
+        if [ ! -z "$$CASHU_INVOICE" ]; then
+          echo "Paying Cashu mint invoice: $${CASHU_INVOICE:0:50}..."
+
+          # Pay the invoice
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$$CASHU_INVOICE" -f
+
+          # Wait for payment to be processed and tokens to be minted automatically
+          sleep 8
+
+          # Kill the background cashu process
+          kill $$CASHU_PID 2>/dev/null || true
+        else
+          echo "Could not create Cashu invoice, skipping token minting"
+          kill $$CASHU_PID 2>/dev/null || true
+        fi
+
+        # Verify Cashu user wallet balance
+        CASHU_BALANCE=$$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep "Balance:" | cut -d' ' -f2 || echo "0")
+        echo "Cashu user wallet balance: $$CASHU_BALANCE sat"
+
+        echo "Bitcoin/LND/Cashu setup completed successfully!"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
 volumes:
   bitcoin_data:
   lndnode-data:
+  lndnode-receiver-data:
   cashu-data:
   cln-data:
   redis_data:
