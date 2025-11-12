@@ -905,16 +905,18 @@ jobs:
 
           echo "Cashu token consumed successfully to access protected route."
 
-          INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+          INITIAL_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
+
           echo "Initial LND Wallet Balance: $INITIAL_BALANCE sats"
 
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
-          WAIT_TIME=$((REDEMPTION_INTERVAL + 60))
+          WAIT_TIME=$((REDEMPTION_INTERVAL + 15))
 
           echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
           sleep $WAIT_TIME
 
-          FINAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+          FINAL_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
+
           echo "Final LND Wallet Balance: $FINAL_BALANCE sats"
 
           BALANCE_DIFFERENCE=$((FINAL_BALANCE - INITIAL_BALANCE))
