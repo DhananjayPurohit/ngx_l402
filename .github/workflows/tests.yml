@@ -24,24 +24,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Compose
-        env:
-          ROOT_KEY: ${{ secrets.ROOT_KEY }}
-          CURRENCY: USD
-          AMOUNT: 0.01
-        run: |
-          sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose -f docker-compose.yml up -d bitcoind
-
-      - name: Start cln, lndnode, lndnode-receiver and bitcoin-setup
-        run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode lndnode-receiver cashu-mint bitcoin-setup
-          sleep 20
-          docker logs bitcoin-setup
-          echo "==========="
-          docker logs cashu-mint
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -82,7 +64,7 @@ jobs:
         run: |
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
-          echo CASHU_WALLET_SECRET=test_secret_1234567890abcdef >> .env
+          echo CASHU_WALLET_SECRET=test_cashu_wallet_secret >> .env
           cat .env
 
       - name: Start LNURL service
@@ -242,16 +224,6 @@ jobs:
       - name: Stop LNURL service
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnurl
-
-      - name: Verify Bitcoin daemon Service and create wallet
-        run: |
-          wallet_name="new_wallet"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name || docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
-          address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
-          echo "New Wallet Address: $address"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress bcrt1pcngfxjdkf4r2h26k52dh5nunxg8m68uf4lkfhmfjvjj6agfkm5jqmftw4e 0.0001
-          docker logs bitcoind
 
       - name: Start cln, lndnode, lndnode-receiver and bitcoin-setup
         run: |
