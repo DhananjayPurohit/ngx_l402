@@ -139,6 +139,17 @@ jobs:
           echo "Connecting CLN to LND..."
           result=$(docker exec cln lightning-cli --network=regtest connect "$LND_PUBKEY@$LND_IP:9735")
 
+          echo "Opening channel from CLN to LND..."
+          result=$(docker exec cln lightning-cli --network=regtest fundchannel "$LND_PUBKEY" 1000000)
+          echo "Channel open result: $result"
+
+          echo "sleeping for 5 seconds to allow channel to be active..."
+          sleep 5
+
+          result=$(docker exec cln lightning-cli --network=regtest listpeers | jq '.peers[]?.channels[]?.state')
+          echo "Channel states: $result"
+          echo "All channel peers: $(docker exec cln lightning-cli --network=regtest listpeers)"
+
           echo "connection status: $result"
 
 
