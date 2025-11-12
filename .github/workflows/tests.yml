@@ -416,11 +416,30 @@ jobs:
           fi
           echo "invoice: $invoice"
 
+          # Verify channel state before payment
+          echo "Checking LND channels..."
+          docker exec lndnode lncli -n regtest listchannels
+          echo "Checking CLN channels..."
+          docker exec cln lightning-cli --network=regtest listchannels
+          
+          # Check if nodes can reach each other
+          echo "Checking LND peers..."
+          docker exec lndnode lncli -n regtest listpeers
+
           # Pay invoice using LND to get preimage
           echo "Paying invoice through LND..."
-          docker logs lndnode
-          payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice 2>&1)
-          docker logs lndnode
+          
+          # Pay invoice with timeout (60 seconds max)
+          payment_result=$(timeout 60 docker exec lndnode lncli -n regtest payinvoice --timeout 45s -f $invoice 2>&1 || echo "PAYMENT_TIMEOUT")
+          
+          if echo "$payment_result" | grep -q "PAYMENT_TIMEOUT"; then
+            echo "Error: Payment timed out after 60 seconds"
+            docker logs lndnode
+            docker logs nginx-nwc
+            docker logs cln
+            exit 1
+          fi
+          
           echo "payment_result: $payment_result"
           
           # Wait a few seconds for payment to settle
