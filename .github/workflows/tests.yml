@@ -147,10 +147,6 @@ jobs:
           sleep 5
 
           result=$(docker exec cln lightning-cli --network=regtest listpeers | jq '.peers[]?.channels[]?.state')
-          echo "Channel states: $result"
-          echo "All channel peers: $(docker exec cln lightning-cli --network=regtest listpeers)"
-
-          echo "connection status: $result"
 
           echo "Waiting for CLN → LND channel to become active..."
 
@@ -158,6 +154,7 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest getnewaddress)"
 
           while true; do
+            echo "PEERS: $(docker exec cln lightning-cli --network=regtest listpeers)"
             CHANNEL_INFO=$(docker exec cln lightning-cli --network=regtest listpeers | jq -r --arg PUBKEY "$LND_PUBKEY" '
               .peers[] | select(.id==$PUBKEY) | .channels[]? | {state: .state, capacity_msat: .amount_msat}'
             )
