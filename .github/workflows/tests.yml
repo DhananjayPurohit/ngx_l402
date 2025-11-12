@@ -23,72 +23,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Create env file
-        run: |
-          touch .env
-          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
-          echo CASHU_WALLET_SECRET=test_cashu_wallet_secret >> .env
-          cat .env
-
-
-      - name: Set up Docker Compose
-        env:
-          ROOT_KEY: ${{ secrets.ROOT_KEY }}
-          CURRENCY: USD
-          AMOUNT: 0.01
-        run: |
-          sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose -f docker-compose.yml up -d bitcoind
-
-      - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
-        run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
-          
-          # Wait for bitcoin-setup to complete
-          echo "Waiting for bitcoin-setup to complete..."
-          max_wait=300
-          elapsed=0
-          while [ $elapsed -lt $max_wait ]; do
-            if docker logs bitcoin-setup 2>&1 | grep -q "✅ Bitcoin/LND/Cashu setup completed successfully!"; then
-              echo "✅ Bitcoin setup completed successfully!"
-              docker logs bitcoin-setup
-              break
-            fi
-            echo "Waiting for setup... (${elapsed}s/${max_wait}s)"
-            sleep 10
-            elapsed=$((elapsed + 10))
-          done
-          
-          if [ $elapsed -ge $max_wait ]; then
-            echo "⚠️ Setup timeout - checking logs..."
-            docker logs bitcoin-setup
-            exit 1
-          fi
-          
-          echo "================================"
-          
-          # Verify Cashu wallet has balance
-          echo "Checking Cashu wallet balance..."
-          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
-          echo "Current Cashu balance: $CASHU_BALANCE sat"
-          # Verify Cashu wallet has balance
-          echo "Checking Cashu wallet balance..."
-          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
-          echo "Current Cashu balance: $CASHU_BALANCE sat"
-          
-          if [ "$CASHU_BALANCE" -lt 100 ]; then
-            echo "⚠️ Insufficient Cashu balance ($CASHU_BALANCE sat), expected at least 100 sat"
-            echo "This might indicate bitcoin-setup didn't complete successfully"
-            exit 1
-          fi
-          
-          # Get token from wallet (using existing balance from bitcoin-setup)
-          echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 100 --legacy)
-
-
+        
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -293,8 +228,38 @@ jobs:
       - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
-          echo "waiting for 30 seconds..."
-          sleep 30
+
+          # Wait for bitcoin-setup to complete
+          echo "Waiting for bitcoin-setup to complete..."
+          max_wait=300
+          elapsed=0
+          while [ $elapsed -lt $max_wait ]; do
+            if docker logs bitcoin-setup 2>&1 | grep -q "✅ Bitcoin/LND/Cashu setup completed successfully!"; then
+              echo "✅ Bitcoin setup completed successfully!"
+              docker logs bitcoin-setup
+              break
+            fi
+            echo "Waiting for setup... (${elapsed}s/${max_wait}s)"
+            sleep 10
+            elapsed=$((elapsed + 10))
+          done
+          
+          if [ $elapsed -ge $max_wait ]; then
+            echo "⚠️ Setup timeout - checking logs..."
+            docker logs bitcoin-setup
+            exit 1
+          fi
+          
+          echo "================================"
+          
+          # Verify Cashu wallet has balance
+          echo "Checking Cashu wallet balance..."
+          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
+          echo "Current Cashu balance: $CASHU_BALANCE sat"
+          # Verify Cashu wallet has balance
+          echo "Checking Cashu wallet balance..."
+          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
+          echo "Current Cashu balance: $CASHU_BALANCE sat"
 
       - name: Start CLN service
         run: |
@@ -714,13 +679,6 @@ jobs:
           echo "Checking initial balance..."
           docker exec cashu-mint poetry run cashu balance
           
-          # Generate a Lightning invoice and mint tokens
-          echo "Generating Lightning invoice and minting tokens..."
-          docker exec cashu-mint sh -c "poetry run cashu invoice 100 2>&1" > /tmp/cashu_output.txt &
-          CASHU_PID=$!
-
-          sleep 3
-
           # Check balance after minting
           echo "Checking balance after minting..."
           docker exec cashu-mint poetry run cashu balance
@@ -765,12 +723,6 @@ jobs:
           
           # Test with invalid Cashu token (insufficient amount)
           echo "Testing with invalid Cashu token (insufficient amount)..."
-          
-          # Create a token with insufficient amount (1 sat instead of required amount)
-          docker exec cashu-mint sh -c "poetry run cashu invoice 1 2>&1" > /tmp/cashu_output.txt &
-          CASHU_PID=$!
-          
-          sleep 3
 
           INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
 
@@ -880,12 +832,6 @@ jobs:
             echo "❌ Cashu whitelisted mints are not configured"
             exit 1
           fi
-
-          echo "Generating Cashu token..."
-          docker exec cashu-mint sh -c "poetry run cashu invoice 50 2>&1" > /tmp/cashu_output.txt &
-          CASHU_PID=$!
-
-          sleep 3
 
           CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
 
