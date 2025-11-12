@@ -891,7 +891,7 @@ jobs:
           echo "Running Cashu redemption on Lightning test..."
           cashu_token=$(docker exec cashu-mint poetry run cashu send 10000 --legacy)
 
-          INITIAL_BALACE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
+          INITIAL_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
 
           echo "Initial LND Wallet Balance: $INITIAL_BALANCE sats"
 
