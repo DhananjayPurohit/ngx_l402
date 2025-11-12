@@ -118,6 +118,9 @@ jobs:
           # Mine blocks to confirm CLN funding
           bitcoind_mine_address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$bitcoind_mine_address"
+          
+          echo "sleeping for 30 seconds"
+          sleep 30
 
           echo "✅ CLN wallet funded successfully!"
           funds=$(docker exec cln lightning-cli --network=regtest listfunds)
