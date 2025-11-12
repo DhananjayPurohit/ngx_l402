@@ -76,7 +76,7 @@ jobs:
           #!/bin/bash
 
           wallet_name="my_wallet"
-          echo "Using random wallet: $wallet_name"
+          echo "Using wallet: $wallet_name"
 
           # Check if wallet exists, create/load it
           if docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass listwallets | grep -q "\"$wallet_name\""; then
@@ -159,13 +159,14 @@ jobs:
           # ------- CASHU SETUP -------
           echo 'Creating Cashu invoice...'
 
-          docker exec cashu-mint sh -c "poetry run cashu invoice 5000 2>&1" > /dev/null &
+          docker exec cashu-mint sh -c "poetry run cashu invoice 5000 2>&1" > /tmp/cashu_output.txt &
 
           sleep 3
 
           CASHU_INVOICE=$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2 || true)
 
           echo "Cashu invoice: $CASHU_INVOICE"
+          rm /tmp/cashu_output.txt
 
           if [ -n "$CASHU_INVOICE" ]; then
             echo 'Paying Cashu mint invoice...'
