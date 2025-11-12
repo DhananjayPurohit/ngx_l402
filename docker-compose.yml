@@ -238,7 +238,7 @@ services:
       - LN_CLIENT_TYPE=LND
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - CERT_FILE_PATH=/root/.lnd/tls.cert
-      - LND_ADDRESS=lndnode:10009
+      - LND_ADDRESS=lndnode-receiver:10010
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_tokens.db
       - CASHU_WALLET_SECRET=${CASHU_WALLET_SECRET}
@@ -247,10 +247,10 @@ services:
       - CASHU_WHITELISTED_MINTS=http://cashu-mint:3338,http://cashu-mint1:3338
       - REDIS_URL=redis://redis:6379
     volumes:
-      - lndnode-data:/root/.lnd:ro
+      - lndnode-receiver-data:/root/.lnd:ro
       - cashu-data:/app/data:rw
     depends_on:
-      - lndnode
+      - lndnode-receiver
       - cashu-mint
       - redis
 
