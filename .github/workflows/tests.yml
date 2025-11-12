@@ -224,13 +224,12 @@ jobs:
 
       - name: Start LND node and cashu-mint
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps lndnode cashu-mint
-          echo "waiting for 30 seconds..."
-          sleep 30
-          docker logs lndnode
-          echo "================="
+          docker-compose -f docker-compose.yml up -d --no-deps lndnode
+          docker-compose -f docker-compose.yml up -d --no-deps cashu-mint
+          sleep 90
+          echo "==================="
           docker logs cashu-mint
-          echo "================="
+          echo "==================="
 
       - name: Verify Bitcoin daemon Service, create wallet and fund lndnode
         run: |
@@ -276,9 +275,9 @@ jobs:
           balance=$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep 'Balance:' | cut -d' ' -f2 || echo '0')
           echo "Cashu mint funded successfully! Wallet balance: $balance"
 
-      - name: Start cln and lndnode
+      - name: Start cln
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode
+          docker-compose -f docker-compose.yml up -d --no-deps cln
 
       - name: Start CLN service
         run: |
