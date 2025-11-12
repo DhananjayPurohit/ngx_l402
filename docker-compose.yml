@@ -87,6 +87,44 @@ services:
       HOME: /data
     depends_on:
       - bitcoind
+  
+  lndnode-receiver:
+    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    container_name: lndnode-receiver
+    user: root
+    entrypoint: 
+      - sh
+      - -c
+      - |
+        if [[ ! -f /data/seed.txt ]]; then
+          lndinit gen-seed > /data/seed.txt
+        fi
+        if [[ ! -f /data/walletpassword.txt ]]; then
+          lndinit gen-password > /data/walletpassword.txt
+        fi
+        lndinit -v init-wallet \
+          --secret-source=file \
+          --file.seed=/data/seed.txt \
+          --file.wallet-password=/data/walletpassword.txt \
+          --init-file.output-wallet-dir=/root/.lnd/data/chain/bitcoin/regtest \
+          --init-file.validate-password
+        mkdir -p /data/.lnd
+        if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
+          touch "/data/.lnd/umbrel-lnd.conf"
+        fi
+        lnd --listen=0.0.0.0:9736 --rpclisten=0.0.0.0:10010 --restlisten=0.0.0.0:8081 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
+    ports:
+      - "9736:9736"
+      - "10010:10010"
+      - "8081:8081"
+    volumes:
+      - lndnode-receiver-data:/data:rw
+      - lndnode-receiver-data:/root/.lnd:rw
+    restart: unless-stopped
+    environment:
+      HOME: /data
+    depends_on:
+      - bitcoind
 
   redis:
     image: redis:7.2
@@ -230,6 +268,7 @@ services:
 volumes:
   bitcoin_data:
   lndnode-data:
+  lndnode-receiver-data:
   cashu-data:
   cln-data:
   redis_data:
