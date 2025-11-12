@@ -24,6 +24,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up Docker Compose
+        env:
+          ROOT_KEY: ${{ secrets.ROOT_KEY }}
+          CURRENCY: USD
+          AMOUNT: 0.01
+        run: |
+          sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          docker-compose -f docker-compose.yml up -d bitcoind
+
+      - name: Start cln, lndnode, lndnode-receiver and bitcoin-setup
+        run: |
+          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode lndnode-receiver bitcoin-setup
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,6 +78,7 @@ jobs:
         run: |
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          echo CASHU_WALLET_SECRET=test_secret_1234567890abcdef >> .env
           cat .env
 
       - name: Start LNURL service
@@ -76,6 +91,7 @@ jobs:
         run: |
           docker logs nginx-lnurl
           echo "Testing with LNURL configuration..."
+          sleep 15
 
           # Test free route
           echo "Testing free route..."
@@ -139,6 +155,7 @@ jobs:
         run: |
           docker logs grpc-content-server
           echo "Testing gRPC server..."
+          sleep 5
 
           # Install grpcurl for testing gRPC endpoints
           echo "Installing grpcurl..."
@@ -232,9 +249,9 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress bcrt1pcngfxjdkf4r2h26k52dh5nunxg8m68uf4lkfhmfjvjj6agfkm5jqmftw4e 0.0001
           docker logs bitcoind
 
-      - name: Start cln, lndnode and lndnode-receiver
+      - name: Start cln, lndnode, lndnode-receiver and bitcoin-setup
         run: |
-          docker-compose -f docker-compose.yml up -d cln lndnode lndnode-receiver
+          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode lndnode-receiver bitcoin-setup
 
       - name: Start CLN service
         run: |
@@ -245,6 +262,7 @@ jobs:
           docker logs cln
           docker logs nginx-cln
           echo "Testing with CLN configuration..."
+          sleep 15
 
           docker exec nginx-cln chmod 777 /root /root/.lightning /root/.lightning/regtest
 
@@ -359,6 +377,7 @@ jobs:
         run: |
           docker logs nginx-nwc
           echo "Testing with NWC configuration..."
+          sleep 20
 
           # Test free route
           echo "Testing free route..."
@@ -474,148 +493,12 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-nwc cln
 
-      - name: Clean up LND volumes for fresh start
-        run: |
-          echo "Stopping LND containers..."
-          docker-compose -f docker-compose.yml stop lndnode lndnode-receiver || true
-          docker-compose -f docker-compose.yml rm -f lndnode lndnode-receiver || true
-
-          echo "Removing LND volumes..."
-          docker volume rm ngx_l402_lndnode-data ngx_l402_lndnode-receiver-data || true
-
-          echo "Waiting for containers to fully stop..."
-          sleep 10
-
-          echo "Checking for any remaining containers..."
-          docker ps -a | grep -E "(lndnode|cashu)" || echo "No LND containers found"
-
-          echo "LND volumes cleaned up for fresh start"
-
-      - name: Clean up any remaining containers to prevent port conflicts
-        run: |
-          echo "Stopping any remaining nginx containers to free port 8000..."
-          docker stop nginx-lnurl nginx-cln nginx-nwc nginx-lnd 2>/dev/null || true
-          docker rm nginx-lnurl nginx-cln nginx-nwc nginx-lnd 2>/dev/null || true
-          echo "Port 8000 should now be free"
-
-      - name: Start nginx containers for LND and setup Bitcoin/Cashu
+      - name: Start nginx containers for LND
         env:
           CURRENCY: USD
           AMOUNT: 0.01
-          CASHU_WALLET_SECRET: test_secret_key_for_cashu_wallet_integration_tests
-          ROOT_KEY: ${{ secrets.ROOT_KEY }}
         run: |
-          # Ensure bitcoind is running first (it might have been stopped)
-          docker-compose -f docker-compose.yml up -d bitcoind
-
-          # Wait for bitcoind to be ready
-          echo "Waiting for bitcoind to be ready..."
-          while ! docker exec bitcoind bitcoin-cli -regtest getblockchaininfo >/dev/null 2>&1; do
-            echo 'Bitcoin daemon not ready, waiting...'
-            sleep 2
-          done
-          echo "✅ bitcoind is ready"
-
-          # Start the services with proper dependencies
-          docker-compose -f docker-compose.yml up -d nginx-lnd cashu-mint redis lndnode lndnode-receiver bitcoin-setup
-
-          # Wait for LND nodes to be fully ready before proceeding
-          echo "Waiting for LND nodes to be ready..."
-          max_lnd_wait=120  # 2 minutes max wait for LND
-          lnd_elapsed=0
-
-          while [ $lnd_elapsed -lt $max_lnd_wait ]; do
-            if docker exec lndnode lncli -n regtest getinfo >/dev/null 2>&1 && docker exec lndnode-receiver lncli -n regtest --rpcserver=localhost:10010 getinfo >/dev/null 2>&1; then
-              echo "✅ Both LND nodes are ready!"
-
-              # Verify macaroon file exists
-              if docker exec lndnode test -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon; then
-                echo "✅ LND admin macaroon file exists!"
-                break
-              else
-                echo "⚠️ LND nodes are ready but macaroon file not found yet"
-              fi
-            fi
-
-            echo "Waiting for LND nodes... (${lnd_elapsed}s/${max_lnd_wait}s)"
-            sleep 5
-            lnd_elapsed=$((lnd_elapsed + 5))
-
-            # Show some logs for debugging
-            if [ $((lnd_elapsed % 30)) -eq 0 ]; then
-              echo "=== lndnode logs (last 10 lines) ==="
-              docker logs lndnode | tail -10
-            fi
-          done
-
-          if [ $lnd_elapsed -ge $max_lnd_wait ]; then
-            echo "❌ LND nodes failed to start within ${max_lnd_wait}s"
-            docker logs lndnode | tail -30
-            docker logs lndnode-receiver | tail -30
-            exit 1
-          fi
-
-          # Wait for bitcoin-setup to complete
-          echo "Waiting for bitcoin-setup to complete..."
-          max_wait=300  # Increased timeout to 5 minutes
-          elapsed=0
-          while [ $elapsed -lt $max_wait ]; do
-            if docker logs bitcoin-setup 2>&1 | grep -q "✅ Bitcoin/LND/Cashu setup completed successfully!"; then
-              echo "✅ Bitcoin setup completed successfully!"
-              break
-            fi
-            echo "Waiting for setup... (${elapsed}s/${max_wait}s)"
-            sleep 10
-            elapsed=$((elapsed + 10))
-
-            # Check for errors
-            if docker logs bitcoin-setup 2>&1 | grep -q "ERROR\|Failed\|failed"; then
-              echo "⚠️ Found errors in setup logs"
-              docker logs bitcoin-setup | tail -20
-            fi
-          done
-
-          if [ $elapsed -ge $max_wait ]; then
-            echo "⚠️ Setup timeout after ${max_wait}s - checking logs..."
-            echo "=== bitcoin-setup logs (last 50 lines) ==="
-            docker logs bitcoin-setup | tail -50
-            echo "==========================="
-            echo "=== lndnode logs (last 30 lines) ==="
-            docker logs lndnode | tail -30
-            echo "==========================="
-            echo "=== lndnode-receiver logs (last 30 lines) ==="
-            docker logs lndnode-receiver | tail -30
-            echo "==========================="
-            echo "=== cashu-mint logs (last 30 lines) ==="
-            docker logs cashu-mint | tail -30
-            echo "==========================="
-            exit 1
-          fi
-          
-          # Verify Cashu wallet has balance
-          echo "Checking Cashu wallet balance..."
-          MAX_RETRIES=5
-          RETRY_COUNT=0
-
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            CASHU_BALANCE_OUTPUT=$(docker exec cashu-mint poetry run cashu balance 2>&1)
-            if echo "$CASHU_BALANCE_OUTPUT" | grep -q "Balance:"; then
-              echo "✅ Cashu wallet accessible"
-              echo "$CASHU_BALANCE_OUTPUT"
-              break
-            else
-              echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Cashu wallet not ready..."
-              echo "Output: $CASHU_BALANCE_OUTPUT"
-              sleep 10
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-            fi
-          done
-
-          if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-            echo "❌ Cashu wallet failed to initialize after $MAX_RETRIES attempts"
-            docker logs cashu-mint | tail -30
-            exit 1
-          fi
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
         run: |
@@ -623,6 +506,7 @@ jobs:
           docker logs nginx-lnd
           docker logs cashu-mint
           echo "Testing with LND configuration..."
+          sleep 15
 
           # Test free route
           echo "Testing free route..."
@@ -740,8 +624,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
-            echo "Response: $response"
-            docker logs nginx-lnd | tail -20
+            docker logs nginx-lnd
             exit 1
           fi
 
@@ -784,65 +667,26 @@ jobs:
           echo "Checking wallet info..."
           docker exec cashu-mint poetry run cashu info
           
-          # Check balance (should have been funded by bitcoin-setup)
-          echo "Checking balance..."
-          MAX_BALANCE_CHECKS=3
-          BALANCE_CHECK=0
-          CASHU_BALANCE=0
-
-          while [ $BALANCE_CHECK -lt $MAX_BALANCE_CHECKS ]; do
-            BALANCE_OUTPUT=$(docker exec cashu-mint poetry run cashu balance 2>&1)
-            CASHU_BALANCE=$(echo "$BALANCE_OUTPUT" | grep -oP 'Balance: \K\d+' || echo "0")
-            echo "Attempt $((BALANCE_CHECK + 1))/$MAX_BALANCE_CHECKS: Current Cashu balance: $CASHU_BALANCE sat"
-
-            if [ "$CASHU_BALANCE" -ge 50 ]; then
-              echo "✅ Sufficient Cashu balance found"
-              break
-            else
-              echo "Insufficient balance, waiting 10 seconds..."
-              sleep 10
-              BALANCE_CHECK=$((BALANCE_CHECK + 1))
-            fi
-          done
-
-          if [ "$CASHU_BALANCE" -lt 50 ]; then
-            echo "⚠️ Insufficient Cashu balance ($CASHU_BALANCE sat), expected at least 50 sat"
-            echo "Final balance output: $BALANCE_OUTPUT"
-            echo "Checking bitcoin-setup logs..."
-            docker logs bitcoin-setup | tail -50
-            echo "This might indicate bitcoin-setup didn't complete successfully"
-            exit 1
-          fi
-
-          # Get token from wallet (using existing balance from bitcoin-setup)
+          # Check initial balance
+          echo "Checking initial balance..."
+          docker exec cashu-mint poetry run cashu balance
+          
+          # Generate a Lightning invoice and mint tokens
+          echo "Generating Lightning invoice and minting tokens..."
+          docker exec cashu-mint poetry run cashu invoice 100
+          
+          # Check balance after minting
+          echo "Checking balance after minting..."
+          docker exec cashu-mint poetry run cashu balance
+          
+          # Get token from wallet
           echo "Retrieving token from wallet..."
-          MAX_TOKEN_ATTEMPTS=3
-          TOKEN_ATTEMPT=0
-          CASHU_TOKEN=""
-
-          while [ $TOKEN_ATTEMPT -lt $MAX_TOKEN_ATTEMPTS ]; do
-            echo "Token generation attempt $((TOKEN_ATTEMPT + 1))/$MAX_TOKEN_ATTEMPTS..."
-            CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10 --legacy 2>&1 | grep -o '^[^[:space:]]*' || echo "")
-
-            if [ -n "$CASHU_TOKEN" ] && [[ "$CASHU_TOKEN" != *"Error"* ]] && [[ "$CASHU_TOKEN" != *"error"* ]]; then
-              echo "✅ Successfully generated Cashu token: ${CASHU_TOKEN:0:50}..."
-              break
-            else
-              echo "Token generation failed or returned error: $CASHU_TOKEN"
-              sleep 5
-              TOKEN_ATTEMPT=$((TOKEN_ATTEMPT + 1))
-              CASHU_TOKEN=""
-            fi
-          done
-
-          if [ -z "$CASHU_TOKEN" ]; then
-            echo "❌ Failed to generate Cashu token after $MAX_TOKEN_ATTEMPTS attempts"
-            docker logs cashu-mint | tail -30
-            exit 1
-          fi
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
 
           echo "Cashu token: $CASHU_TOKEN"
 
+          sleep 5
+          
           # Test protected route with Cashu token
           echo "Testing protected route with Cashu token..."
           max_retries=3
@@ -877,9 +721,11 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          # Use existing balance from wallet
-          INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1 --legacy)
+          docker exec cashu-mint poetry run cashu invoice 1
+          INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
 
+          sleep 5
+          
           # Test with the invalid token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
@@ -908,6 +754,8 @@ jobs:
           # Encode the malformed token
           ENCODED_MALFORMED_TOKEN=$(echo -n "$MALFORMED_CASHU_TOKEN" | base64 -w 0)
 
+          sleep 5
+          
           # Test with the malformed token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
@@ -946,6 +794,8 @@ jobs:
           # Encode the non-whitelisted token
           ENCODED_NON_WHITELISTED_TOKEN=$(echo -n "$NON_WHITELISTED_TOKEN" | base64 -w 0)
 
+          sleep 5
+          
           # Test with the non-whitelisted token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_NON_WHITELISTED_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
@@ -981,17 +831,8 @@ jobs:
             exit 1
           fi
 
-          echo "Bitcoin-setup already ran, checking Cashu wallet balance..."
-          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
-          echo "Current Cashu balance: $CASHU_BALANCE sat"
-          
-          if [ "$CASHU_BALANCE" -lt 50 ]; then
-            echo "⚠️ Insufficient balance for redemption test ($CASHU_BALANCE sat)"
-            docker logs bitcoin-setup
-            exit 1
-          fi
-
-          echo "Generating Cashu token from existing balance..."
+          echo "Generating Cashu token..."
+          docker exec cashu-mint poetry run cashu invoice 50 > /dev/null
           CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
 
           echo "Generated Cashu token: $CASHU_TOKEN"

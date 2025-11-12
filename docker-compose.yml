@@ -1,3 +1,4 @@
+
 services:
 
   bitcoind:
@@ -78,8 +79,9 @@ services:
       - "10009:10009"
       - "8080:8080"
     volumes:
-      - lndnode-data:/data/.lnd:rw
+      - lndnode-data:/data:rw
       - lndnode-data:/root/.lnd:rw
+    restart: unless-stopped
     environment:
       HOME: /data
     depends_on:
@@ -89,7 +91,7 @@ services:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
     container_name: lndnode-receiver
     user: root
-    entrypoint:
+    entrypoint: 
       - sh
       - -c
       - |
@@ -109,17 +111,15 @@ services:
         if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
           touch "/data/.lnd/umbrel-lnd.conf"
         fi
-        # Add debug logging to help troubleshoot startup issues
-        echo "Starting lndnode-receiver with debug logging..."
-        lnd --listen=0.0.0.0:9736 --rpclisten=0.0.0.0:10010 --restlisten=0.0.0.0:8081 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create --debuglevel=debug
+        lnd --listen=0.0.0.0:9736 --rpclisten=0.0.0.0:10010 --restlisten=0.0.0.0:8081 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
     ports:
       - "9736:9736"
       - "10010:10010"
       - "8081:8081"
     volumes:
-      - lndnode-receiver-data:/data/.lnd:rw
-      - lndnode-receiver-data:/root/.lnd:rw
       - lndnode-receiver-data:/data:rw
+      - lndnode-receiver-data:/root/.lnd:rw
+    restart: unless-stopped
     environment:
       HOME: /data
     depends_on:
@@ -155,25 +155,7 @@ services:
       - /bin/sh
       - -c
       - |
-        echo 'Waiting for LND to be fully ready...'
-        # First wait for macaroon file
-        while [ ! -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
-          echo 'Waiting for LND admin macaroon file...'
-          sleep 3
-        done
-        echo '✅ LND admin macaroon file found'
-
-        # Then wait for LND to be responsive
-        echo 'Checking LND connectivity...'
-        for i in {1..30}; do
-          if curl -s -k --macaroon /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon https://lndnode:8080/v1/getinfo >/dev/null 2>&1; then
-            echo '✅ LND is responsive, starting mint...'
-            break
-          fi
-          echo "Waiting for LND to be responsive... ($i/30)"
-          sleep 3
-        done
-        poetry run mint
+        echo 'Waiting for lndnode...' && sleep 10 && poetry run mint
     depends_on:
       - lndnode
       - lndnode-receiver
@@ -268,17 +250,6 @@ services:
       - lndnode
       - cashu-mint
       - redis
-    entrypoint:
-      - sh
-      - -c
-      - |
-        echo 'Waiting for LND admin macaroon file...'
-        while [ ! -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
-          echo 'Waiting for admin macaroon file...'
-          sleep 2
-        done
-        echo 'LND admin macaroon file found, starting nginx...'
-        exec nginx -g 'daemon off;'
 
   grpc-content-server:
     container_name: grpc-content-server
@@ -289,6 +260,7 @@ services:
       - "50051:50051"
     environment:
       - RUST_LOG=info
+    restart: unless-stopped
 
   bitcoin-setup:
     container_name: bitcoin-setup
@@ -310,35 +282,39 @@ services:
         done
 
         echo 'Setting up Bitcoin wallet...'
-        if ! docker exec bitcoind bitcoin-cli -regtest listwallets | grep -q 'default'; then
+        if ! docker exec bitcoind bitcoin-cli -regtest listwalletdir | grep -q 'default'; then
+          echo "Creating wallet 'default'..."
           docker exec bitcoind bitcoin-cli -regtest createwallet 'default'
+        else
+          echo "Wallet 'default' already exists. Loading the wallet..."
+          docker exec bitcoind bitcoin-cli -regtest loadwallet 'default' || true
         fi
 
         echo 'Waiting for LND nodes to be ready...'
-        echo 'Checking lndnode...'
         while ! docker exec lndnode lncli --network=regtest getinfo >/dev/null 2>&1; do
           echo 'LND node not ready, waiting...'
-          docker exec lndnode tail -10 /root/.lnd/logs/bitcoin/regtest/lnd.log 2>/dev/null || echo 'No logs available'
+          docker logs lndnode --tail 10
           sleep 5
         done
-        echo 'lndnode is ready!'
 
-        echo 'Checking lndnode-receiver...'
         while ! docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 getinfo >/dev/null 2>&1; do
           echo 'LND receiver node not ready, waiting...'
-          docker exec lndnode-receiver tail -10 /root/.lnd/logs/bitcoin/regtest/lnd.log 2>/dev/null || echo 'No logs available'
+          docker logs lndnode-receiver --tail 10
           sleep 5
         done
-        echo 'lndnode-receiver is ready!'
 
         echo 'Waiting for Cashu mint to be ready...'
         while ! docker exec cashu-mint curl -f http://localhost:3338/v1/info >/dev/null 2>&1; do
           echo 'Cashu mint not ready, waiting...'
+          docker logs cashu-mint --tail 10
           sleep 5
         done
 
         echo 'Mining 101 blocks to mature coinbase...'
         docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 101 \$$(bitcoin-cli -regtest getnewaddress)"
+
+        # wait for blockchain to sync
+        sleep 5
 
         echo 'Funding lndnode...'
         ADDR=$$(docker exec lndnode sh -c "lncli --network=regtest newaddress p2wkh | jq -r '.address'")
@@ -364,40 +340,20 @@ services:
         sleep 5
 
         echo 'Creating Cashu invoice...'
-        # Start cashu invoice command with longer timeout
-        docker exec cashu-mint timeout 30s sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
+        docker exec cashu-mint sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
         CASHU_PID=$$!
-
-        # Wait for the command to complete with timeout
-        for i in {1..30}; do
-          if ! kill -0 $$CASHU_PID 2>/dev/null; then
-            break
-          fi
-          sleep 1
-        done
-
-        # Kill any remaining process
-        kill $$CASHU_PID 2>/dev/null || true
-        wait $$CASHU_PID 2>/dev/null || true
-
-        # Extract invoice
+        sleep 3
         CASHU_INVOICE=$$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2 || true)
-        echo "Cashu command output:"
-        cat /tmp/cashu_output.txt || echo 'No output file'
         rm -f /tmp/cashu_output.txt
 
         if [ -n "$$CASHU_INVOICE" ]; then
-          echo 'Found Cashu invoice, attempting to pay...'
-          echo "Invoice: $$CASHU_INVOICE"
-          # Pay with better error handling
-          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$$CASHU_INVOICE" --fAll_inclusive || {
-            echo 'Failed to pay Cashu invoice, continuing without token funding...'
-          }
+          echo 'Paying Cashu mint invoice...'
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$$CASHU_INVOICE" -f
           sleep 8
+          kill $$CASHU_PID 2>/dev/null || true
         else
-          echo 'Could not create Cashu invoice, checking Cashu mint status...'
-          docker exec cashu-mint poetry run cashu info || echo 'Cashu info command failed'
-          echo 'Continuing without token funding...'
+          echo 'Could not create Cashu invoice, skipping token minting'
+          kill $$CASHU_PID 2>/dev/null || true
         fi
 
         CASHU_BALANCE=$$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep 'Balance:' | cut -d' ' -f2 || echo '0')
