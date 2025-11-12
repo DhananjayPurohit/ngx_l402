@@ -381,7 +381,8 @@ jobs:
 
           # Create a Cashu invoice via LNDREST-backed mint
           echo "Requesting Cashu invoice..."
-          CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu invoice 100)
+          docker exec cashu-mint poetry run cashu invoice 100 > /tmp/cashu_invoice_output.txt 2>&1 &
+          sleep 5
           CASHU_INVOICE=$(echo "$CASHU_OUTPUT" | grep 'Invoice:' | awk '{print $2}')
 
           if [ -z "$CASHU_INVOICE" ]; then
