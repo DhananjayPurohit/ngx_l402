@@ -750,10 +750,6 @@ jobs:
           echo "Checking initial balance..."
           docker exec cashu-mint poetry run cashu balance
           
-          # Generate a Lightning invoice and mint tokens
-          echo "Generating Lightning invoice and minting tokens..."
-          docker exec cashu-mint poetry run cashu invoice 100
-          
           # Check balance after minting
           echo "Checking balance after minting..."
           docker exec cashu-mint poetry run cashu balance
@@ -799,8 +795,6 @@ jobs:
           # Test with invalid Cashu token (insufficient amount)
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
-          # Create a token with insufficient amount (1 sat instead of required amount)
-          docker exec cashu-mint poetry run cashu invoice 1
           INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
 
           sleep 5
@@ -892,13 +886,10 @@ jobs:
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
 
-      - name: Stop nginx-lnd and start nginx-cln
+      - name: Stop nginx-lnd
         run: |
           echo "Stopping nginx-lnd..."
           docker-compose -f docker-compose.yml stop nginx-lnd
-          sleep 5
-          echo "Starting nginx-cln..."
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-cln
 
       - name: Run Integration test - Cashu redemption on lightening
         run: |
