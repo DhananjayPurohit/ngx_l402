@@ -887,15 +887,26 @@ jobs:
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
 
-      - name: Stop LND service and start nginx-cln service
-        run: |
-          docker-compose -f docker-compose.yml stop nginx-lnd
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-cln
-          echo "Waiting for nginx-cln to be ready...sleeping for 5 seconds"
-          sleep 5
-
       - name: Run Integration test - Cashu redemption on lightening
         run: |
+          echo "checking channel status..."
+          docker exec nginx-lnd lncli -n regtest listchannels
+          
+          echo "connecting to LND node from nginx-lnd..."
+          LNDNODE_PUBKEY=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
+          docker exec nginx-lnd lncli -n regtest connect "$LNDNODE_PUBKEY"@lndnode:9735 || true
+
+          # Open a channel with enough local amount
+          docker exec nginx-lnd lncli -n regtest openchannel --node_key="$LNDNODE_PUBKEY" --local_amt=1000000
+          
+          # mint some blocks to confirm the channel
+          echo "Generating blocks to confirm channel..."
+          docker exec bitcoind bitcoin-cli -regtest generatetoaddress 6 $(docker exec bitcoind bitcoin-cli -regtest getnewaddress) > /dev/null
+
+          echo "Channel status"
+          docker exec nginx-lnd lncli -n regtest listchannels
+          docker exec lndnode lncli -n regtest listchannels
+
           echo "Running Cashu redemption on Lightning test..."
           cashu_token=$(docker exec cashu-mint poetry run cashu send 100 --legacy)
 
