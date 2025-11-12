@@ -45,7 +45,7 @@ jobs:
       - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
-
+          sleep 15
           docker logs bitcoin-setup
           echo "================================"
           
