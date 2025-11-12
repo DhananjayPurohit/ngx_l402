@@ -62,7 +62,6 @@ jobs:
         run: |
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
-          echo CASHU_REDEMPTION_INTERVAL_SECS=10 >> .env
           cat .env
 
       - name: Start LNURL service
@@ -890,7 +889,11 @@ jobs:
       - name: Run Integration test - Cashu redemption on lightening
         run: |
           echo "Running Cashu redemption on Lightning test..."
-          cashu_token=$(docker exec cashu-mint poetry run cashu send 100 --legacy)
+          cashu_token=$(docker exec cashu-mint poetry run cashu send 10000 --legacy)
+
+          INITIAL_BALACE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
+
+          echo "Initial LND Wallet Balance: $INITIAL_BALANCE sats"
 
           echo "Cashu Token: $cashu_token"
 
@@ -904,10 +907,6 @@ jobs:
           fi
 
           echo "Cashu token consumed successfully to access protected route."
-
-          INITIAL_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
-
-          echo "Initial LND Wallet Balance: $INITIAL_BALANCE sats"
 
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
           WAIT_TIME=$((REDEMPTION_INTERVAL + 15))
