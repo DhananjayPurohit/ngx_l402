@@ -62,6 +62,7 @@ jobs:
         run: |
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          echo CASHU_REDEMPTION_INTERVAL_SECS=10 >> .env
           cat .env
 
       - name: Start LNURL service
@@ -889,7 +890,7 @@ jobs:
       - name: Run Integration test - Cashu redemption on lightening
         run: |
           echo "Running Cashu redemption on Lightning test..."
-          cashu_token=$(docker exec cashu-mint poetry run cashu send 100)
+          cashu_token=$(docker exec cashu-mint poetry run cashu send 100 --legacy)
 
           echo "Cashu Token: $cashu_token"
 
@@ -923,11 +924,11 @@ jobs:
             echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
           else
             echo "No redemption activity"
+            docker logs nginx-lnd
             exit 1
           fi
 
           echo "✅ Cashu redeem on lightning integration tests completed!"
-
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
