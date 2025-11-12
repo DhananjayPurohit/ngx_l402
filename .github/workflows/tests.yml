@@ -76,7 +76,6 @@ jobs:
         run: |
           docker logs nginx-lnurl
           echo "Testing with LNURL configuration..."
-          sleep 15
 
           # Test free route
           echo "Testing free route..."
@@ -140,7 +139,6 @@ jobs:
         run: |
           docker logs grpc-content-server
           echo "Testing gRPC server..."
-          sleep 5
 
           # Install grpcurl for testing gRPC endpoints
           echo "Installing grpcurl..."
@@ -236,7 +234,7 @@ jobs:
 
       - name: Start cln, lndnode and lndnode-receiver
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode lndnode-receiver
+          docker-compose -f docker-compose.yml up -d cln lndnode lndnode-receiver
 
       - name: Start CLN service
         run: |
@@ -247,7 +245,6 @@ jobs:
           docker logs cln
           docker logs nginx-cln
           echo "Testing with CLN configuration..."
-          sleep 15
 
           docker exec nginx-cln chmod 777 /root /root/.lightning /root/.lightning/regtest
 
@@ -362,7 +359,6 @@ jobs:
         run: |
           docker logs nginx-nwc
           echo "Testing with NWC configuration..."
-          sleep 20
 
           # Test free route
           echo "Testing free route..."
@@ -495,14 +491,70 @@ jobs:
 
           echo "LND volumes cleaned up for fresh start"
 
+      - name: Clean up any remaining containers to prevent port conflicts
+        run: |
+          echo "Stopping any remaining nginx containers to free port 8000..."
+          docker stop nginx-lnurl nginx-cln nginx-nwc nginx-lnd 2>/dev/null || true
+          docker rm nginx-lnurl nginx-cln nginx-nwc nginx-lnd 2>/dev/null || true
+          echo "Port 8000 should now be free"
+
       - name: Start nginx containers for LND and setup Bitcoin/Cashu
         env:
           CURRENCY: USD
           AMOUNT: 0.01
-        run: |          
-          # Start the services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis lndnode lndnode-receiver bitcoin-setup
-          
+          CASHU_WALLET_SECRET: test_secret_key_for_cashu_wallet_integration_tests
+          ROOT_KEY: ${{ secrets.ROOT_KEY }}
+        run: |
+          # Ensure bitcoind is running first (it might have been stopped)
+          docker-compose -f docker-compose.yml up -d bitcoind
+
+          # Wait for bitcoind to be ready
+          echo "Waiting for bitcoind to be ready..."
+          while ! docker exec bitcoind bitcoin-cli -regtest getblockchaininfo >/dev/null 2>&1; do
+            echo 'Bitcoin daemon not ready, waiting...'
+            sleep 2
+          done
+          echo "✅ bitcoind is ready"
+
+          # Start the services with proper dependencies
+          docker-compose -f docker-compose.yml up -d nginx-lnd cashu-mint redis lndnode lndnode-receiver bitcoin-setup
+
+          # Wait for LND nodes to be fully ready before proceeding
+          echo "Waiting for LND nodes to be ready..."
+          max_lnd_wait=120  # 2 minutes max wait for LND
+          lnd_elapsed=0
+
+          while [ $lnd_elapsed -lt $max_lnd_wait ]; do
+            if docker exec lndnode lncli -n regtest getinfo >/dev/null 2>&1 && docker exec lndnode-receiver lncli -n regtest --rpcserver=localhost:10010 getinfo >/dev/null 2>&1; then
+              echo "✅ Both LND nodes are ready!"
+
+              # Verify macaroon file exists
+              if docker exec lndnode test -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon; then
+                echo "✅ LND admin macaroon file exists!"
+                break
+              else
+                echo "⚠️ LND nodes are ready but macaroon file not found yet"
+              fi
+            fi
+
+            echo "Waiting for LND nodes... (${lnd_elapsed}s/${max_lnd_wait}s)"
+            sleep 5
+            lnd_elapsed=$((lnd_elapsed + 5))
+
+            # Show some logs for debugging
+            if [ $((lnd_elapsed % 30)) -eq 0 ]; then
+              echo "=== lndnode logs (last 10 lines) ==="
+              docker logs lndnode | tail -10
+            fi
+          done
+
+          if [ $lnd_elapsed -ge $max_lnd_wait ]; then
+            echo "❌ LND nodes failed to start within ${max_lnd_wait}s"
+            docker logs lndnode | tail -30
+            docker logs lndnode-receiver | tail -30
+            exit 1
+          fi
+
           # Wait for bitcoin-setup to complete
           echo "Waiting for bitcoin-setup to complete..."
           max_wait=300  # Increased timeout to 5 minutes
@@ -571,7 +623,6 @@ jobs:
           docker logs nginx-lnd
           docker logs cashu-mint
           echo "Testing with LND configuration..."
-          sleep 15
 
           # Test free route
           echo "Testing free route..."
@@ -792,8 +843,6 @@ jobs:
 
           echo "Cashu token: $CASHU_TOKEN"
 
-          sleep 5
-          
           # Test protected route with Cashu token
           echo "Testing protected route with Cashu token..."
           max_retries=3
@@ -831,8 +880,6 @@ jobs:
           # Use existing balance from wallet
           INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1 --legacy)
 
-          sleep 5
-          
           # Test with the invalid token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
@@ -861,8 +908,6 @@ jobs:
           # Encode the malformed token
           ENCODED_MALFORMED_TOKEN=$(echo -n "$MALFORMED_CASHU_TOKEN" | base64 -w 0)
 
-          sleep 5
-          
           # Test with the malformed token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
@@ -901,8 +946,6 @@ jobs:
           # Encode the non-whitelisted token
           ENCODED_NON_WHITELISTED_TOKEN=$(echo -n "$NON_WHITELISTED_TOKEN" | base64 -w 0)
 
-          sleep 5
-          
           # Test with the non-whitelisted token
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_NON_WHITELISTED_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)

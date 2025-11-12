@@ -80,7 +80,6 @@ services:
     volumes:
       - lndnode-data:/data/.lnd:rw
       - lndnode-data:/root/.lnd:rw
-    restart: unless-stopped
     environment:
       HOME: /data
     depends_on:
@@ -121,7 +120,6 @@ services:
       - lndnode-receiver-data:/data/.lnd:rw
       - lndnode-receiver-data:/root/.lnd:rw
       - lndnode-receiver-data:/data:rw
-    restart: unless-stopped
     environment:
       HOME: /data
     depends_on:
@@ -157,7 +155,25 @@ services:
       - /bin/sh
       - -c
       - |
-        echo 'Waiting for lndnode...' && sleep 10 && poetry run mint
+        echo 'Waiting for LND to be fully ready...'
+        # First wait for macaroon file
+        while [ ! -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
+          echo 'Waiting for LND admin macaroon file...'
+          sleep 3
+        done
+        echo '✅ LND admin macaroon file found'
+
+        # Then wait for LND to be responsive
+        echo 'Checking LND connectivity...'
+        for i in {1..30}; do
+          if curl -s -k --macaroon /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon https://lndnode:8080/v1/getinfo >/dev/null 2>&1; then
+            echo '✅ LND is responsive, starting mint...'
+            break
+          fi
+          echo "Waiting for LND to be responsive... ($i/30)"
+          sleep 3
+        done
+        poetry run mint
     depends_on:
       - lndnode
       - lndnode-receiver
@@ -252,6 +268,17 @@ services:
       - lndnode
       - cashu-mint
       - redis
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo 'Waiting for LND admin macaroon file...'
+        while [ ! -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
+          echo 'Waiting for admin macaroon file...'
+          sleep 2
+        done
+        echo 'LND admin macaroon file found, starting nginx...'
+        exec nginx -g 'daemon off;'
 
   grpc-content-server:
     container_name: grpc-content-server
@@ -262,7 +289,6 @@ services:
       - "50051:50051"
     environment:
       - RUST_LOG=info
-    restart: unless-stopped
 
   bitcoin-setup:
     container_name: bitcoin-setup
