@@ -39,6 +39,8 @@ jobs:
           docker-compose -f docker-compose.yml up -d --no-deps cln lndnode lndnode-receiver cashu-mint bitcoin-setup
           sleep 20
           docker logs bitcoin-setup
+          echo "==========="
+          docker logs cashu-mint
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
