@@ -108,7 +108,7 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)"
 
           echo "✅ LND node funded successfully!"
-          balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.balance')
+          balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.comfirmed_balance')
           echo "LND wallet balance: $balance sats"
 
           # Fund CLN wallet for payment
@@ -123,37 +123,6 @@ jobs:
           echo "✅ CLN wallet funded successfully!"
           funds=$(docker exec cln lightning-cli --network=regtest listfunds)
           echo "CLN funds: $funds"
-
-          # --- Connect CLN to LND and open a channel ---
-          echo "🔗 Connecting CLN to LND node..."
-          lnd_pubkey=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
-          lnd_uri="${lnd_pubkey}@lndnode:9735"
-          echo "LND URI: $lnd_uri"
-
-          # Attempt connection
-          docker exec cln lightning-cli --network=regtest connect "$lnd_uri" || {
-            echo "❌ Failed to connect CLN to LND node"
-            docker logs cln
-            exit 1
-          }
-
-          echo "Opening channel from CLN to LND..."
-          docker exec cln lightning-cli --network=regtest fundchannel "$lnd_pubkey" 1000000 || {
-            echo "❌ Failed to fund channel"
-            docker logs cln
-            exit 1
-          }
-
-          echo "⛏️ Mining 6 blocks to confirm channel..."
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)"
-
-          echo "Waiting for channel to become active..."
-          until docker exec cln lightning-cli --network=regtest listfunds | jq -e '.channels | length > 0' >/dev/null 2>&1; do
-            echo "⏳ Channel still pending..."
-            sleep 5
-          done
-
-          echo "✅ Channel between CLN and LND established!"
 
           # --- 🧾 Create a Cashu invoice via LNDREST-backed mint ---
           echo "Requesting Cashu invoice..."
@@ -184,7 +153,6 @@ jobs:
           if [ $pay_exit -ne 0 ]; then
             echo "❌ CLN failed to pay invoice"
             echo "Payment result: $PAY_RESULT"
-            docker logs cln
             docker exec cln lightning-cli --network=regtest listpeers || true
             docker exec cln lightning-cli --network=regtest listfunds || true
             exit 1
