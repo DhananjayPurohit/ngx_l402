@@ -26,7 +26,7 @@ services:
         if [ ! -f "/usr/local/libexec/c-lightning/plugins/cln-nip47" ]; then
           apt-get update && apt-get install -y wget
           cd /tmp
-          wget -O nwc.tar.gz https://github.com/daywalker90/cln-nip47/releases/download/v0.1.3/cln-nip47-v0.1.3-x86_64-linux-gnu.tar.gz
+          wget -O nwc.tar.gz https://github.com/daywalker90/cln-nip47/releases/download/v0.1.3/cln-nip47-v0.1.3-aarch64-linux-gnu.tar.gz
           tar xzf nwc.tar.gz
           chmod +x cln-nip47
           mv cln-nip47 /usr/local/libexec/c-lightning/plugins/cln-nip47
