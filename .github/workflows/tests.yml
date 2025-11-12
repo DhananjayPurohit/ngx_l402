@@ -69,6 +69,7 @@ jobs:
           docker-compose -f docker-compose.yml up -d --no-deps lndnode lndnode-receiver cashu-mint
           echo "Waiting for cashu-mint to initialize..., sleeping for 30 seconds"
           sleep 30
+          docker logs lndnode-receiver
 
       - name: Verify Bitcoin daemon Service, create wallet and fund lndnode (via CLN)
         run: |
@@ -87,12 +88,18 @@ jobs:
           address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
           echo "New Bitcoin wallet address: $address"
 
-          # Generate 101 blocks to activate segwit + fund wallet
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address"
+          # Generate 101 blocks
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address" > /dev/null
 
           echo "Waiting for lndnode wallet to be ready..."
           until docker exec lndnode lncli -n regtest getinfo >/dev/null 2>&1; do
             echo "Still waiting for lndnode..."
+            sleep 5
+          done
+
+          echo "Waiting for lndnode-receiver wallet to be ready..."
+          until docker exec lndnode-receiver lncli -n regtest getinfo >/dev/null 2>&1; do
+            echo "Still waiting for lndnode-receiver..."
             sleep 5
           done
 
