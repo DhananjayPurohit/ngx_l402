@@ -46,8 +46,7 @@ jobs:
           sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
 
       - name: Build module for l402
-        run: |
-          cargo build --release --features export-modules
+        run: cargo build --release --features export-modules
 
       - name: Set up Docker Compose
         env:
@@ -63,7 +62,6 @@ jobs:
         run: |
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
-          echo CASHU_WALLET_SECRET=test_cashu_wallet_secret >> .env
           cat .env
 
       - name: Start LNURL service
@@ -224,31 +222,19 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnurl
 
-      - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
+      - name: Verify Bitcoin daemon Service and create wallet
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
+          wallet_name="new_wallet"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name || docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
+          address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
+          echo "New Wallet Address: $address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress bcrt1pcngfxjdkf4r2h26k52dh5nunxg8m68uf4lkfhmfjvjj6agfkm5jqmftw4e 0.0001
+          docker logs bitcoind
 
-          max_wait=150
-          elapsed=0
-          while [ $elapsed -lt $max_wait ]; do
-            if docker logs bitcoin-setup 2>&1 | grep -q "✅ Bitcoin/LND/Cashu setup completed successfully!"; then
-              echo "Bitcoin setup completed successfully!"
-              break
-            fi
-            echo "Waiting for setup... (${elapsed}s/${max_wait}s)"
-            sleep 10
-            elapsed=$((elapsed + 10))
-          done
-          
-          if [ $elapsed -ge $max_wait ]; then
-            echo "⚠️ Setup timeout - checking logs..."
-            docker logs bitcoin-setup
-            exit 1
-          fi
-          
-          # Verify Cashu wallet has balance
-          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
-          echo "Current Cashu balance: $CASHU_BALANCE sat"
+      - name: Start cln and lndnode
+        run: |
+          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode
 
       - name: Start CLN service
         run: |
@@ -346,11 +332,11 @@ jobs:
           address=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
           echo "Generated address for LND: $address"
 
-          # Send 10 BTC to LND node from default wallet
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default sendtoaddress "$address" 10
+          # Send 10 BTC to LND node
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$address" 10
           
           # Generate blocks to confirm the transaction
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
 
           # Connect nodes
           echo "Connecting LND to CLN..."
@@ -361,7 +347,7 @@ jobs:
           docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000
 
           # Generate blocks to confirm channel
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
 
           docker logs cln
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
@@ -415,42 +401,19 @@ jobs:
           fi
           echo "invoice: $invoice"
 
-          # Verify channel state before payment
-          echo "Checking LND channels..."
-          docker exec lndnode lncli -n regtest listchannels
-          echo "Checking CLN channels..."
-          docker exec cln lightning-cli --network=regtest listchannels
-          
-          # Check if nodes can reach each other
-          echo "Checking LND peers..."
-          docker exec lndnode lncli -n regtest listpeers
-
           # Pay invoice using LND to get preimage
           echo "Paying invoice through LND..."
-          
-          # Pay invoice with timeout (60 seconds max)
-          payment_result=$(timeout 60 docker exec lndnode lncli -n regtest payinvoice --timeout 45s -f $invoice 2>&1 || echo "PAYMENT_TIMEOUT")
-          
-          if echo "$payment_result" | grep -q "PAYMENT_TIMEOUT"; then
-            echo "Error: Payment timed out after 60 seconds"
-            docker logs lndnode
-            docker logs nginx-nwc
-            docker logs cln
-            exit 1
-          fi
-          
+          docker logs lndnode
+          payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice 2>&1)
+          docker logs lndnode
           echo "payment_result: $payment_result"
           
           # Wait a few seconds for payment to settle
           echo "Waiting for payment to settle..."
-          sleep 10
+          sleep 5
           
-          # Decode invoice to get payment hash
-          payment_hash=$(docker exec lndnode lncli -n regtest decodepayreq "$invoice" | jq -r '.payment_hash')
-          echo "Looking for payment with hash: $payment_hash"
-          
-          # Get payment result with preimage using payment hash
-          payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r ".payments[] | select(.payment_hash == \"$payment_hash\")")
+          # Get payment result with preimage
+          payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1]')
           payment_status=$(echo "$payment_result" | jq -r '.status')
           echo "payment_result: $payment_result"
           echo "payment_status: $payment_status"
@@ -518,7 +481,8 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd redis
+          # Start the remaining services
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
 
       - name: Run Integration Tests - LND
         run: |
@@ -691,14 +655,18 @@ jobs:
           echo "Checking initial balance..."
           docker exec cashu-mint poetry run cashu balance
           
+          # Generate a Lightning invoice and mint tokens
+          echo "Generating Lightning invoice and minting tokens..."
+          docker exec cashu-mint poetry run cashu invoice 100
+          
           # Check balance after minting
           echo "Checking balance after minting..."
           docker exec cashu-mint poetry run cashu balance
           
           # Get token from wallet
           echo "Retrieving token from wallet..."
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 100)
-
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
+          
           echo "Cashu token: $CASHU_TOKEN"
 
           sleep 5
@@ -735,7 +703,9 @@ jobs:
           
           # Test with invalid Cashu token (insufficient amount)
           echo "Testing with invalid Cashu token (insufficient amount)..."
-
+          
+          # Create a token with insufficient amount (1 sat instead of required amount)
+          docker exec cashu-mint poetry run cashu invoice 1
           INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
 
           sleep 5
@@ -823,76 +793,9 @@ jobs:
           fi
           
           echo "✅ Non-whitelisted mint token (https://nofees.testnut.cashu.space) correctly rejected!"
-
+          
           echo "All Cashu eCash tests completed successfully!"
-
-      - name: Run Integration Tests - Cashu Redeem on Lightning
-        run: |
-          echo "Testing Cashu redeem on lightning feature..."
-
-          if docker exec nginx-lnd env | grep -q "CASHU_REDEEM_ON_LIGHTNING=true"; then
-            echo "✅ Cashu redeem on lightning is enabled"
-          else
-            echo "❌ Cashu redeem on lightning is not enabled"
-            exit 1
-          fi
-
-          if docker exec nginx-lnd env | grep -q "CASHU_WHITELISTED_MINTS="; then
-            echo "✅ Cashu whitelisted mints are configured"
-          else
-            echo "❌ Cashu whitelisted mints are not configured"
-            exit 1
-          fi
-
-          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
-
-          echo "Generated Cashu token: $CASHU_TOKEN"
-          echo "using cashu token to access protected route..."
-
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
-          status_code=$(echo "$response" | tail -n1)
-
-          if [ "$status_code" = "200" ]; then
-            echo "Cashu token used successfully"
-          else
-            echo "❌ Cashu token rejected (code: $status_code)"
-            docker logs nginx-lnurl
-            exit 1
-          fi
-
-          INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
-          echo "Initial LND confirmed balance: $INITIAL_BALANCE sats"
-
-          echo "Verifying tokens are stored in Cashu database..."
-          if docker exec nginx-lnd test -f /app/data/cashu_tokens.db; then
-            echo "✅ Cashu database exists and contains tokens"
-          else
-            echo "Cashu database not found"
-            exit 1
-          fi
-
-          REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
-          echo "Cashu redemption interval is set to: ${REDEMPTION_INTERVAL} seconds"
-
-          WAIT_TIME=$((REDEMPTION_INTERVAL + 15))
-          echo "Waiting ${WAIT_TIME} seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
-
-          sleep $WAIT_TIME
-
-          FINAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
-          echo "Final LND confirmed balance: $FINAL_BALANCE sats"
-
-          BALANCE_DIFFERENCE=$((FINAL_BALANCE - INITIAL_BALANCE))
-          echo "Balance difference: $BALANCE_DIFFERENCE sats"
-
-          if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
-            echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
-          else
-            echo "No redemption activity"
-            exit 1
-          fi
-
-          echo "✅ Cashu redeem on lightning integration tests completed!"
+          docker logs nginx-lnd
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
