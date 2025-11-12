@@ -355,46 +355,49 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name \
             || docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
 
-          address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
+          address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
           echo "New Bitcoin wallet address: $address"
 
-          # Generate 101 blocks to activate segwit + fund wallet
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address"
-
-          echo "Waiting for lndnode wallet to be ready..."
-          until docker exec lndnode lncli -n regtest getinfo >/dev/null 2>&1; do
-            echo "Still waiting for lndnode..."
-            sleep 5
-          done
+          # Generate 101 blocks
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 101 "$address"
 
           # Fund LND wallet
-          lnd_address=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
-          echo "LND wallet address: $lnd_address"
-
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$lnd_address" 1
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress new_wallet)"
-
           echo "✅ LND node funded successfully!"
-          balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.balance')
+          balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
           echo "LND wallet balance: $balance"
 
           # Fund CLN wallet for payment
           cln_address=$(docker exec cln lightning-cli --network=regtest newaddr | jq -r '.bech32')
           echo "CLN wallet address: $cln_address"
 
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$cln_address" 1
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress new_wallet)"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$cln_address" 1
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
           echo "✅ CLN wallet funded successfully!"
           funds=$(docker exec cln lightning-cli --network=regtest listfunds)
           echo "CLN funds: $funds"
 
+          echo "Fetching LND pubkey..."
+          LND_PUBKEY=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
+          echo "LND Pubkey: $LND_PUBKEY"
+
+          echo "Connecting CLN to LND..."
+          docker exec cln lightning-cli --network regtest connect "$LND_PUBKEY@lndnode:9735" || echo "Already connected."
+
+          echo "Opening channel from CLN → LND..."
+          docker exec cln lightning-cli --network=regtest fundchannel "$LND_PUBKEY" 1000000
+
+          # Mine 6 blocks to confirm channel
+          echo "Mining blocks to confirm channel..."
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$address"
+
+          echo "sleeping for 60"
+          sleep 60
+
           # Create a Cashu invoice via LNDREST-backed mint
           echo "Requesting Cashu invoice..."
-          docker exec cashu-mint sh -c "poetry run cashu invoice 2500000 2>&1" > /tmp/cashu_output.txt &
-          sleep 5
-          CASHU_INVOICE=$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | awk '{print $2}' || true)
-          rm -f /tmp/cashu_output.txt
+          CASHU_OUTPUT=$(docker exec cashu-mint poetry run cashu invoice 100)
+          CASHU_INVOICE=$(echo "$CASHU_OUTPUT" | grep 'Invoice:' | awk '{print $2}')
 
           if [ -z "$CASHU_INVOICE" ]; then
             echo "❌ Failed to generate Cashu invoice"
@@ -404,14 +407,14 @@ jobs:
 
           echo "Cashu invoice generated: $CASHU_INVOICE"
 
-          # Pay the invoice from CLN (avoiding self-payment)
+          # Pay the invoice from CLN
           echo "Paying Cashu invoice from CLN..."
-          docker exec cln lightning-cli --network=regtest pay "$CASHU_INVOICE"
-
-          sleep 5
+          docker exec cln lightning-cli --network=regtest pay "$CASHU_INVOICE" --force
 
           balance=$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
           echo "Cashu mint funded successfully! Current balance: $balance sats"
+
+
 
       - name: Start CLN service
         run: |
