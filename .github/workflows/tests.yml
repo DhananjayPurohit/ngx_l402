@@ -425,10 +425,14 @@ jobs:
           
           # Wait a few seconds for payment to settle
           echo "Waiting for payment to settle..."
-          sleep 5
+          sleep 10
           
-          # Get payment result with preimage
-          payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1]')
+          # Decode invoice to get payment hash
+          payment_hash=$(docker exec lndnode lncli -n regtest decodepayreq "$invoice" | jq -r '.payment_hash')
+          echo "Looking for payment with hash: $payment_hash"
+          
+          # Get payment result with preimage using payment hash
+          payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r ".payments[] | select(.payment_hash == \"$payment_hash\")")
           payment_status=$(echo "$payment_result" | jq -r '.status')
           echo "payment_result: $payment_result"
           echo "payment_status: $payment_status"
