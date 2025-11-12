@@ -225,9 +225,11 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnurl
 
-      - name: Start cln, lndnode, lndnode-receiver and bitcoin-setup
+      - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln lndnode lndnode-receiver bitcoin-setup
+          docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
+          echo "waiting for 10 seconds..."
+          sleep 10
 
       - name: Start CLN service
         run: |
@@ -325,11 +327,14 @@ jobs:
           address=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
           echo "Generated address for LND: $address"
 
-          # Send 10 BTC to LND node
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$address" 10
+          # Ensure default wallet is loaded in bitcoind
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet default || true
+
+          # Send 10 BTC to LND node from default wallet
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default sendtoaddress "$address" 10
           
           # Generate blocks to confirm the transaction
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default generatetoaddress 6 "$address"
 
           # Connect nodes
           echo "Connecting LND to CLN..."
@@ -340,7 +345,7 @@ jobs:
           docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000
 
           # Generate blocks to confirm channel
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default generatetoaddress 6 "$address"
 
           docker logs cln
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
@@ -474,7 +479,7 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd redis
 
       - name: Run Integration Tests - LND
         run: |
