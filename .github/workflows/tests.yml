@@ -229,14 +229,11 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
 
-          # Wait for bitcoin-setup to complete
-          echo "Waiting for bitcoin-setup to complete..."
-          max_wait=300
+          max_wait=150
           elapsed=0
           while [ $elapsed -lt $max_wait ]; do
             if docker logs bitcoin-setup 2>&1 | grep -q "✅ Bitcoin/LND/Cashu setup completed successfully!"; then
-              echo "✅ Bitcoin setup completed successfully!"
-              docker logs bitcoin-setup
+              echo "Bitcoin setup completed successfully!"
               break
             fi
             echo "Waiting for setup... (${elapsed}s/${max_wait}s)"
@@ -250,14 +247,7 @@ jobs:
             exit 1
           fi
           
-          echo "================================"
-          
           # Verify Cashu wallet has balance
-          echo "Checking Cashu wallet balance..."
-          CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
-          echo "Current Cashu balance: $CASHU_BALANCE sat"
-          # Verify Cashu wallet has balance
-          echo "Checking Cashu wallet balance..."
           CASHU_BALANCE=$(docker exec cashu-mint poetry run cashu balance 2>&1 | grep -oP 'Balance: \K\d+' || echo "0")
           echo "Current Cashu balance: $CASHU_BALANCE sat"
 
@@ -813,7 +803,6 @@ jobs:
           echo "✅ Non-whitelisted mint token (https://nofees.testnut.cashu.space) correctly rejected!"
 
           echo "All Cashu eCash tests completed successfully!"
-          docker logs nginx-lnd
 
       - name: Run Integration Tests - Cashu Redeem on Lightning
         run: |
@@ -852,8 +841,7 @@ jobs:
           INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
           echo "Initial LND confirmed balance: $INITIAL_BALANCE sats"
 
-          # Test 1: Verify tokens are stored in database
-          echo "Test 1: Verifying tokens are stored in Cashu database..."
+          echo "Verifying tokens are stored in Cashu database..."
           if docker exec nginx-lnd test -f /app/data/cashu_tokens.db; then
             echo "✅ Cashu database exists and contains tokens"
           else
@@ -864,7 +852,7 @@ jobs:
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
           echo "Cashu redemption interval is set to: ${REDEMPTION_INTERVAL} seconds"
 
-          WAIT_TIME=$((REDEMPTION_INTERVAL * 1.5))
+          WAIT_TIME=$((REDEMPTION_INTERVAL + 15))
           echo "Waiting ${WAIT_TIME} seconds for redemption process to complete (${REDEMPTION_INTERVAL}s interval)..."
 
           sleep $WAIT_TIME
