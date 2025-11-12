@@ -258,6 +258,20 @@ jobs:
           docker exec lndnode lncli -n regtest walletbalance
           echo "LND node wallet funded successfully!"
 
+          # Funding cashu mint
+          docker exec cashu-mint sh -c "poetry run cashu invoice 2500000 2>&1" > /tmp/cashu_output.txt &
+          sleep 5
+          CASHU_INVOICE=$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2 || true)
+          rm -f /tmp/cashu_output.txt
+
+          echo "Paying to cashu invoice: $CASHU_INVOICE"
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$CASHU_INVOICE" -f
+
+          sleep 2
+
+          balance=$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep 'Balance:' | cut -d' ' -f2 || echo '0')
+          echo "Cashu mint funded successfully! Wallet balance: $balance"
+
       - name: Start cln and lndnode
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps cln lndnode
@@ -826,6 +840,57 @@ jobs:
           
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
+
+      - name: Stop nginx-lnd and start nginx-cln
+        run: |
+          echo "Stopping nginx-lnd..."
+          docker-compose -f docker-compose.yml stop nginx-lnd
+          sleep 5
+          echo "Starting nginx-cln..."
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-cln
+
+      - name: Run Integration test - Cashu redemption on lightening
+        run: |
+          echo "Running Cashu redemption on Lightning test..."
+          cashu_token=$(docker exec cashu-mint poetry run cashu send 100)
+
+          echo "Cashu Token: $cashu_token"
+
+          # access protected nginx-cln route with cashu token
+          response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $cashu_token" http://0.0.0.0:8000/protected) 
+
+          if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
+            echo "Error: unable to access protected route with Cashu token with response $(echo "$response" | tail -n1)"
+            docker logs nginx-cln
+            exit 1
+          fi
+
+          echo "Cashu token consumed successfully to access protected route."
+
+          INITIAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+          echo "Initial LND Wallet Balance: $INITIAL_BALANCE sats"
+
+          REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
+          WAIT_TIME=$((REDEMPTION_INTERVAL + 10))
+
+          echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
+          sleep $WAIT_TIME
+
+          FINAL_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+          echo "Final LND Wallet Balance: $FINAL_BALANCE sats"
+
+          BALANCE_DIFFERENCE=$((FINAL_BALANCE - INITIAL_BALANCE))
+          echo "Balance Difference: $BALANCE_DIFFERENCE sats"
+
+          if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
+            echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
+          else
+            echo "No redemption activity"
+            exit 1
+          fi
+
+          echo "✅ Cashu redeem on lightning integration tests completed!"
+
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')

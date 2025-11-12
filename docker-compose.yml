@@ -113,6 +113,8 @@ services:
       - MINT_LND_REST_MACAROON=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - MINT_LND_REST_CERT_VERIFY=FALSE
     command: ["poetry", "run", "mint"]
+    volumes:
+      - lndnode-data:/root/.lnd:ro
     depends_on:
       - lndnode
 
