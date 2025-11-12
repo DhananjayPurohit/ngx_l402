@@ -909,7 +909,7 @@ jobs:
           echo "Cashu token consumed successfully to access protected route."
 
           REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
-          WAIT_TIME=$((REDEMPTION_INTERVAL + 15))
+          WAIT_TIME=$((REDEMPTION_INTERVAL + 180))
 
           echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
           sleep $WAIT_TIME
