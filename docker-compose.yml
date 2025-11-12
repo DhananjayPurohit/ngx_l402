@@ -108,11 +108,11 @@ services:
           --file.wallet-password=/data/walletpassword.txt \
           --init-file.output-wallet-dir=/root/.lnd/data/chain/bitcoin/regtest \
           --init-file.validate-password
-        mkdir -p /data/.lnd-receiver
-        if [ ! -f "/data/.lnd-receiver/umbrel-lnd.conf" ]; then
-          touch "/data/.lnd-receiver/umbrel-lnd.conf"
+        mkdir -p /data/.lnd
+        if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
+          touch "/data/.lnd/umbrel-lnd.conf"
         fi
-        lnd --listen=0.0.0.0:9736 --rpclisten=0.0.0.0:10010 --restlisten=0.0.0.0:8081 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd-receiver/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
+        lnd --listen=0.0.0.0:9736 --rpclisten=0.0.0.0:10010 --restlisten=0.0.0.0:8081 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
     ports:
       - "9736:9736"
       - "10010:10010"
