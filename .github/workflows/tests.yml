@@ -222,12 +222,6 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnurl
 
-      - name: Start LND node, CLN and cashu-mint
-        run: |
-          docker-compose -f docker-compose.yml up -d --no-deps lndnode cln cashu-mint
-          echo "==================="
-          docker logs cashu-mint
-
       - name: Start LND node, LND node receiver and cashu-mint
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps lndnode lndnode-receiver cashu-mint
@@ -343,14 +337,12 @@ jobs:
           CASHU_BALANCE=$(docker exec cashu-mint sh -c "poetry run cashu balance" 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
           echo "Cashu user wallet balance: $CASHU_BALANCE sats"
 
-      - name: Start CLN service
+      - name: Start cln services
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-cln
+          docker-compose -f docker-compose.yml up -d --no-deps cln nginx-cln
 
       - name: Run Integration Tests - CLN
         run: |
-          docker logs cln
-          docker logs nginx-cln
           echo "Testing with CLN configuration..."
           sleep 15
 
@@ -651,7 +643,7 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 402 ]; then
             echo "Error: Protected route with dynamic price returned status $status_code, expected 402"
-            # docker logs nginx-lnd
+            docker logs nginx-lnd
             exit 1
           fi
 
@@ -660,7 +652,7 @@ jobs:
           if [ -z "$invoice" ]; then
             echo "Error: No invoice found in WWW-Authenticate header for dynamic price"
             echo "$response"
-            # docker logs nginx-lnd
+            docker logs nginx-lnd
             exit 1
           fi
 
@@ -669,7 +661,7 @@ jobs:
           if [ "$decoded_amount" != "15000" ]; then
             echo "Error: Dynamic invoice amount is $decoded_amount msat, expected 15000 msat"
             echo "$response"
-            # docker logs nginx-lnd
+            docker logs nginx-lnd
             exit 1
           fi
 
