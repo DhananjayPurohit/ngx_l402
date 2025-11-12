@@ -222,15 +222,41 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnurl
 
-      - name: Verify Bitcoin daemon Service and create wallet
+      - name: Start LND node and cashu-mint
+        run: |
+          docker-compose -f docker-compose.yml up -d --no-deps lndnode cashu-mint
+          echo "waiting for 10 seconds..."
+          sleep 10
+
+      - name: Verify Bitcoin daemon Service, create wallet and fund lndnode
         run: |
           wallet_name="new_wallet"
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name || docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
           address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
           echo "New Wallet Address: $address"
+
+          # mine blocks and transfer to wallet address
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 101 "$address"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress bcrt1pcngfxjdkf4r2h26k52dh5nunxg8m68uf4lkfhmfjvjj6agfkm5jqmftw4e 0.0001
-          docker logs bitcoind
+
+          # Wait for lndnode wallet to be unlocked and ready
+          until docker exec lndnode lncli -n regtest getinfo > /dev/null 2>&1; do
+            echo "Waiting for lndnode to be ready..."
+            sleep 5
+          done
+
+          # Get a new address from lndnode and fund it
+          lnd_address=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
+          echo "LND Wallet Address: $lnd_address"
+
+          # Send 1 BTC to lndnode wallet
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$lnd_address" 1
+
+          # Generate 6 blocks to confirm the transaction
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress new_wallet)"
+
+          # Check lndnode wallet balance
+          docker exec lndnode lncli -n regtest walletbalance
+          echo "LND node wallet funded successfully!"
 
       - name: Start cln and lndnode
         run: |
@@ -428,7 +454,11 @@ jobs:
           preimage=$(echo "$payment_result" | jq -r '.payment_preimage')
           macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
 
-          # Test with obtained preimage immediately
+          # Wait for preimage to be registered in the system
+          echo "Waiting for preimage registration..."
+          sleep 5
+
+          # Test with obtained preimage
           echo "Testing protected route with valid preimage..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 $macaroon:$preimage" http://0.0.0.0:8000/protected-timeout)
           status_code=$(echo "$response" | tail -n1)
