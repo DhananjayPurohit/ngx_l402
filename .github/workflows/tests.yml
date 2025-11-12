@@ -230,6 +230,23 @@ jobs:
           docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
           echo "waiting for 10 seconds..."
           sleep 10
+          docker logs bitcoin-setup
+          echo "==================="
+          docker logs lndnode
+          echo "==================="
+          docker logs lndnode-receiver
+          echo "==================="
+          docker logs cashu-mint
+          echo "==================="
+          echo "Checking Bitcoin wallet balance..."
+
+          # Ensure wallet is loaded (ignore error if already loaded)
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet default || true
+
+          # Show current balance
+          balance=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default getbalance)
+
+          echo "Bitcoin wallet balance: $balance BTC"
 
       - name: Start CLN service
         run: |
@@ -326,9 +343,6 @@ jobs:
           # Generate a new address for LND node
           address=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
           echo "Generated address for LND: $address"
-
-          # Ensure default wallet is loaded in bitcoind
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet default || true
 
           # Send 10 BTC to LND node from default wallet
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=default sendtoaddress "$address" 10
