@@ -74,14 +74,17 @@ jobs:
 
       - name: Verify Bitcoin daemon Service, create wallet and fund lndnode (via CLN)
         run: |
-          set -euo pipefail
-          trap 'echo "❌ ERROR on line $LINENO"' ERR
-
           wallet_name="new_wallet"
 
-          # Ensure bitcoind wallet exists
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name \
-            || docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
+          # Ensure bitcoind wallet exists - check if wallet exists first
+          echo "Checking if wallet exists..."
+          if docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass listwallets | grep -q "\"$wallet_name\""; then
+            echo "Wallet $wallet_name already exists, loading it..."
+            docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name 2>/dev/null || true
+          else
+            echo "Creating new wallet $wallet_name..."
+            docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
+          fi
 
           address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)
           echo "New Bitcoin wallet address: $address"
@@ -154,26 +157,40 @@ jobs:
 
           # --- 🧾 Create a Cashu invoice via LNDREST-backed mint ---
           echo "Requesting Cashu invoice..."
-          docker exec cashu-mint sh -c "poetry run cashu invoice 2500000 2>&1" > /tmp/cashu_output.txt &
-          sleep 5
-          CASHU_INVOICE=$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | awk '{print $2}' || true)
-          rm -f /tmp/cashu_output.txt
-
-          if [ -z "$CASHU_INVOICE" ]; then
+          
+          # Generate invoice synchronously with better error handling
+          set +e  # Temporarily disable exit on error
+          CASHU_INVOICE=$(docker exec cashu-mint poetry run cashu invoice 2500000 2>&1 | grep 'Invoice:' | tail -1 | awk '{print $2}')
+          invoice_result=$?
+          set -e  # Re-enable exit on error
+          
+          if [ $invoice_result -ne 0 ] || [ -z "$CASHU_INVOICE" ]; then
             echo "❌ Failed to generate Cashu invoice"
+            echo "Debug: Checking cashu-mint logs and connectivity..."
             docker logs cashu-mint
+            docker exec cashu-mint poetry run cashu info || true
             exit 1
           fi
 
-          echo "Cashu invoice generated: $CASHU_INVOICE"
+          echo "✅ Cashu invoice generated: $CASHU_INVOICE"
 
           # Pay the invoice from CLN
           echo "⚡ Paying Cashu invoice from CLN..."
-          docker exec cln lightning-cli --network=regtest pay "$CASHU_INVOICE" || {
+          set +e  # Temporarily disable exit on error
+          PAY_RESULT=$(docker exec cln lightning-cli --network=regtest pay "$CASHU_INVOICE" 2>&1)
+          pay_exit=$?
+          set -e  # Re-enable exit on error
+          
+          if [ $pay_exit -ne 0 ]; then
             echo "❌ CLN failed to pay invoice"
+            echo "Payment result: $PAY_RESULT"
             docker logs cln
+            docker exec cln lightning-cli --network=regtest listpeers || true
+            docker exec cln lightning-cli --network=regtest listfunds || true
             exit 1
-          }
+          fi
+          
+          echo "✅ Payment successful: $PAY_RESULT"
 
           # Mine blocks to confirm payment settlement
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 3 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)"
