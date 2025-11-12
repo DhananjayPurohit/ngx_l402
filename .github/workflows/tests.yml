@@ -24,6 +24,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Create env file
+        run: |
+          touch .env
+          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          echo CASHU_WALLET_SECRET=test_cashu_wallet_secret >> .env
+          cat .env
+
+      - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
+        run: |
+          docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
+          echo "waiting for 20 seconds..."
+          sleep 20
+
+          docker logs bitcoin-setup
+          echo "================================"
+          
+          echo "Generating Lightning invoice and minting tokens..."
+          docker exec cashu-mint sh -c "poetry run cashu invoice 100 2>&1" > /tmp/cashu_output.txt &
+          CASHU_PID=$!
+
+          sleep 3
+
+          echo "Checking balance after minting..."
+          docker exec cashu-mint poetry run cashu balance
+          
+          # Get token from wallet
+          echo "Retrieving token from wallet..."
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 100)
+
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
