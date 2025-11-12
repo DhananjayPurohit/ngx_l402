@@ -224,12 +224,10 @@ jobs:
 
       - name: Start LND node and cashu-mint
         run: |
-          docker-compose -f docker-compose.yml up -d --no-deps lndnode
-          docker-compose -f docker-compose.yml up -d --no-deps cashu-mint
-          sleep 90
+          docker-compose -f docker-compose.yml up -d --no-deps lndnode cashu-mint
+          sleep 100
           echo "==================="
           docker logs cashu-mint
-          echo "==================="
 
       - name: Verify Bitcoin daemon Service, create wallet and fund lndnode
         run: |

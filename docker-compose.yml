@@ -118,6 +118,12 @@ services:
       - /bin/sh
       - -c
       - |
+        echo "Waiting for LND macaroon and cert..."
+        until [ -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ] && [ -f /root/.lnd/tls.cert ]; do
+          echo "Files not ready yet..."
+          sleep 5
+        done
+        echo "Macaroon and cert found. Starting mint..."
         poetry run mint
     depends_on:
       - lndnode
