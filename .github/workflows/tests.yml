@@ -109,14 +109,14 @@ jobs:
           balance=$(docker exec lndnode lncli -n regtest walletbalance)
           echo "LND wallet balance: $balance sats"
 
-          # Fund CLN wallet for payment
+          # Fund CLN wallet
           cln_address=$(docker exec cln lightning-cli --network=regtest newaddr | jq -r '.bech32')
           echo "CLN wallet address: $cln_address"
 
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$cln_address" 1
 
           # Mine blocks to confirm CLN funding
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress $wallet_name)"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$cln_address"
 
           echo "✅ CLN wallet funded successfully!"
           funds=$(docker exec cln lightning-cli --network=regtest listfunds)
