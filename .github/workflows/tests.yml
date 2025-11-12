@@ -24,45 +24,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create env file
-        run: |
-          touch .env
-          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
-          echo CASHU_WALLET_SECRET=test_cashu_wallet_secret >> .env
-          cat .env
-
-      - name: Set up Docker Compose
-        env:
-          ROOT_KEY: ${{ secrets.ROOT_KEY }}
-          CURRENCY: USD
-          AMOUNT: 0.01
-        run: |
-          sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-          sudo chmod +x /usr/local/bin/docker-compose
-          docker-compose -f docker-compose.yml up -d bitcoind
-          sleep 10
-
-      - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
-        run: |
-          docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
-          echo "waiting for 30 seconds..."
-          sleep 30
-
-          docker logs cashu-mint
-          echo "====================="
-          docker logs bitcoin-setup
-          echo "====================="
-          docker logs lndnode
-          echo "======================="
-
-          docker exec cashu-mint sh -c "poetry run cashu invoice 100 2>&1" > /tmp/cashu_output.txt &
-          CASHU_PID=$!
-
-          sleep 3
-
-          echo "reached here..."
-          cat /tmp/cashu_output.txt
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -741,7 +702,10 @@ jobs:
           echo "Testing with invalid Cashu token (insufficient amount)..."
           
           # Create a token with insufficient amount (1 sat instead of required amount)
-          docker exec -i cashu-mint sh -c "poetry run cashu invoice 1 > /dev/null 2>&1"
+          docker exec cashu-mint sh -c "poetry run cashu invoice 1 2>&1" > /tmp/cashu_output.txt &
+          CASHU_PID=$!
+          
+          sleep 3
 
           INVALID_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 1)
 
@@ -853,7 +817,10 @@ jobs:
           fi
 
           echo "Generating Cashu token..."
-          docker exec -i cashu-mint sh -c "poetry run cashu invoice 50 > /dev/null 2>&1"
+          docker exec cashu-mint sh -c "poetry run cashu invoice 50 2>&1" > /tmp/cashu_output.txt &
+          CASHU_PID=$!
+
+          sleep 3
 
           CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 50 --legacy)
 
