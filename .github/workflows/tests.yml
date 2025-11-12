@@ -140,7 +140,7 @@ jobs:
           result=$(docker exec cln lightning-cli --network=regtest connect "$LND_PUBKEY@$LND_IP:9735")
 
           echo "Opening channel from CLN to LND..."
-          result=$(docker exec cln lightning-cli --network=regtest fundchannel "$LND_PUBKEY" 1000000)
+          result=$(docker exec cln lightning-cli --network=regtest fundchannel "$LND_PUBKEY" 5000000)
           echo "Channel open result: $result"
 
           echo "sleeping for 5 seconds to allow channel to be active..."
@@ -152,7 +152,24 @@ jobs:
 
           echo "connection status: $result"
 
+          echo "Waiting for CLN → LND channel to become active..."
 
+          echo "mining blocks to confirm channel..."
+          docker exec bitcoind bitcoin-cli -regtest generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest getnewaddress)"
+
+          while true; do
+            CHANNEL_INFO=$(docker exec cln lightning-cli --network=regtest listpeers | jq -r --arg PUBKEY "$LND_PUBKEY" '
+              .peers[] | select(.id==$PUBKEY) | .channels[]? | {state: .state, capacity_msat: .amount_msat}'
+            )
+            
+            if [ -n "$CHANNEL_INFO" ]; then
+              echo "✅ Channel is active:"
+              echo "$CHANNEL_INFO"
+              break
+            else
+              sleep 2
+            fi
+          done
 
           # Pay the invoice from CLN
           echo "Paying Cashu invoice from CLN..."
