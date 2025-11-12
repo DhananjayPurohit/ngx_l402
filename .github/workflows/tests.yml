@@ -886,11 +886,6 @@ jobs:
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
 
-      - name: Stop nginx-lnd
-        run: |
-          echo "Stopping nginx-lnd..."
-          docker-compose -f docker-compose.yml stop nginx-lnd
-
       - name: Run Integration test - Cashu redemption on lightening
         run: |
           echo "Running Cashu redemption on Lightning test..."
