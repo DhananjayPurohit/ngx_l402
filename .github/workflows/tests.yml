@@ -24,6 +24,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Create env file
+        run: |
+          touch .env
+          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          echo CASHU_WALLET_SECRET=test_cashu_wallet_secret >> .env
+          cat .env
+
       - name: Set up Docker Compose
         env:
           ROOT_KEY: ${{ secrets.ROOT_KEY }}
