@@ -116,18 +116,13 @@ jobs:
 
           # --- Connect CLN to LND and open a channel ---
           echo "Connecting CLN to LND node..."
-          lnd_uri=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.uris[0]')
-          if [ -z "$lnd_uri" ]; then
-            # Build URI manually if not available
-            lnd_pubkey=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
-            lnd_uri="${lnd_pubkey}@lndnode:9735"
-          fi
+          lnd_pubkey=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
+          lnd_uri="${lnd_pubkey}@lndnode:9735"
           echo "LND URI: $lnd_uri"
 
           docker exec cln lightning-cli --network=regtest connect "$lnd_uri"
 
           echo "Opening channel from CLN to LND..."
-          lnd_pubkey=$(echo "$lnd_uri" | cut -d'@' -f1)
           docker exec cln lightning-cli --network=regtest fundchannel "$lnd_pubkey" 1000000
 
           echo "Mining blocks to confirm channel..."
