@@ -326,6 +326,27 @@ services:
         docker exec lndnode lncli --network=regtest connect "$$RECEIVER_PUBKEY"@lndnode-receiver:9736 || true
         docker exec lndnode lncli --network=regtest openchannel --node_key="$$RECEIVER_PUBKEY" --local_amt=1000000
         docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$$(bitcoin-cli -regtest getnewaddress)"
+        
+        # Wait for channel to become active
+        echo 'Waiting for channel to become active...'
+        max_wait=60
+        elapsed=0
+        while [ $$elapsed -lt $$max_wait ]; do
+          ACTIVE_CHANNELS=$$(docker exec lndnode lncli --network=regtest listchannels | jq '.channels | length')
+          if [ "$$ACTIVE_CHANNELS" -gt 0 ]; then
+            echo "Channel is now active!"
+            break
+          fi
+          echo "Waiting for channel activation... ($${elapsed}s/$${max_wait}s)"
+          sleep 5
+          elapsed=$$((elapsed + 5))
+        done
+        
+        if [ $$elapsed -ge $$max_wait ]; then
+          echo "⚠️ Channel activation timeout"
+          docker exec lndnode lncli --network=regtest listchannels
+          docker exec lndnode lncli --network=regtest pendingchannels
+        fi
 
         echo 'Funding receiver node...'
         RECEIVER_ADDR=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 newaddress p2wkh | jq -r '.address'")
@@ -333,6 +354,16 @@ services:
         docker exec bitcoind sh -c "bitcoin-cli -regtest generatetoaddress 6 \$$(bitcoin-cli -regtest getnewaddress)"
 
         echo 'Adding outbound capacity to receiver node...'
+        # Check channel balance before sending payment
+        CHANNEL_BALANCE=$$(docker exec lndnode lncli --network=regtest channelbalance | jq -r '.local_balance.sat')
+        echo "Channel balance: $$CHANNEL_BALANCE sat"
+        
+        if [ "$$CHANNEL_BALANCE" -lt 500000 ]; then
+          echo "⚠️ Insufficient channel balance ($$CHANNEL_BALANCE sat), need at least 500000 sat"
+          docker exec lndnode lncli --network=regtest listchannels
+          exit 1
+        fi
+        
         RECEIVER_INVOICE=$$(docker exec lndnode-receiver sh -c "lncli --network=regtest --rpcserver=localhost:10010 addinvoice --amt=500000 | jq -r '.payment_request'")
         docker exec lndnode lncli --network=regtest sendpayment --pay_req="$$RECEIVER_INVOICE" -f
 
