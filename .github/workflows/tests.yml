@@ -38,8 +38,15 @@ jobs:
       - name: Start cln, cashu-mint, lndnode, lndnode-receiver and bitcoin-setup
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps cln cashu-mint lndnode lndnode-receiver bitcoin-setup
-          echo "waiting for 15 seconds..."
-          sleep 15
+          echo "waiting for 30 seconds..."
+          sleep 30
+
+          docker logs cashu-mint
+          echo "====================="
+          docker logs bitcoin-setup
+          echo "====================="
+          docker logs lndnode
+          echo "======================="
 
           docker exec cashu-mint sh -c "poetry run cashu invoice 100 2>&1" > /tmp/cashu_output.txt &
           CASHU_PID=$!
