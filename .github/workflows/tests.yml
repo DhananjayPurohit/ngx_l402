@@ -126,15 +126,6 @@ jobs:
           funds=$(docker exec cln lightning-cli --network=regtest listfunds)
           echo "CLN funds: $funds"
 
-          # creating invoice via LNDREST-backed mint
-          echo "Requesting Cashu invoice..."
-
-          docker exec cashu-mint sh -c "poetry run cashu invoice 100 2>&1" > /tmp/cashu_output.txt &
-          sleep 5
-
-          CASHU_INVOICE=$(cat /tmp/cashu_output.txt | grep 'Invoice:' | tail -1 | awk '{print $2}')
-          echo "✅ Cashu invoice generated: $CASHU_INVOICE"
-
           # create channel between LND and CLN
           LND_PUBKEY=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           LND_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' lndnode)
@@ -146,6 +137,21 @@ jobs:
           echo "Opening channel from CLN to LND..."
           result=$(docker exec cln lightning-cli --network=regtest fundchannel "$LND_PUBKEY" 5000000)
           echo "Channel open result: $result"
+
+          echo "mining blocks to fund channel..."
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$bitcoind_mine_address"
+
+          echo "sleeping for 30 seconds"
+          sleep 30
+
+          # creating invoice via LNDREST-backed mint
+          echo "Requesting Cashu invoice..."
+
+          docker exec cashu-mint sh -c "poetry run cashu invoice 100 2>&1" > /tmp/cashu_output.txt &
+          sleep 5
+
+          CASHU_INVOICE=$(cat /tmp/cashu_output.txt | grep 'Invoice:' | tail -1 | awk '{print $2}')
+          echo "✅ Cashu invoice generated: $CASHU_INVOICE"
 
           echo "sleeping for 5 seconds to allow channel to be active..."
           sleep 5
