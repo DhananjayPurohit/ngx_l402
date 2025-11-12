@@ -40,13 +40,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # - name: Install dependencies
-      #   run: |
-      #     sudo apt-get update
-      #     sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
 
-      # - name: Build module for l402
-      #   run: cargo build --release --features export-modules
+      - name: Build module for l402
+        run: cargo build --release --features export-modules
 
       - name: Set up Docker Compose
         env:
@@ -63,123 +63,6 @@ jobs:
           touch .env
           echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
           cat .env
-
-      - name: Start LND node, LND node receiver and cashu-mint
-        run: |
-          docker-compose -f docker-compose.yml up -d --no-deps lndnode lndnode-receiver cashu-mint
-          echo "Waiting for cashu-mint to initialize..., sleeping for 30 seconds"
-          sleep 30
-          docker logs lndnode-receiver
-
-      - name: Verify Bitcoin daemon Service, create wallet and fund lndnode (via CLN)
-        run: |
-          #!/bin/bash
-
-          wallet_name="my_wallet"
-          echo "Using wallet: $wallet_name"
-
-          # Check if wallet exists, create/load it
-          if docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass listwallets | grep -q "\"$wallet_name\""; then
-              echo "Wallet $wallet_name exists, loading..."
-              docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet "$wallet_name" 2>/dev/null
-          else
-              echo "Creating wallet $wallet_name..."
-              docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet "$wallet_name"
-          fi
-
-          # Generate an address in this wallet
-          fund_address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
-          echo "Mining 101 blocks to $fund_address..."
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 101 "$fund_address" >> /dev/null
-
-          echo "Sleeping 5 seconds..."
-          sleep 5
-
-          # ------- FUND LND NODE -------
-          echo "Funding LND node..."
-
-          # Print initial LND node balance
-          initial_balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
-          echo "Initial LND node balance: $initial_balance sats"
-
-          # Fund LND node
-          lnd_addr=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
-          echo "Sending 1 BTC to LND node at $lnd_addr..."
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$lnd_addr" 1
-
-          # Mine 6 blocks to confirm funding
-          new_addr=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$new_addr"
-
-          # Print final LND node balance
-          final_balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
-          echo "Final LND node balance: $final_balance sats"
-
-          echo "✅ LND node funded successfully!"
-
-          # ------- FUND LND-receiver NODE -------
-          echo "Funding LND-receiver node..."
-
-          # Print initial LND-receiver node balance
-          initial_balance=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
-          echo "Initial LND-receiver node balance: $initial_balance sats"
-
-          # Fund LND-receiver node
-          lnd_addr=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest newaddress p2wkh | jq -r '.address')
-          echo "Sending 1 BTC to LND-receiver node at $lnd_addr..."
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$lnd_addr" 1
-
-          # Mine 6 blocks to confirm funding
-          new_addr=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$new_addr"
-
-          echo "✅ LND-receiver node funded successfully!"
-
-          # -------- CHANNEL --------
-          echo "Opening channel from LND-receiver node to LND node..."
-
-          # Step 1: Get LND node pubkey
-          LNDNODE_PUBKEY=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
-          echo "LND node pubkey: $LNDNODE_PUBKEY"
-
-          # Step 2: Connect receiver to LND node
-          echo "Connecting LND-receiver to LND node..."
-          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 connect "$LNDNODE_PUBKEY"@lndnode:9735 || true
-
-          # Step 3: Open channel from receiver to LND node
-          echo "Opening channel from LND-receiver to LND node..."
-          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 openchannel --node_key="$LNDNODE_PUBKEY" --local_amt=1000000
-
-          # Step 4: Mine 6 blocks to confirm channel
-          echo "Mining 6 blocks to confirm channel..."
-          docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
-
-          echo "✅ Channel opened successfully!"
-
-          # ------- CASHU SETUP -------
-          echo 'Creating Cashu invoice...'
-
-          docker exec cashu-mint sh -c "poetry run cashu invoice 5000 2>&1" > /tmp/cashu_output.txt &
-
-          sleep 3
-
-          CASHU_INVOICE=$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2 || true)
-
-          echo "Cashu invoice: $CASHU_INVOICE"
-          rm /tmp/cashu_output.txt
-
-          if [ -n "$CASHU_INVOICE" ]; then
-            echo 'Paying Cashu mint invoice...'
-            docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$CASHU_INVOICE" -f
-            sleep 3
-          else
-            echo 'Could not create Cashu invoice, skipping token minting'
-          fi
-
-          # Get Cashu balance
-          CASHU_BALANCE=$(docker exec cashu-mint sh -c "poetry run cashu balance" 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
-          echo "Cashu user wallet balance: $CASHU_BALANCE sat"
-
 
       - name: Start LNURL service
         env:
@@ -345,75 +228,120 @@ jobs:
           echo "==================="
           docker logs cashu-mint
 
-      - name: Verify Bitcoin daemon Service, create wallet and fund lndnode (via CLN)
+      - name: Start LND node, LND node receiver and cashu-mint
         run: |
-          wallet_name="new_wallet"
+          docker-compose -f docker-compose.yml up -d --no-deps lndnode lndnode-receiver cashu-mint
+          echo "waiting for 30 seconds..."
+          sleep 30
 
-          # Ensure bitcoind wallet exists
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet $wallet_name \
-            || docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet $wallet_name
+      - name: Verify Bitcoin daemon Service, create wallet and fund lndnode and lndnode-receiver
+        run: |
+          #!/bin/bash
 
-          address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
-          echo "New Bitcoin wallet address: $address"
+          wallet_name="my_wallet"
+          echo "Using wallet: $wallet_name"
 
-          # Generate 101 blocks
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 101 "$address"
-
-          # Fund LND wallet
-          echo "✅ LND node funded successfully!"
-          balance=$(docker exec lndnode lncli -n regtest walletbalance)
-          echo "LND wallet balance: $balance"
-
-          # Fund CLN wallet for payment
-          cln_address=$(docker exec cln lightning-cli --network=regtest newaddr | jq -r '.bech32')
-          echo "CLN wallet address: $cln_address"
-
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$cln_address" 1
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
-
-          echo "✅ CLN wallet funded successfully!"
-          funds=$(docker exec cln lightning-cli --network=regtest listfunds)
-          echo "CLN funds: $funds"
-
-          echo "Fetching LND pubkey..."
-          LND_PUBKEY=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
-          echo "LND Pubkey: $LND_PUBKEY"
-
-          echo "Connecting CLN to LND..."
-          docker exec cln lightning-cli --network regtest connect "$LND_PUBKEY@lndnode:9735" || echo "Already connected."
-
-          echo "Opening channel from CLN → LND..."
-          docker exec cln lightning-cli --network=regtest fundchannel "$LND_PUBKEY" 1000000
-
-          # Mine 6 blocks to confirm channel
-          echo "Mining blocks to confirm channel..."
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$address"
-
-          echo "sleeping for 60"
-          sleep 60
-
-          # Create a Cashu invoice via LNDREST-backed mint
-          echo "Requesting Cashu invoice..."
-          docker exec cashu-mint poetry run cashu invoice 100 &
-          sleep 5
-          CASHU_INVOICE=$(echo "$CASHU_OUTPUT" | grep 'Invoice:' | awk '{print $2}')
-
-          if [ -z "$CASHU_INVOICE" ]; then
-            echo "❌ Failed to generate Cashu invoice"
-            docker logs cashu-mint
-            exit 1
+          # Check if wallet exists, create/load it
+          if docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass listwallets | grep -q "\"$wallet_name\""; then
+              echo "Wallet $wallet_name exists, loading..."
+              docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet "$wallet_name" 2>/dev/null
+          else
+              echo "Creating wallet $wallet_name..."
+              docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet "$wallet_name"
           fi
 
-          echo "Cashu invoice generated: $CASHU_INVOICE"
+          # Generate an address in this wallet
+          fund_address=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
+          echo "Mining 101 blocks to $fund_address..."
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 101 "$fund_address" >> /dev/null
 
-          # Pay the invoice from CLN
-          echo "Paying Cashu invoice from CLN..."
-          docker exec cln lightning-cli --network=regtest pay "$CASHU_INVOICE" --force
+          echo "Sleeping 5 seconds..."
+          sleep 5
 
-          balance=$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
-          echo "Cashu mint funded successfully! Current balance: $balance sats"
+          # ------- FUND LND NODE -------
+          echo "Funding LND node..."
 
+          # Print initial LND node balance
+          initial_balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+          echo "Initial LND node balance: $initial_balance sats"
 
+          # Fund LND node
+          lnd_addr=$(docker exec lndnode lncli -n regtest newaddress p2wkh | jq -r '.address')
+          echo "Sending 1 BTC to LND node at $lnd_addr..."
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$lnd_addr" 1
+
+          # Mine 6 blocks to confirm funding
+          new_addr=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$new_addr"
+
+          # Print final LND node balance
+          final_balance=$(docker exec lndnode lncli -n regtest walletbalance | jq -r '.confirmed_balance')
+          echo "Final LND node balance: $final_balance sats"
+
+          echo "✅ LND node funded successfully!"
+
+          # ------- FUND LND-receiver NODE -------
+          echo "Funding LND-receiver node..."
+
+          # Print initial LND-receiver node balance
+          initial_balance=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
+          echo "Initial LND-receiver node balance: $initial_balance sats"
+
+          # Fund LND-receiver node
+          lnd_addr=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest newaddress p2wkh | jq -r '.address')
+          echo "Sending 1 BTC to LND-receiver node at $lnd_addr..."
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$lnd_addr" 1
+
+          # Mine 6 blocks to confirm funding
+          new_addr=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$new_addr"
+
+          echo "✅ LND-receiver node funded successfully!"
+
+          # -------- CHANNEL --------
+          echo "Opening channel from LND-receiver node to LND node..."
+
+          # Step 1: Get LND node pubkey
+          LNDNODE_PUBKEY=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
+          echo "LND node pubkey: $LNDNODE_PUBKEY"
+
+          # Step 2: Connect receiver to LND node
+          echo "Connecting LND-receiver to LND node..."
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 connect "$LNDNODE_PUBKEY"@lndnode:9735 || true
+
+          # Step 3: Open channel from receiver to LND node
+          echo "Opening channel from LND-receiver to LND node..."
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 openchannel --node_key="$LNDNODE_PUBKEY" --local_amt=1000000
+
+          # Step 4: Mine 6 blocks to confirm channel
+          echo "Mining 6 blocks to confirm channel..."
+          docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
+
+          echo "✅ Channel opened successfully!"
+
+          # ------- CASHU SETUP -------
+          echo 'Creating Cashu invoice...'
+
+          docker exec cashu-mint sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
+
+          sleep 3
+
+          CASHU_INVOICE=$(grep 'Invoice:' /tmp/cashu_output.txt | tail -1 | cut -d' ' -f2 || true)
+
+          echo "Cashu invoice: $CASHU_INVOICE"
+          rm /tmp/cashu_output.txt
+
+          if [ -n "$CASHU_INVOICE" ]; then
+            echo 'Paying Cashu mint invoice...'
+            docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$CASHU_INVOICE" -f
+            sleep 3
+          else
+            echo 'Could not create Cashu invoice, skipping token minting'
+          fi
+
+          # Get Cashu balance
+          CASHU_BALANCE=$(docker exec cashu-mint sh -c "poetry run cashu balance" 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
+          echo "Cashu user wallet balance: $CASHU_BALANCE sats"
 
       - name: Start CLN service
         run: |
