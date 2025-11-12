@@ -225,8 +225,12 @@ jobs:
       - name: Start LND node and cashu-mint
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps lndnode cashu-mint
-          echo "waiting for 10 seconds..."
-          sleep 10
+          echo "waiting for 30 seconds..."
+          sleep 30
+          docker logs lndnode
+          echo "================="
+          docker logs cashu-mint
+          echo "================="
 
       - name: Verify Bitcoin daemon Service, create wallet and fund lndnode
         run: |
@@ -265,7 +269,7 @@ jobs:
           rm -f /tmp/cashu_output.txt
 
           echo "Paying to cashu invoice: $CASHU_INVOICE"
-          docker exec lndnode-receiver lncli --network=regtest --rpcserver=localhost:10010 sendpayment --pay_req="$CASHU_INVOICE" -f
+          docker exec lndnode lncli --network=regtest --rpcserver=localhost:10009 sendpayment --pay_req="$CASHU_INVOICE" -f
 
           sleep 2
 
@@ -356,8 +360,6 @@ jobs:
           identity_pubkey_lndnode=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           echo "Pubkey: $identity_pubkey_lndnode"
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -generate 5
-          docker logs lndnode
-          docker logs cln
 
           # Get node info for both lightning nodes
           echo "Getting CLN node info..."
@@ -389,7 +391,6 @@ jobs:
           # Generate blocks to confirm channel
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
 
-          docker logs cln
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
 
       - name: Start NWC service
@@ -398,7 +399,6 @@ jobs:
 
       - name: Run Integration Tests - NWC
         run: |
-          docker logs nginx-nwc
           echo "Testing with NWC configuration..."
           sleep 20
 
@@ -443,9 +443,7 @@ jobs:
 
           # Pay invoice using LND to get preimage
           echo "Paying invoice through LND..."
-          docker logs lndnode
           payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice 2>&1)
-          docker logs lndnode
           echo "payment_result: $payment_result"
           
           # Wait a few seconds for payment to settle
@@ -526,13 +524,11 @@ jobs:
           AMOUNT: 0.01
         run: |
           # Start the remaining services
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd cashu-mint redis
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd redis
 
       - name: Run Integration Tests - LND
         run: |
           docker ps -a
-          docker logs nginx-lnd
-          docker logs cashu-mint
           echo "Testing with LND configuration..."
           sleep 15
 
