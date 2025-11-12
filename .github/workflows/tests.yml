@@ -114,7 +114,34 @@ jobs:
           funds=$(docker exec cln lightning-cli --network=regtest listfunds)
           echo "CLN funds: $funds"
 
-          # Create a Cashu invoice via LNDREST-backed mint
+          # --- Connect CLN to LND and open a channel ---
+          echo "Connecting CLN to LND node..."
+          lnd_uri=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.uris[0]')
+          if [ -z "$lnd_uri" ]; then
+            # Build URI manually if not available
+            lnd_pubkey=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
+            lnd_uri="${lnd_pubkey}@lndnode:9735"
+          fi
+          echo "LND URI: $lnd_uri"
+
+          docker exec cln lightning-cli --network=regtest connect "$lnd_uri"
+
+          echo "Opening channel from CLN to LND..."
+          lnd_pubkey=$(echo "$lnd_uri" | cut -d'@' -f1)
+          docker exec cln lightning-cli --network=regtest fundchannel "$lnd_pubkey" 1000000
+
+          echo "Mining blocks to confirm channel..."
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getnewaddress new_wallet)"
+
+          echo "Waiting for channel to become active..."
+          until docker exec cln lightning-cli --network=regtest listfunds | jq -e '.channels | length > 0' >/dev/null 2>&1; do
+            echo "⏳ Channel still pending..."
+            sleep 5
+          done
+
+          echo "✅ Channel between CLN and LND established!"
+
+          # --- 🧾 Create a Cashu invoice via LNDREST-backed mint ---
           echo "Requesting Cashu invoice..."
           docker exec cashu-mint sh -c "poetry run cashu invoice 2500000 2>&1" > /tmp/cashu_output.txt &
           sleep 5
@@ -129,7 +156,7 @@ jobs:
 
           echo "Cashu invoice generated: $CASHU_INVOICE"
 
-          # Pay the invoice from CLN (avoiding self-payment)
+          # Pay the invoice from CLN
           echo "Paying Cashu invoice from CLN..."
           docker exec cln lightning-cli --network=regtest pay "$CASHU_INVOICE"
 
@@ -137,7 +164,6 @@ jobs:
 
           balance=$(docker exec cashu-mint poetry run cashu balance 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
           echo "Cashu mint funded successfully! Current balance: $balance sats"
-
 
       - name: Start LNURL service
         env:
