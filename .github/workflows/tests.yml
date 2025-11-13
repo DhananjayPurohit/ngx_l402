@@ -991,6 +991,19 @@ jobs:
             docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listpayments
 
             docker logs nginx-lnd
+
+            echo "==========LND NODE LOGS BEGIN ==============="
+            docker logs lndnode
+            echo "============LND NODE LOGS END ================"
+
+            echo "========== CASHU MINT LOGS BEGIN ==============="
+            docker logs cashu-mint
+            echo "============ CASHU MINT LOGS END ================"
+
+            echo "========== LND NODE receiver LOGS BEGIN ==============="
+            docker logs cashu-mint
+            echo "============ LND NODE receiver LOGS END ================"
+
             exit 1
           fi
 
