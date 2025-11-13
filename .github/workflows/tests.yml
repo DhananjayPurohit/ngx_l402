@@ -311,16 +311,10 @@ jobs:
           echo "Mining 6 blocks to confirm channel..."
           docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
-          # Wait until channels are active
-          echo "Waiting for channels to become active..."
-          until docker exec lndnode lncli -n regtest listchannels | grep -q '"active": true'; do
-            sleep 2
-          done
-
           echo "✅ Channel lndnode-receiver to lndnode opened successfully!"
           echo "Pushing liquidity from lndnode to lndnode-receiver..."
-          INVOICE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest addinvoice --amt=8000 | jq -r '.payment_request')
-          docker exec lndnode lncli -n regtest payinvoice --force "$INVOICE"
+          INVOICE=$(docker exec lndnode lncli -n regtest addinvoice --amt=8000 | jq -r '.payment_request')
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 payinvoice --force "$INVOICE"
           sleep 3
           echo "✅ Liquidity pushed successfully!"
 
