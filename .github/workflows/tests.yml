@@ -337,7 +337,7 @@ jobs:
           # ------- CASHU SETUP -------
           echo 'Creating Cashu invoice...'
 
-          docker exec cashu-mint sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
+          docker exec cashu-mint sh -c "poetry run cashu invoice 75000 2>&1" > /tmp/cashu_output.txt &
 
           sleep 3
 
