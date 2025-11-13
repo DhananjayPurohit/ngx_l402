@@ -16,6 +16,8 @@ Thank you for your interest in contributing to ngx_l402! This guide will help yo
 
 ## Code of Conduct
 
+**Inclusivity Policy**: This project maintains a written policy requiring the equal treatment of all people, regardless of race, ethnicity, gender, sexual orientation, disability, age, religion, political opinion, or any other status. All contributors and participants must adhere to this standard.
+
 - Be welcoming, respectful, and inclusive
 - Accept constructive criticism gracefully
 - Focus on what's best for the community
