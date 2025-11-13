@@ -737,7 +737,10 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
             }
         };
         
-        // Melt the proofs - if P2PK mode, we need to use melt_proofs with signing keys
+        // Melt the proofs - CDK 0.13.4+ includes automatic proof recovery for failed melt operations
+        // via try_proof_operation_or_reclaim wrapper. If melt fails due to network/mint issues,
+        // proofs are automatically synced and swapped to prevent loss of funds.
+        // See: https://github.com/cashubtc/cdk/pull/1250
         let melt_result = if is_p2pk_mode_enabled() {
             if let Some(private_key_hex) = P2PK_PRIVATE_KEY.get() {
                 if let Ok(private_key) = cdk::nuts::SecretKey::from_hex(private_key_hex) {
