@@ -921,8 +921,20 @@ jobs:
           INITIAL_CNF_LND_BALANCE=$(echo $INITIAL_LND_BALANCE | jq -r '.confirmed_balance')
           echo "Initial confirmed LND Wallet Balance: $INITIAL_CNF_LND_BALANCE sats"
 
+          echo "initial channel balance: lndnode"
+          docker exec lndnode lncli -n regtest channelbalance
+
+          echo "initial channel balance: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 channelbalance
+
+          echo "initial channels info: lndnode"
+          docker exec lndnode lncli -n regtest listchannels
+
+          echo "initial channels info: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listchannels
+
           echo "Running Cashu redemption on Lightning test..."
-          cashu_token=$(docker exec cashu-mint poetry run cashu send 50)
+          cashu_token=$(docker exec cashu-mint poetry run cashu send 5000)
           echo "Cashu Token: $cashu_token"
 
           # access protected nginx-cln route with cashu token
@@ -960,10 +972,35 @@ jobs:
           BALANCE_LND_DIFFERENCE=$((FINAL_CNF_LND_BALANCE - INITIAL_CNF_LND_BALANCE))
           echo "Balance Difference (LND): $BALANCE_LND_DIFFERENCE sats"
 
+          echo "final channel balance: lndnode"
+          docker exec lndnode lncli -n regtest channelbalance
+
+          echo "final channel balance: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 channelbalance
+
+          echo "final channels info: lndnode"
+          docker exec lndnode lncli -n regtest listchannels
+
+          echo "final channels info: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listchannels
+
+          echo "invoices by lnd node"
+          docker exec lndnode lncli -n regtest listinvoices | tail -20
+
+          echo "invoices by lnd-receiver node"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listinvoices | tail -20
+
           if [ "$BALANCE_RECEIVER_DIFFERENCE" -gt 0 ]; then
             echo "✅ LND received payments from Cashu token redemption ($BALANCE_RECEIVER_DIFFERENCE sats)"
           else
             echo "No redemption activity"
+
+            echo "Payments by lnd node"
+            docker exec lndnode lncli -n regtest listpayments
+
+            echo "Payments by lnd-receiver node"
+            docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listpayments
+
             docker logs nginx-lnd
             exit 1
           fi
