@@ -992,17 +992,11 @@ jobs:
 
             docker logs nginx-lnd
 
-            echo "==========LND NODE LOGS BEGIN ==============="
-            docker logs lndnode
-            echo "============LND NODE LOGS END ================"
-
             echo "========== CASHU MINT LOGS BEGIN ==============="
             docker logs cashu-mint
             echo "============ CASHU MINT LOGS END ================"
 
-            echo "========== LND NODE receiver LOGS BEGIN ==============="
-            docker logs cashu-mint
-            echo "============ LND NODE receiver LOGS END ================"
+            echo "ARRIVED HERE"
 
             exit 1
           fi
