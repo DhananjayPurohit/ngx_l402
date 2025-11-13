@@ -311,12 +311,6 @@ jobs:
           echo "Mining 6 blocks to confirm channel..."
           docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
-          # Wait until channels are active
-          echo "Waiting for channels to become active..."
-          until docker exec lndnode lncli -n regtest listchannels | grep -q '"active": true'; do
-            sleep 2
-          done
-
           echo "✅ Channel lndnode-receiver to lndnode opened successfully!"
 
           # -------- CHANNEL (LND NODE - LND NODE RECEIVER) --------
@@ -337,10 +331,6 @@ jobs:
           # Step 4: Mine 6 blocks to confirm channel
           echo "Mining 6 blocks to confirm channel..."
           docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
-
-          until docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest listchannels | grep -q '"active": true'; do
-            sleep 2
-          done
 
           echo "✅ Channel lndnode to lndnode-receiver opened successfully!"
 
