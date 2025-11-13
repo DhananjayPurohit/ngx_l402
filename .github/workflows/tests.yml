@@ -919,7 +919,7 @@ jobs:
           echo "Initial LND Wallet Balance: $INITIAL_LND_BALANCE"
 
           INITIAL_CNF_LND_BALANCE=$(echo $INITIAL_LND_BALANCE | jq -r '.confirmed_balance')
-          echo "Initial confirmed LND Wallet Balance: $INITIAL_CNF_LND_BALANCE sats
+          echo "Initial confirmed LND Wallet Balance: $INITIAL_CNF_LND_BALANCE sats"
 
           echo "Running Cashu redemption on Lightning test..."
           cashu_token=$(docker exec cashu-mint poetry run cashu send 50)
@@ -952,7 +952,7 @@ jobs:
           echo "FINAL LND Wallet Balance: $FINAL_LND_BALANCE"
 
           FINAL_CNF_LND_BALANCE=$(echo $FINAL_LND_BALANCE | jq -r '.confirmed_balance')
-          echo "FINAL confirmed LND Wallet Balance: $FINAL_CNF_LND_BALANCE sats
+          echo "FINAL confirmed LND Wallet Balance: $FINAL_CNF_LND_BALANCE sats"
 
           BALANCE_RECEIVER_DIFFERENCE=$((FINAL_CNF_LND_RECEIVER_BALANCE - INITIAL_CNF_LND_RECEIVER_BALANCE))
           echo "Balance RECEIVER Difference: $BALANCE_RECEIVER_DIFFERENCE sats"
@@ -960,8 +960,8 @@ jobs:
           BALANCE_LND_DIFFERENCE=$((FINAL_CNF_LND_BALANCE - INITIAL_CNF_LND_BALANCE))
           echo "Balance Difference (LND): $BALANCE_LND_DIFFERENCE sats"
 
-          if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
-            echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
+          if [ "$BALANCE_RECEIVER_DIFFERENCE" -gt 0 ]; then
+            echo "✅ LND received payments from Cashu token redemption ($BALANCE_RECEIVER_DIFFERENCE sats)"
           else
             echo "No redemption activity"
             docker logs nginx-lnd
