@@ -924,8 +924,9 @@ jobs:
           docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listchannels
 
           echo "Running Cashu redemption on Lightning test..."
-          cashu_token=$(docker exec cashu-mint poetry run cashu send 5000)
-          echo "Cashu Token: $cashu_token"
+          amount_to_redeem=1000
+          cashu_token=$(docker exec cashu-mint poetry run cashu send $amount_to_redeem)
+          echo "Cashu Token of amount: $amount_to_redeem: $cashu_token"
 
           # access protected nginx-cln route with cashu token
           response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $cashu_token" http://0.0.0.0:8000/protected) 
