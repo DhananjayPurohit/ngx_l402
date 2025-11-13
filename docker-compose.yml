@@ -80,7 +80,7 @@ services:
       - "10009:10009"
       - "8080:8080"
     volumes:
-      - lndnode-data:/data:rw
+      - lndnode-data:/data/.lnd:rw
       - lndnode-data:/root/.lnd:rw
     restart: unless-stopped
     environment:
