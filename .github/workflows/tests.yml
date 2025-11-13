@@ -311,40 +311,23 @@ jobs:
           echo "Mining 6 blocks to confirm channel..."
           docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
-          echo "✅ Channel lndnode-receiver to lndnode opened successfully!"
+          # Wait until channels are active
+          echo "Waiting for channels to become active..."
+          until docker exec lndnode lncli -n regtest listchannels | grep -q '"active": true'; do
+            sleep 2
+          done
 
+          echo "✅ Channel lndnode-receiver to lndnode opened successfully!"
           echo "Pushing liquidity from lndnode to lndnode-receiver..."
           INVOICE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest addinvoice --amt=8000 | jq -r '.payment_request')
           docker exec lndnode lncli -n regtest payinvoice --force "$INVOICE"
           sleep 3
           echo "✅ Liquidity pushed successfully!"
 
-
-          # -------- CHANNEL (LND NODE - LND NODE RECEIVER) --------
-          echo "Opening channel from LND node to LND-receiver node..."
-
-          # Step 1: Get LND-receiver node pubkey
-          LNDRECEIVER_PUBKEY=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest getinfo | jq -r '.identity_pubkey')
-          echo "LND-receiver node pubkey: $LNDRECEIVER_PUBKEY"
-
-          # Step 2: Connect receiver to LND node
-          echo "Connecting LND to LND-receiver node..."
-          docker exec lndnode lncli --network=regtest connect "$LNDRECEIVER_PUBKEY"@lndnode-receiver:9735 || true
-
-          # Step 3: Open channel from receiver to LND node
-          echo "Opening channel from LND to LND-receiver node..."
-          docker exec lndnode lncli --network=regtest openchannel --node_key="$LNDRECEIVER_PUBKEY" --local_amt=1000000
-
-          # Step 4: Mine 6 blocks to confirm channel
-          echo "Mining 6 blocks to confirm channel..."
-          docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
-
-          echo "✅ Channel lndnode to lndnode-receiver opened successfully!"
-
           # ------- CASHU SETUP -------
           echo 'Creating Cashu invoice...'
 
-          docker exec cashu-mint sh -c "poetry run cashu invoice 75000 2>&1" > /tmp/cashu_output.txt &
+          docker exec cashu-mint sh -c "poetry run cashu invoice 25000 2>&1" > /tmp/cashu_output.txt &
 
           sleep 3
 
