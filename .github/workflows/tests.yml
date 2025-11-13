@@ -313,6 +313,13 @@ jobs:
 
           echo "✅ Channel lndnode-receiver to lndnode opened successfully!"
 
+          echo "Pushing liquidity from lndnode to lndnode-receiver..."
+          INVOICE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest addinvoice --amt=8000 | jq -r '.payment_request')
+          docker exec lndnode lncli -n regtest payinvoice --force "$INVOICE"
+          sleep 3
+          echo "✅ Liquidity pushed successfully!"
+
+
           # -------- CHANNEL (LND NODE - LND NODE RECEIVER) --------
           echo "Opening channel from LND node to LND-receiver node..."
 
