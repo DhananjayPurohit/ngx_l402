@@ -909,13 +909,20 @@ jobs:
 
       - name: Run Integration test - Cashu redemption on lightening
         run: |
+          INITIAL_RECEIVER_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance)
+          echo "Initial LND-receiver Wallet Balance: $INITIAL_RECEIVER_BALANCE"
+
+          INITIAL_CNF_LND_RECEIVER_BALANCE=$(echo $INITIAL_RECEIVER_BALANCE | jq -r '.confirmed_balance')
+          echo "Initial confirmed LND-receiver Wallet Balance: $INITIAL_CNF_LND_RECEIVER_BALANCE sats"
+
+          INITIAL_LND_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance)
+          echo "Initial LND Wallet Balance: $INITIAL_LND_BALANCE"
+
+          INITIAL_CNF_LND_BALANCE=$(echo $INITIAL_LND_BALANCE | jq -r '.confirmed_balance')
+          echo "Initial confirmed LND Wallet Balance: $INITIAL_CNF_LND_BALANCE sats
+
           echo "Running Cashu redemption on Lightning test..."
           cashu_token=$(docker exec cashu-mint poetry run cashu send 50)
-
-          INITIAL_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
-
-          echo "Initial LND Wallet Balance: $INITIAL_BALANCE sats"
-
           echo "Cashu Token: $cashu_token"
 
           # access protected nginx-cln route with cashu token
@@ -935,12 +942,23 @@ jobs:
           echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
           sleep $WAIT_TIME
 
-          FINAL_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance | jq -r '.confirmed_balance')
+          FINAL_RECEIVER_BALANCE=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest walletbalance)
+          echo "FINAL LND-receiver Wallet Balance: $FINAL_RECEIVER_BALANCE"
 
-          echo "Final LND Wallet Balance: $FINAL_BALANCE sats"
+          FINAL_CNF_LND_RECEIVER_BALANCE=$(echo $FINAL_RECEIVER_BALANCE | jq -r '.confirmed_balance')
+          echo "FINAL confirmed LND-receiver Wallet Balance: $FINAL_CNF_LND_RECEIVER_BALANCE sats"
 
-          BALANCE_DIFFERENCE=$((FINAL_BALANCE - INITIAL_BALANCE))
-          echo "Balance Difference: $BALANCE_DIFFERENCE sats"
+          FINAL_LND_BALANCE=$(docker exec lndnode lncli -n regtest walletbalance)
+          echo "FINAL LND Wallet Balance: $FINAL_LND_BALANCE"
+
+          FINAL_CNF_LND_BALANCE=$(echo $FINAL_LND_BALANCE | jq -r '.confirmed_balance')
+          echo "FINAL confirmed LND Wallet Balance: $FINAL_CNF_LND_BALANCE sats
+
+          BALANCE_RECEIVER_DIFFERENCE=$((FINAL_CNF_LND_RECEIVER_BALANCE - INITIAL_CNF_LND_RECEIVER_BALANCE))
+          echo "Balance RECEIVER Difference: $BALANCE_RECEIVER_DIFFERENCE sats"
+
+          BALANCE_LND_DIFFERENCE=$((FINAL_CNF_LND_BALANCE - INITIAL_CNF_LND_BALANCE))
+          echo "Balance Difference (LND): $BALANCE_LND_DIFFERENCE sats"
 
           if [ "$BALANCE_DIFFERENCE" -gt 0 ]; then
             echo "✅ LND received payments from Cashu token redemption ($BALANCE_DIFFERENCE sats)"
