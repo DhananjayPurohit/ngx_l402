@@ -312,12 +312,7 @@ jobs:
           docker exec bitcoind sh -c "bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 \$(bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
           echo "✅ Channel lndnode-receiver to lndnode opened successfully!"
-          echo "Pushing liquidity from lndnode to lndnode-receiver..."
-          INVOICE=$(docker exec lndnode lncli -n regtest addinvoice --amt=8000 | jq -r '.payment_request')
-          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 payinvoice --force "$INVOICE"
-          sleep 3
-          echo "✅ Liquidity pushed successfully!"
-
+          
           # ------- CASHU SETUP -------
           echo 'Creating Cashu invoice...'
 
@@ -341,6 +336,13 @@ jobs:
           # Get Cashu balance
           CASHU_BALANCE=$(docker exec cashu-mint sh -c "poetry run cashu balance" 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
           echo "Cashu user wallet balance: $CASHU_BALANCE sats"
+
+          # ------ LIQUIDITY --------
+          echo "Pushing liquidity from lndnode to lndnode-receiver..."
+          INVOICE=$(docker exec lndnode lncli -n regtest addinvoice --amt=8000 | jq -r '.payment_request')
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 payinvoice --force "$INVOICE"
+          sleep 3
+          echo "✅ Liquidity pushed successfully!"
 
       - name: Start cln services
         run: |
