@@ -80,12 +80,49 @@ services:
       - "10009:10009"
       - "8080:8080"
     volumes:
-      - lndnode-data:/data/.lnd:rw
+      - lndnode-data:/data:rw
       - lndnode-data:/root/.lnd:rw
     restart: unless-stopped
     environment:
       HOME: /data
-    command: [ '/init-wallet-k8s.sh' ]
+    depends_on:
+      - bitcoind
+  
+  lndnode-receiver:
+    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    container_name: lndnode-receiver
+    user: root
+    entrypoint: 
+      - sh
+      - -c
+      - |
+        if [[ ! -f /data/seed.txt ]]; then
+          lndinit gen-seed > /data/seed.txt
+        fi
+        if [[ ! -f /data/walletpassword.txt ]]; then
+          lndinit gen-password > /data/walletpassword.txt
+        fi
+        lndinit -v init-wallet \
+          --secret-source=file \
+          --file.seed=/data/seed.txt \
+          --file.wallet-password=/data/walletpassword.txt \
+          --init-file.output-wallet-dir=/root/.lnd/data/chain/bitcoin/regtest \
+          --init-file.validate-password
+        mkdir -p /data/.lnd
+        if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
+          touch "/data/.lnd/umbrel-lnd.conf"
+        fi
+        lnd --listen=0.0.0.0:9736 --rpclisten=0.0.0.0:10010 --restlisten=0.0.0.0:8081 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
+    ports:
+      - "9736:9736"
+      - "10010:10010"
+      - "8081:8081"
+    volumes:
+      - lndnode-receiver-data:/data:rw
+      - lndnode-receiver-data:/root/.lnd:rw
+    restart: unless-stopped
+    environment:
+      HOME: /data
     depends_on:
       - bitcoind
 
@@ -107,9 +144,27 @@ services:
       - MINT_LISTEN_HOST=0.0.0.0
       - MINT_LISTEN_PORT=3338
       - MINT_PRIVATE_KEY=${ROOT_KEY}
-      - MINT_BACKEND_BOLT11_SAT=FakeWallet
       - MINT_URL=http://cashu-mint:3338
-    command: ["poetry", "run", "mint"]
+      - MINT_BACKEND_BOLT11_SAT=LndRestWallet
+      - MINT_LND_REST_ENDPOINT=https://lndnode:8080
+      - MINT_LND_REST_CERT=/root/.lnd/tls.cert
+      - MINT_LND_REST_MACAROON=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - MINT_LND_REST_CERT_VERIFY=FALSE
+    volumes:
+      - lndnode-data:/root/.lnd:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo "Waiting for LND macaroon and cert..."
+        until [ -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ] && [ -f /root/.lnd/tls.cert ]; do
+          echo "Files not ready yet..."
+          sleep 5
+        done
+        echo "Macaroon and cert found. Starting mint..."
+        poetry run mint
+    depends_on:
+      - lndnode
 
   nginx-lnurl:
     container_name: nginx-lnurl
@@ -183,19 +238,19 @@ services:
       - LN_CLIENT_TYPE=LND
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - CERT_FILE_PATH=/root/.lnd/tls.cert
-      - LND_ADDRESS=lndnode:10009
+      - LND_ADDRESS=lndnode-receiver:10010
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_tokens.db
       - CASHU_WALLET_SECRET=${CASHU_WALLET_SECRET}
       - CASHU_REDEEM_ON_LIGHTNING=true
-      - CASHU_REDEMPTION_INTERVAL_SECS=90
+      - CASHU_REDEMPTION_INTERVAL_SECS=15
       - CASHU_WHITELISTED_MINTS=http://cashu-mint:3338,http://cashu-mint1:3338
       - REDIS_URL=redis://redis:6379
     volumes:
-      - lndnode-data:/root/.lnd:ro
+      - lndnode-receiver-data:/root/.lnd:ro
       - cashu-data:/app/data:rw
     depends_on:
-      - lndnode
+      - lndnode-receiver
       - cashu-mint
       - redis
 
@@ -213,6 +268,7 @@ services:
 volumes:
   bitcoin_data:
   lndnode-data:
+  lndnode-receiver-data:
   cashu-data:
   cln-data:
   redis_data:
