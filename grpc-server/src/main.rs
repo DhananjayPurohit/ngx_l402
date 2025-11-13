@@ -1,7 +1,7 @@
-use tonic::{transport::Server, Request, Response, Status};
 use log::info;
-use tonic_reflection::server::Builder as ReflectionBuilder;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tonic::{transport::Server, Request, Response, Status};
+use tonic_reflection::server::Builder as ReflectionBuilder;
 
 // Import the generated protobuf code
 pub mod content {
@@ -89,7 +89,7 @@ impl ContentService for ContentServiceImpl {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
-    
+
     let addr = "0.0.0.0:50051".parse()?;
     let service = ContentServiceImpl::default();
 
