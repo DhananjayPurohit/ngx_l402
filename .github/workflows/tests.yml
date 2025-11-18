@@ -337,6 +337,13 @@ jobs:
           CASHU_BALANCE=$(docker exec cashu-mint sh -c "poetry run cashu balance" 2>/dev/null | grep 'Balance:' | awk '{print $2}' || echo '0')
           echo "Cashu user wallet balance: $CASHU_BALANCE sats"
 
+          # ------ LIQUIDITY --------
+          echo "Pushing liquidity from lndnode to lndnode-receiver..."
+          INVOICE=$(docker exec lndnode lncli -n regtest addinvoice --amt=8000 | jq -r '.payment_request')
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 payinvoice --force "$INVOICE"
+          sleep 3
+          echo "✅ Liquidity pushed successfully!"
+
       - name: Start cln services
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps cln nginx-cln
@@ -885,6 +892,118 @@ jobs:
           
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
+
+      - name: Run Integration test - Cashu redemption on Lightning
+        run: |
+          # Capture initial channel balance (not wallet balance, since Lightning payments affect channels)
+          INITIAL_RECEIVER_CHANNEL=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest channelbalance)
+          echo "Initial LND-receiver Channel Balance: $INITIAL_RECEIVER_CHANNEL"
+
+          INITIAL_RECEIVER_LOCAL_BALANCE=$(echo $INITIAL_RECEIVER_CHANNEL | jq -r '.local_balance.sat')
+          echo "Initial LND-receiver Local Balance: $INITIAL_RECEIVER_LOCAL_BALANCE sats"
+
+          INITIAL_LND_CHANNEL=$(docker exec lndnode lncli -n regtest channelbalance)
+          echo "Initial LND Channel Balance: $INITIAL_LND_CHANNEL"
+
+          INITIAL_LND_LOCAL_BALANCE=$(echo $INITIAL_LND_CHANNEL | jq -r '.local_balance.sat')
+          echo "Initial LND Local Balance: $INITIAL_LND_LOCAL_BALANCE sats"
+
+          echo "initial channel balance: lndnode"
+          docker exec lndnode lncli -n regtest channelbalance
+
+          echo "initial channel balance: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 channelbalance
+
+          echo "initial channels info: lndnode"
+          docker exec lndnode lncli -n regtest listchannels
+
+          echo "initial channels info: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listchannels
+
+          echo "Cashu current balance"
+          docker exec cashu-mint poetry run cashu balance
+
+          echo "Running Cashu redemption on Lightning test..."
+          cashu_token=$(docker exec cashu-mint poetry run cashu send 100)
+          echo "Cashu Token of amount 100: $cashu_token"
+
+          # access protected nginx-lnd route with cashu token
+          response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $cashu_token" http://0.0.0.0:8000/protected)
+
+          if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
+            echo "Error: unable to access protected route with Cashu token with response $(echo "$response" | tail -n1)"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          echo "Cashu token consumed successfully to access protected route."
+
+          REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
+          WAIT_TIME=$((REDEMPTION_INTERVAL + 30))
+
+          echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
+          sleep $WAIT_TIME
+
+          # Capture final channel balance (Lightning payments affect channel balance, not wallet balance)
+          FINAL_RECEIVER_CHANNEL=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest channelbalance)
+          echo "FINAL LND-receiver Channel Balance: $FINAL_RECEIVER_CHANNEL"
+
+          FINAL_RECEIVER_LOCAL_BALANCE=$(echo $FINAL_RECEIVER_CHANNEL | jq -r '.local_balance.sat')
+          echo "FINAL LND-receiver Local Balance: $FINAL_RECEIVER_LOCAL_BALANCE sats"
+
+          FINAL_LND_CHANNEL=$(docker exec lndnode lncli -n regtest channelbalance)
+          echo "FINAL LND Channel Balance: $FINAL_LND_CHANNEL"
+
+          FINAL_LND_LOCAL_BALANCE=$(echo $FINAL_LND_CHANNEL | jq -r '.local_balance.sat')
+          echo "FINAL LND Local Balance: $FINAL_LND_LOCAL_BALANCE sats"
+
+          BALANCE_RECEIVER_DIFFERENCE=$((FINAL_RECEIVER_LOCAL_BALANCE - INITIAL_RECEIVER_LOCAL_BALANCE))
+          echo "Channel Balance RECEIVER Difference: $BALANCE_RECEIVER_DIFFERENCE sats"
+
+          BALANCE_LND_DIFFERENCE=$((FINAL_LND_LOCAL_BALANCE - INITIAL_LND_LOCAL_BALANCE))
+          echo "Channel Balance Difference (LND): $BALANCE_LND_DIFFERENCE sats"
+
+          echo "final channel balance: lndnode"
+          docker exec lndnode lncli -n regtest channelbalance
+
+          echo "final channel balance: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 channelbalance
+
+          echo "final channels info: lndnode"
+          docker exec lndnode lncli -n regtest listchannels
+
+          echo "final channels info: lndnode-receiver"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listchannels
+
+          echo "invoices by lnd node"
+          docker exec lndnode lncli -n regtest listinvoices | tail -20
+
+          echo "invoices by lnd-receiver node"
+          docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listinvoices | tail -20
+
+          if [ "$BALANCE_RECEIVER_DIFFERENCE" -gt 0 ]; then
+            echo "✅ LND-receiver channel balance increased by $BALANCE_RECEIVER_DIFFERENCE sats from Cashu token redemption"
+          else
+            echo "❌ No redemption activity detected - channel balance did not increase"
+
+            echo "Payments by lnd node"
+            docker exec lndnode lncli -n regtest listpayments
+
+            echo "Payments by lnd-receiver node"
+            docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listpayments
+
+            echo "========== NGINX-LND LOGS BEGIN ==============="
+            docker logs nginx-lnd
+            echo "============ NGINX-LND LOGS END ================"
+
+            echo "========== CASHU MINT LOGS BEGIN ==============="
+            docker logs cashu-mint
+            echo "============ CASHU MINT LOGS END ================"
+
+            exit 1
+          fi
+
+          echo "✅ Cashu redemption on Lightning integration tests completed!"
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
