@@ -50,7 +50,7 @@ jobs:
 
       - name: Set up Docker Compose
         env:
-          ROOT_KEY: ${{ secrets.ROOT_KEY }}
+          ROOT_KEY: ABDEGHKLMPTC
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
@@ -61,12 +61,12 @@ jobs:
       - name: Create env file
         run: |
           touch .env
-          echo ROOT_KEY=${{ secrets.ROOT_KEY }} >> .env
+          echo ROOT_KEY=ABDEGHKLMPTC >> .env
           cat .env
 
       - name: Start LNURL service
         env:
-          LNURL_ADDRESS: ${{ secrets.LNURL_ADDRESS }}
+          LNURL_ADDRESS: hello@getalby.com
         run: |
           docker-compose -f docker-compose.yml up -d nginx-lnurl grpc-content-server
 
