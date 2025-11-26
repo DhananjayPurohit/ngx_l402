@@ -61,11 +61,11 @@ location /protected {
 # Use one of the following:
 # if using LNURL:
 Environment=LN_CLIENT_TYPE=LNURL
-Environment=LNURL_ADDRESS=https://your-lnurl-server.com
+Environment=LNURL_ADDRESS=username@your-lnurl-server.com
 Environment=ROOT_KEY=your-root-key
 # if using LND:
 Environment=LN_CLIENT_TYPE=LND
-Environment=LND_ADDRESS=https://your-lnd-server.com
+Environment=LND_ADDRESS=your-lnd-ip.com
 Environment=MACAROON_FILE_PATH=/path/to/macaroon
 Environment=CERT_FILE_PATH=/path/to/cert
 Environment=ROOT_KEY=your-root-key
@@ -232,7 +232,7 @@ docker run -d \
   --name l402-nginx \
   -p 8000:8000 \
   -e LN_CLIENT_TYPE=LNURL \
-  -e LNURL_ADDRESS=https://your-lnurl-server.com \
+  -e LNURL_ADDRESS=username@your-lnurl-server.com \
   -e ROOT_KEY=your-32-byte-hex-key \
   ghcr.io/dhananjaypurohit/ngx_l402:latest
 ```
