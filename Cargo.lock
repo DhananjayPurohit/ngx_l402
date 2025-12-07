@@ -2682,6 +2682,7 @@ dependencies = [
  "ciborium",
  "env_logger 0.11.8",
  "futures",
+ "hex",
  "l402_middleware",
  "log",
  "macaroon",
@@ -2691,6 +2692,7 @@ dependencies = [
  "redis",
  "reqwest",
  "serde_json",
+ "sha2",
  "tokio",
  "tonic_openssl_lnd",
 ]

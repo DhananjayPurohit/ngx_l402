@@ -1,5 +1,6 @@
 use crate::cashu_redemption_logger;
 use cdk;
+use redis::{Commands, Connection};
 use cdk::mint_url::MintUrl;
 use l402_middleware::lnclient;
 use log::{debug, error, info, warn};
@@ -9,6 +10,9 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
+use crate::REDIS_CLIENT;
+use sha2::{Sha256, Digest};
+use hex;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -51,12 +55,13 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     // Create runtime for async initialization
     let rt = Runtime::new().expect("Failed to create runtime");
 
-    // Initialize SQLite database with WAL mode
+    // Initialize SQLite database with WAL mode and Redis
     rt.block_on(async {
         match cdk_sqlite::WalletSqliteDatabase::new(db_url).await {
             Ok(db) => {
                 info!("✅ Cashu SQLite database initialized successfully with WAL mode");
                 let _ = CASHU_DB.set(Arc::new(db));
+
                 Ok(())
             }
             Err(e) => {
@@ -110,6 +115,34 @@ pub fn is_mint_whitelisted(mint_url: &str) -> bool {
 
 pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
     WHITELISTED_MINTS.get()
+}
+
+fn set_token_to_lnurl(token: &str, lnurl_route: Option<String>) -> Result<(), String> {
+    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+
+    let mut client_guard = client.lock()
+        .map_err(|_| "Failed to lock redis client".to_string())?;
+
+    let lnurl = lnurl_route.unwrap_or_else(|| {
+        std::env::var("LNURL_ADDRESS").unwrap_or_default()
+    });
+
+    if lnurl.is_empty() {
+        return Err("No LNURL address available for cashu token".to_string());
+    }
+
+    let token_hash = Sha256::digest(token.as_bytes());
+    let token_hash_hex = hex::encode(token_hash);
+
+    let mut conn = client_guard.get_connection()
+        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+
+    conn.set(&token_hash_hex, &lnurl)
+        .map_err(|e| format!("Failed to map cashu token to lnurl in redis"))?;
+
+    info!("Stored token mapping: {} -> {}", &token_hash_hex, &lnurl);
+
+    Ok(())
 }
 
 /// Initialize P2PK mode if enabled
@@ -212,7 +245,7 @@ pub fn generate_payment_request(
     Ok(nut18_encoded)
 }
 
-pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, String> {
+pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
     // Log database status
     debug!("🔍 Verifying Cashu token, checking database connection...");
 
@@ -316,6 +349,8 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
                 mint_url
             );
 
+            set_token_to_lnurl(token, lnurl_addr);
+
             // Add token to processed set after successful receive
             PROCESSED_TOKENS.with(|tokens| {
                 if let Some(set) = tokens.borrow_mut().as_mut() {
@@ -336,7 +371,7 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
 
 /// Verify Cashu token using P2PK optimized mode (NUT-24)
 /// Stores proofs directly in CDK database using cached keysets - no mint swap call
-pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64) -> Result<bool, String> {
+pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
     info!("🔐 P2PK mode: Optimized token verification");
 
     // Check memory cache first
@@ -491,6 +526,8 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64) -> Result<bo
             set.insert(token.to_string());
         }
     });
+
+    set_token_to_lnurl(token, lnurl_addr);
 
     info!(
         "✅ ACCEPTED ({} msat stored in CDK database)",
