@@ -961,6 +961,7 @@ pub async fn redeem_to_lightning(_ln_client_conn: &lnclient::LNClientConn) -> Re
                     cashu_redemption_logger::log_redemption(&msg);
                 }
             }
+        }
 
         total_amount_redeemed_msat += redeemable_amount_msat;
     }
