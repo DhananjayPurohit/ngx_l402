@@ -44,11 +44,9 @@ pub fn is_cashu_ecash_enabled() -> bool {
 }
 
 fn initialize_redis_client() -> Result<(), String> {
-    // Get Redis URL from environment variable
     let redis_url = std::env::var("REDIS_URL")
         .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
-    // Create Redis client
     let client = redis::Client::open(redis_url.as_str())
         .map_err(|e| format!("Failed to create Redis client: {}", e))?;
 
@@ -69,14 +67,13 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     // Create runtime for async initialization
     let rt = Runtime::new().expect("Failed to create runtime");
 
-    // Initialize SQLite database with WAL mode
+    // Initialize SQLite database with WAL mode and redis
     rt.block_on(async {
         match cdk_sqlite::WalletSqliteDatabase::new(db_url).await {
             Ok(db) => {
                 info!("✅ Cashu SQLite database initialized successfully with WAL mode");
                 let _ = CASHU_DB.set(Arc::new(db));
 
-                // Also initialize the Redis client for token mappings
                 initialize_redis_client()?;
 
                 Ok(())
@@ -134,40 +131,37 @@ pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
     WHITELISTED_MINTS.get()
 }
 
-/// Store mapping between token hash and LNURL address for later redemption
-fn store_token_mapping(token: &str, lnurl_address: Option<String>) -> Result<(), String> {
+// Store mapping between token hash and LNURL address
+fn store_token_mapping(token: &str, route_lnurl: Option<String>) -> Result<(), String> {
     let client = REDIS_CLIENT.get()
         .ok_or("Redis client not initialized")?;
 
-    // Use global LNURL address if none provided for this route
-    let lnurl_addr = lnurl_address.unwrap_or_else(|| {
-        std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "".to_string())
+    // Use route-specific or global LNURL address
+    let lnurl = route_lnurl.unwrap_or_else(|| {
+        std::env::var("LNURL_ADDRESS").unwrap_or_default()
     });
 
-    if lnurl_addr.is_empty() {
+    if lnurl.is_empty() {
         return Err("No LNURL address available for token mapping".to_string());
     }
 
-    // Create a hash of the token for the mapping key
     let token_hash = Hasher::new()
         .update(token.as_bytes())
         .finalize()
         .to_hex();
 
-    // Use Redis connection
+    // Store with 7-day TTL
     let mut conn = client.get_connection()
         .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
 
-    // Store the mapping with TTL (7 days)
-    let _: () = redis::cmd("SETEX")
-        .arg(format!("token_mapping:{}", token_hash))
-        .arg(7 * 24 * 60 * 60) // 7 days in seconds
-        .arg(&lnurl_addr)
+    redis::cmd("SETEX")
+        .arg(format!("token_mapping:{}", &token_hash[..16]))
+        .arg(7 * 24 * 60 * 60)
+        .arg(&lnurl)
         .query(&mut conn)
         .map_err(|e| format!("Failed to store token mapping in Redis: {}", e))?;
 
-    info!("💾 Stored token mapping in Redis for token_hash: {} -> lnurl: {}",
-          &token_hash[..16], &lnurl_addr);
+    info!("Stored token mapping: {} -> {}", &token_hash[..16], &lnurl);
     Ok(())
 }
 
@@ -570,7 +564,7 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addres
     Ok(true)
 }
 
-pub async fn redeem_to_lightning(_ln_client_conn: &lnclient::LNClientConn) -> Result<bool, String> {
+pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Result<bool, String> {
     cashu_redemption_logger::log_redemption("🚀 Starting smart Cashu token redemption process...");
     info!("🚀 Starting smart Cashu token redemption process...");
 
@@ -692,34 +686,28 @@ pub async fn redeem_to_lightning(_ln_client_conn: &lnclient::LNClientConn) -> Re
         }
 
         // Group proofs by their LNURL address using token mapping
-        let mut conn = redis_client.get_connection()
-            .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+        let global_lnurl = std::env::var("LNURL_ADDRESS").unwrap_or_default();
 
         for proof in proofs {
-            // Create a token representation to find its mapping
-            // Note: Since we don't store the full token, we'll use the proof's Y value
-            // which is unique to the token batch
+            // Create a token identifier using proof's Y value and mint URL
             let proof_y = proof.y().unwrap_or_default();
             let token_identifier = format!("{}:{}", wallet.mint_url, proof_y);
 
-            // Hash to match what we stored
+            // Hash to match what we stored during verification
             let token_hash = Hasher::new()
                 .update(token_identifier.as_bytes())
                 .finalize()
                 .to_hex();
 
-            // Look up LNURL address for this token in Redis
-            let redis_key = format!("token_mapping:{}", token_hash);
-            let lnurl_address: Option<String> = redis::cmd("GET")
-                .arg(&redis_key)
-                .query(&mut conn)
-                .optional()
-                .map_err(|e| format!("Failed to query token mapping from Redis: {}", e))?;
+            // Get Redis connection for this proof
+            let mut conn = redis_client.get_connection()
+                .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
 
-            // Use global LNURL as fallback
-            let lnurl = lnurl_address.unwrap_or_else(|| {
-                std::env::var("LNURL_ADDRESS").unwrap_or_default()
-            });
+            // Look up LNURL address for this token
+            let lnurl: String = redis::cmd("GET")
+                .arg(format!("token_mapping:{}", token_hash))
+                .query(&mut conn)
+                .unwrap_or_else(|_| global_lnurl.clone());
 
             if !lnurl.is_empty() {
                 proofs_by_lnurl.entry(lnurl).or_insert_with(Vec::new).push((proof, wallet.mint_url.clone()));
@@ -729,18 +717,16 @@ pub async fn redeem_to_lightning(_ln_client_conn: &lnclient::LNClientConn) -> Re
 
     // Now process each LNURL group
     for (lnurl_address, proofs_with_mint) in proofs_by_lnurl {
-        info!("🏦 Processing {} proofs for LNURL: {}", proofs_with_mint.len(), lnurl_address);
+        info!("Processing {} proofs for LNURL: {}", proofs_with_mint.len(), lnurl_address);
 
         // Calculate total amount for this LNURL group
-        let total_amount: u64 = proofs_with_mint.iter()
-            .map(|(p, _)| {
-                let amount: u64 = p.amount.into();
-                amount * MSAT_PER_SAT
-            })
+        let total_amount: u64 = proofs_with_mint
+            .iter()
+            .map(|(p, _)| p.amount.into() * MSAT_PER_SAT)
             .sum();
 
         if total_amount == 0 {
-            debug!("ℹ️ Total amount is 0 for LNURL {}", lnurl_address);
+            debug!("Total amount is 0 for LNURL {}", lnurl_address);
             continue;
         }
 
@@ -796,10 +782,7 @@ pub async fn redeem_to_lightning(_ln_client_conn: &lnclient::LNClientConn) -> Re
                 // Calculate total value of selected proofs
                 let selected_total: u64 = selected_proofs
                     .iter()
-                    .map(|(p, _)| {
-                        let amount: u64 = p.amount.into();
-                        amount * MSAT_PER_SAT
-                    })
+                    .map(|(p, _)| p.amount.into() * MSAT_PER_SAT)
                     .sum();
 
                 let msg = format!(
