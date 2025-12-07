@@ -564,7 +564,7 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addres
     Ok(true)
 }
 
-pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Result<bool, String> {
+pub async fn redeem_to_lightning(_ln_client_conn: &lnclient::LNClientConn) -> Result<bool, String> {
     cashu_redemption_logger::log_redemption("🚀 Starting smart Cashu token redemption process...");
     info!("🚀 Starting smart Cashu token redemption process...");
 
