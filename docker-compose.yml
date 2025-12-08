@@ -203,7 +203,6 @@ services:
     depends_on:
       - redis
       - grpc-content-server
-      - lnurl-server
     networks:
       - l402-network
 
@@ -294,27 +293,6 @@ services:
       - "50051:50051"
     environment:
       - RUST_LOG=info
-    networks:
-      - l402-network
-    restart: unless-stopped
-
-  lnurl-server:
-    container_name: lnurl-server
-    build:
-      context: ./lnurl-server
-      dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
-    environment:
-      - LND_HOSTNAME=lndnode-receiver:10010
-      - LND_CERT_PATH=/root/.lnd/tls.cert
-      - LND_MACAROON_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
-      - PORT=3000
-    volumes:
-      - lndnode-receiver-data:/root/.lnd:ro
-      - lnurl-ca-cert:/app/shared-certs
-    depends_on:
-      - lndnode-receiver
     networks:
       - l402-network
     restart: unless-stopped
