@@ -203,6 +203,7 @@ services:
     depends_on:
       - redis
       - grpc-content-server
+      - lnurl-server
     networks:
       - l402-network
 
