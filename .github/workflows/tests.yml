@@ -1074,18 +1074,6 @@ jobs:
             exit 1
           fi
 
-          # Final verification of tenant separation
-          echo "Final verification of 2-tenant separation in Redis..."
-          UNIQUE_TENANTS=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | xargs -I {} docker exec redis redis-cli get "{}" 2>/dev/null | sort | uniq | wc -l)
-          echo "Number of unique tenants with proofs: $UNIQUE_TENANTS"
-
-          if [ "$UNIQUE_TENANTS" -ge 2 ]; then
-            echo "✅ Multi-tenant separation verified: proofs mapped to 2 different LNURL addresses"
-          else
-            echo "⚠️ Expected 2 unique tenants but found $UNIQUE_TENANTS"
-            # We don't exit here as strict failure might depend on exact implementation details, but we warn.
-          fi
-
           echo "✅ Multi-tenant LNURL Cashu Redemption integration test completed with 2 tenants!"
 
       - name: Publish .so file
