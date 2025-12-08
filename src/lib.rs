@@ -771,6 +771,13 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             let rt = Runtime::new().expect("Failed to create runtime");
             let module = rt.block_on(async { L402Module::new().await });
 
+            // Initialize LN client for cashu redemption
+            let ln_client = module.middleware.ln_client.clone();
+            let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
+            if let Err(e) = cashu::initialize_ln_client(ln_client, ln_client_type) {
+                error!("⚠️ Failed to initialize LN client for cashu: {}", e);
+            }
+
             unsafe {
                 MODULE = Some(module);
             }
