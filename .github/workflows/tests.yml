@@ -1009,6 +1009,22 @@ jobs:
         run: |
           echo "🏢 Testing Multi-tenant LNURL Cashu Redemption with 2 tenants..."
 
+          # Build and start lnurl-server for local LNURL address resolution
+          echo "Building and starting lnurl-server..."
+          docker-compose -f docker-compose.yml build lnurl-server
+          docker-compose -f docker-compose.yml up -d lnurl-server
+          sleep 10
+
+          # Verify lnurl-server is running
+          echo "Checking lnurl-server health..."
+          docker logs lnurl-server 2>&1 | tail -10
+
+          # Stop nginx-lnd and start nginx-lnurl with LNURL mode
+          echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
+          docker-compose -f docker-compose.yml stop nginx-lnd
+          docker-compose -f docker-compose.yml up -d nginx-lnurl
+          sleep 15
+
           # Flush Redis for clean test
           echo "Setting up Redis for multi-tenant testing..."
           docker exec redis redis-cli flushall
@@ -1029,11 +1045,11 @@ jobs:
           # Create Cashu tokens for 2 tenants
           echo "Creating Cashu tokens for 2-tenant multi-tenant redemption..."
 
-          # Create token 1 for tenant1 (amount: 50 sats) - maps to test1@testnut.cashu.space (nginx.conf)
+          # Create token 1 for tenant1 (amount: 50 sats) - maps to user1@lnurl-server (nginx.conf)
           TOKEN1=$(docker exec cashu-mint poetry run cashu send 50)
           echo "Token1 for tenant1 (50 sats): $TOKEN1"
 
-          # Create token 2 for tenant2 (amount: 30 sats) - maps to user@lnurl-server (nginx.conf)
+          # Create token 2 for tenant2 (amount: 30 sats) - maps to user2@lnurl-server (nginx.conf)
           TOKEN2=$(docker exec cashu-mint poetry run cashu send 30)
           echo "Token2 for tenant2 (30 sats): $TOKEN2"
 
@@ -1042,25 +1058,25 @@ jobs:
           # ========== TEST ACCESSING TENANT-SPECIFIC ROUTES ==========
           echo "Testing multi-tenant token redemption with 2 different LNURL addresses..."
 
-          # Access tenant1 route - should map to test1@testnut.cashu.space (from nginx.conf)
-          echo "Accessing tenant1 route (test1@testnut.cashu.space)..."
+          # Access tenant1 route - should map to user1@lnurl-server (from nginx.conf)
+          echo "Accessing tenant1 route (user1@lnurl-server)..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $TOKEN1" http://0.0.0.0:8000/tenant1)
           if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
             echo "Error: Failed to access tenant1 route with Token1"
-            docker logs nginx-lnd | tail -50
+            docker logs nginx-lnurl | tail -50
             exit 1
           fi
-          echo "✅ Token1 accepted and mapped to tenant1 (test1@testnut.cashu.space)"
+          echo "✅ Token1 accepted and mapped to tenant1 (user1@lnurl-server)"
 
-          # Access tenant2 route - should map to user@lnurl-server (from nginx.conf)
-          echo "Accessing tenant2 route (user@lnurl-server)..."
+          # Access tenant2 route - should map to user2@lnurl-server (from nginx.conf)
+          echo "Accessing tenant2 route (user2@lnurl-server)..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $TOKEN2" http://0.0.0.0:8000/tenant2)
           if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
             echo "Error: Failed to access tenant2 route with Token2"
-            docker logs nginx-lnd | tail -50
+            docker logs nginx-lnurl | tail -50
             exit 1
           fi
-          echo "✅ Token2 accepted and mapped to tenant2 (user@lnurl-server)"
+          echo "✅ Token2 accepted and mapped to tenant2 (user2@lnurl-server)"
 
           # ========== VERIFY REDIS PROOF-TO-LNURL MAPPINGS ==========
           echo "Checking Redis for proof-to-lnurl mappings..."
@@ -1073,11 +1089,11 @@ jobs:
 
             # Check mappings for each tenant
             echo "Checking mappings per tenant..."
-            TENANT1_COUNT=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | xargs -I {} docker exec redis redis-cli get "{}" 2>/dev/null | grep "test1@testnut.cashu.space" | wc -l)
-            TENANT2_COUNT=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | xargs -I {} docker exec redis redis-cli get "{}" 2>/dev/null | grep "user@lnurl-server" | wc -l)
+            TENANT1_COUNT=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | xargs -I {} docker exec redis redis-cli get "{}" 2>/dev/null | grep "user1@lnurl-server" | wc -l)
+            TENANT2_COUNT=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | xargs -I {} docker exec redis redis-cli get "{}" 2>/dev/null | grep "user2@lnurl-server" | wc -l)
 
-            echo "Tenant1 (test1@testnut.cashu.space): $TENANT1_COUNT proofs"
-            echo "Tenant2 (user@lnurl-server): $TENANT2_COUNT proofs"
+            echo "Tenant1 (user1@lnurl-server): $TENANT1_COUNT proofs"
+            echo "Tenant2 (user2@lnurl-server): $TENANT2_COUNT proofs"
           else
             echo "⚠️ No proof-to-lnurl mappings found in Redis"
           fi
@@ -1108,7 +1124,7 @@ jobs:
           echo "✅ All tokens accepted for 2-tenant multi-tenant redemption"
 
           # ========== WAIT FOR REDEMPTION CYCLES ==========
-          REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "15")
+          REDEMPTION_INTERVAL=$(docker exec nginx-lnurl env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "15")
           WAIT_TIME=$((REDEMPTION_INTERVAL + 30))
           echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
           sleep $WAIT_TIME
@@ -1134,7 +1150,7 @@ jobs:
 
           # Check redemption logs for multi-tenant behavior
           echo "Checking redemption logs for multi-tenant activity..."
-          docker logs nginx-lnd 2>&1 | grep -i "multi-tenant\|grouped proofs\|lnurl\|redemption" | tail -20
+          docker logs nginx-lnurl 2>&1 | grep -i "multi-tenant\|grouped proofs\|lnurl\|redemption" | tail -20
 
           # Verify Redis has processed proofs for both tenants
           FINAL_REDIS_KEYS=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | wc -l)
@@ -1155,10 +1171,11 @@ jobs:
 
           # Verify Lightning wallet balance increased (redemption success criterion)
           if [ "$BALANCE_RECEIVER_DIFFERENCE" -gt 0 ]; then
-            echo "✅ LND-receiver channel balance increased by $BALANCE_RECEIVER_DIFFERENCE sats from multi-tenant Cashu token redemption"
+            echo "✅ LND-receiver channel balance increased by $BALANCE_RECEIVER_DIFFERENCE sats from multi-tenant Cashu token redemption via LNURL"
           else
-            echo "❌ No balance increase detected"
-            docker logs nginx-lnd | tail -50
+            echo "❌ No balance increase detected - multi-tenant LNURL redemption may have failed"
+            docker logs lnurl-server | tail -30
+            docker logs nginx-lnurl | tail -50
             exit 1
           fi
 
@@ -1169,8 +1186,11 @@ jobs:
           echo "LND-receiver node invoices:"
           docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listinvoices | tail -20
 
-          echo "========== NGINX-LND LOGS =========="
-          docker logs nginx-lnd | tail -50
+          echo "========== LNURL-SERVER LOGS =========="
+          docker logs lnurl-server | tail -30
+
+          echo "========== NGINX-LNURL LOGS =========="
+          docker logs nginx-lnurl | tail -50
 
           echo "✅ Multi-tenant LNURL Cashu Redemption integration test completed with 2 tenants!"
 

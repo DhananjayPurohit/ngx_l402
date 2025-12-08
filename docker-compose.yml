@@ -265,6 +265,24 @@ services:
       - RUST_LOG=info
     restart: unless-stopped
 
+  lnurl-server:
+    container_name: lnurl-server
+    build:
+      context: ./lnurl-server
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - LND_HOSTNAME=lndnode-receiver:10010
+      - LND_CERT_PATH=/root/.lnd/tls.cert
+      - LND_MACAROON_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
+      - PORT=3000
+    volumes:
+      - lndnode-receiver-data:/root/.lnd:ro
+    depends_on:
+      - lndnode-receiver
+    restart: unless-stopped
+
 volumes:
   bitcoin_data:
   lndnode-data:
