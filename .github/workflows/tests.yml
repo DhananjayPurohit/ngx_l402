@@ -1009,14 +1009,6 @@ jobs:
         run: |
           echo "🏢 Testing Multi-tenant LNURL Cashu Redemption with 2 tenants..."
 
-          # Stop nginx-lnd and start nginx-lnurl with multi-tenant configuration
-          echo "Stopping nginx-lnd and configuring nginx-lnurl for multi-tenant mode..."
-          docker-compose -f docker-compose.yml stop nginx-lnd
-
-          # Start nginx-lnurl with multi-tenant LNURL mode
-          docker-compose -f docker-compose.yml up -d nginx-lnurl
-          sleep 15
-
           # Flush Redis for clean test
           echo "Setting up Redis for multi-tenant testing..."
           docker exec redis redis-cli flushall
@@ -1055,7 +1047,7 @@ jobs:
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $TOKEN1" http://0.0.0.0:8000/tenant1)
           if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
             echo "Error: Failed to access tenant1 route with Token1"
-            docker logs nginx-lnurl | tail -50
+            docker logs nginx-lnd | tail -50
             exit 1
           fi
           echo "✅ Token1 accepted and mapped to tenant1 (test1@testnut.cashu.space)"
@@ -1065,7 +1057,7 @@ jobs:
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $TOKEN2" http://0.0.0.0:8000/tenant2)
           if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
             echo "Error: Failed to access tenant2 route with Token2"
-            docker logs nginx-lnurl | tail -50
+            docker logs nginx-lnd | tail -50
             exit 1
           fi
           echo "✅ Token2 accepted and mapped to tenant2 (user@lnurl-server)"
@@ -1116,7 +1108,7 @@ jobs:
           echo "✅ All tokens accepted for 2-tenant multi-tenant redemption"
 
           # ========== WAIT FOR REDEMPTION CYCLES ==========
-          REDEMPTION_INTERVAL=$(docker exec nginx-lnurl env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "15")
+          REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "15")
           WAIT_TIME=$((REDEMPTION_INTERVAL + 30))
           echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
           sleep $WAIT_TIME
@@ -1142,7 +1134,7 @@ jobs:
 
           # Check redemption logs for multi-tenant behavior
           echo "Checking redemption logs for multi-tenant activity..."
-          docker logs nginx-lnurl 2>&1 | grep -i "multi-tenant\|grouped proofs\|lnurl\|redemption" | tail -20
+          docker logs nginx-lnd 2>&1 | grep -i "multi-tenant\|grouped proofs\|lnurl\|redemption" | tail -20
 
           # Verify Redis has processed proofs for both tenants
           FINAL_REDIS_KEYS=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | wc -l)
@@ -1165,14 +1157,9 @@ jobs:
           if [ "$BALANCE_RECEIVER_DIFFERENCE" -gt 0 ]; then
             echo "✅ LND-receiver channel balance increased by $BALANCE_RECEIVER_DIFFERENCE sats from multi-tenant Cashu token redemption"
           else
-            echo "ℹ️ No balance increase detected (LNURL endpoints may be external/unreachable in CI)"
-            
-            # Check for redemption activity in logs as alternative success indicator
-            if docker logs nginx-lnurl 2>&1 | grep -qi "redeemed\|sent.*sats\|payment.*success"; then
-              echo "✅ Redemption activity detected in logs"
-            else
-              echo "ℹ️ No explicit redemption messages (external LNURL addresses)"
-            fi
+            echo "❌ No balance increase detected"
+            docker logs nginx-lnd | tail -50
+            exit 1
           fi
 
           # Print payment history for debugging
@@ -1182,11 +1169,10 @@ jobs:
           echo "LND-receiver node invoices:"
           docker exec lndnode-receiver lncli -n regtest --rpcserver=127.0.0.1:10010 listinvoices | tail -20
 
-          echo "========== NGINX-LNURL LOGS =========="
-          docker logs nginx-lnurl | tail -50
+          echo "========== NGINX-LND LOGS =========="
+          docker logs nginx-lnd | tail -50
 
           echo "✅ Multi-tenant LNURL Cashu Redemption integration test completed with 2 tenants!"
-
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
