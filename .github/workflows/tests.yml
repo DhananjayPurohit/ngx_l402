@@ -1009,11 +1009,18 @@ jobs:
 
           echo "✅ Cashu redemption on Lightning integration tests completed!"
 
-      - name: Run Integration Tests - Multi-tenant LNURL Cashu Redemption
-        env:
+      - name: Stop nginx-lnd and start nginx-lnurl
+        env: 
           CASHU_WHITELISTED_MINTS: http://cashu-mint:3338
           CASHU_WALLET_SECRET: test_wallet_secret_for_ci
           LNURL_ADDRESS: hello@getalby.com
+        run: |
+          echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
+          docker-compose -f docker-compose.yml stop nginx-lnd
+          docker-compose -f docker-compose.yml up -d nginx-lnurl
+          sleep 15
+
+      - name: Run Integration Tests - Multi-tenant LNURL Cashu Redemption
         run: |
           echo "🏢 Testing Multi-tenant LNURL Cashu Redemption with 2 tenants..."
 
@@ -1029,12 +1036,6 @@ jobs:
           # Test HTTPS connectivity to lnurl-server (from inside docker network using curl with insecure flag)
           echo "Testing lnurl-server HTTPS endpoint..."
           docker exec lnurl-server wget --no-check-certificate -qO- https://localhost:3000/.well-known/lnurlp/user1 2>&1 | head -5 || echo "LNURL endpoint test (may fail without LND ready)"
-
-          # Stop nginx-lnd and start nginx-lnurl with LNURL mode
-          echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
-          docker-compose -f docker-compose.yml stop nginx-lnd
-          docker-compose -f docker-compose.yml up -d nginx-lnurl
-          sleep 15
 
           # Verify nginx-lnurl has the CA cert
           echo "Verifying nginx-lnurl has CA certificate..."
