@@ -178,9 +178,19 @@ services:
     environment:
       - LN_CLIENT_TYPE=LNURL
       - LNURL_ADDRESS=${LNURL_ADDRESS}
+      - CASHU_ECASH_SUPPORT=true
+      - CASHU_DB_PATH=/app/data/cashu_tokens.db
+      - CASHU_WALLET_SECRET=${CASHU_WALLET_SECRET}
+      - CASHU_REDEEM_ON_LIGHTNING=true
+      - CASHU_REDEMPTION_INTERVAL_SECS=15
+      - CASHU_WHITELISTED_MINTS=${CASHU_WHITELISTED_MINTS}
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - cashu-data:/app/data
     depends_on:
       - redis
       - grpc-content-server
+      - lnurl-server
 
   nginx-cln:
     container_name: nginx-cln
