@@ -13,6 +13,8 @@ services:
       - "28333:28333"
     volumes:
       - bitcoin_data:/root/.bitcoin
+    networks:
+      - l402-network
 
   cln:
     image: elementsproject/lightningd:v25.05
@@ -87,7 +89,9 @@ services:
       HOME: /data
     depends_on:
       - bitcoind
-  
+    networks:
+      - l402-network
+
   lndnode-receiver:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
     container_name: lndnode-receiver
@@ -125,6 +129,8 @@ services:
       HOME: /data
     depends_on:
       - bitcoind
+    networks:
+      - l402-network
 
   redis:
     image: redis:7.2
@@ -134,6 +140,8 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    networks:
+      - l402-network
 
   cashu-mint:
     container_name: cashu-mint
@@ -165,6 +173,8 @@ services:
         poetry run mint
     depends_on:
       - lndnode
+    networks:
+      - l402-network
 
   nginx-lnurl:
     container_name: nginx-lnurl
@@ -191,6 +201,8 @@ services:
     depends_on:
       - redis
       - grpc-content-server
+    networks:
+      - l402-network
 
   nginx-cln:
     container_name: nginx-cln
@@ -273,6 +285,8 @@ services:
       - "50051:50051"
     environment:
       - RUST_LOG=info
+    networks:
+      - l402-network
     restart: unless-stopped
 
   lnurl-server:
@@ -292,7 +306,13 @@ services:
       - lnurl-ca-cert:/app/shared-certs
     depends_on:
       - lndnode-receiver
+    networks:
+      - l402-network
     restart: unless-stopped
+
+networks:
+  l402-network:
+    driver: bridge
 
 volumes:
   bitcoin_data:
