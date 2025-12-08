@@ -64,7 +64,7 @@ jobs:
           echo ROOT_KEY=ABDEGHKLMPTC >> .env
           cat .env
 
-      - name: Start LNURL service
+      - name: Start nginx-lnurl service
         env:
           LNURL_ADDRESS: hello@getalby.com
         run: |
@@ -1009,6 +1009,9 @@ jobs:
         run: |
           echo "🏢 Testing Multi-tenant LNURL Cashu Redemption with 2 tenants..."
 
+          docker-compose -f docker-compose.yml stop nginx-lnd
+          sleep 5
+
           # Build and start lnurl-server for local LNURL address resolution
           echo "Building and starting lnurl-server..."
           docker-compose -f docker-compose.yml build lnurl-server
@@ -1021,7 +1024,6 @@ jobs:
 
           # Stop nginx-lnd and start nginx-lnurl with LNURL mode
           echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
-          docker-compose -f docker-compose.yml stop nginx-lnd
           docker-compose -f docker-compose.yml up -d nginx-lnurl
           sleep 15
 
