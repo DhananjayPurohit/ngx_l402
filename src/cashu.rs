@@ -432,7 +432,12 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
             let proofs = wallet.get_unspent_proofs().await
                 .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
 
-            set_proof_to_lnurl(proofs, lnurl_addr);
+            // Only store proof-to-lnurl mapping when using LNURL mode (multi-tenant)
+            if is_multi_tenant_enabled() {
+                if let Err(e) = set_proof_to_lnurl(proofs, lnurl_addr) {
+                    warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                }
+            }
 
             // Add token to processed set after successful receive
             PROCESSED_TOKENS.with(|tokens| {
@@ -609,9 +614,11 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
         }
     });
 
-    // Store proof-to-lnurl mapping for the proofs we just stored (not all unspent proofs)
-    if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
-        warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+    // Only store proof-to-lnurl mapping when using LNURL mode (multi-tenant)
+    if is_multi_tenant_enabled() {
+        if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
+            warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+        }
     }
 
     info!(
