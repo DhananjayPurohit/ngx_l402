@@ -68,9 +68,6 @@ jobs:
         env:
           LNURL_ADDRESS: hello@getalby.com
         run: |
-          echo "Starting lnurl-server..."
-          docker-compose -f docker-compose.yml up -d lnurl-server
-          sleep 10
           echo "Starting nginx-lnurl and grpc-content-server..."
           docker-compose -f docker-compose.yml up -d nginx-lnurl grpc-content-server
 
