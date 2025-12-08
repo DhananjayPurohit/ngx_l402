@@ -1104,6 +1104,7 @@ jobs:
 
           if [ "$REDIS_KEYS" -gt 0 ]; then
             echo "✅ Multi-tenant proof mappings created in Redis"
+          fi
 
           TOKEN3=$(docker exec cashu-mint poetry run cashu send 40)
           echo "Token3 for tenant1 (40 sats): $TOKEN3"
