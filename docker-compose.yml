@@ -51,6 +51,8 @@ services:
       - cln-data:/root/.lightning/regtest:rw
     depends_on:
       - bitcoind
+    networks:
+      - l402-network
 
   lndnode:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
@@ -222,6 +224,8 @@ services:
     depends_on:
       - cln
       - redis
+    networks:
+      - l402-network
     entrypoint: sh -c "
       until [ -S /root/.lightning/regtest/lightning-rpc ]; do
         echo 'Waiting for lightning-rpc...';
@@ -245,7 +249,9 @@ services:
     depends_on:
       - cln
       - redis
-  
+    networks:
+      - l402-network
+
   nginx-lnd:
     container_name: nginx-lnd
     user: root
@@ -275,6 +281,8 @@ services:
       - lndnode-receiver
       - cashu-mint
       - redis
+    networks:
+      - l402-network
 
   grpc-content-server:
     container_name: grpc-content-server
