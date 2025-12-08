@@ -1027,6 +1027,8 @@ jobs:
           docker-compose -f docker-compose.yml up -d nginx-lnurl
           sleep 15
 
+          docker logs nginx-lnurl 2>&1 | tail -100
+
           # Flush Redis for clean test
           echo "Setting up Redis for multi-tenant testing..."
           docker exec redis redis-cli flushall
