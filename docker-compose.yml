@@ -177,7 +177,7 @@ services:
       - "8000:8000"
     environment:
       - LN_CLIENT_TYPE=LNURL
-      - LNURL_ADDRESS=${LNURL_ADDRESS:-default@lnurl-server}
+      - LNURL_ADDRESS=${LNURL_ADDRESS:-hello@getalby.com}
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_tokens.db
       - CASHU_WALLET_SECRET=${CASHU_WALLET_SECRET}
