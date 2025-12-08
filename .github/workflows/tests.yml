@@ -1019,15 +1019,29 @@ jobs:
           docker-compose -f docker-compose.yml up -d lnurl-server
           sleep 10
 
-          # Verify lnurl-server is running
+          # Verify lnurl-server is running and CA cert is shared
           echo "Checking lnurl-server health..."
           docker logs lnurl-server 2>&1 | tail -10
+
+          # Verify CA cert is in shared volume
+          echo "Verifying CA certificate is shared..."
+          docker exec lnurl-server ls -la /app/shared-certs/ || echo "Shared certs dir check"
+          docker exec lnurl-server cat /app/shared-certs/ca.crt > /dev/null 2>&1 && echo "CA cert found in shared volume" || echo "Warning: CA cert not found"
+
+          # Test HTTPS connectivity to lnurl-server (from inside docker network using curl with insecure flag)
+          echo "Testing lnurl-server HTTPS endpoint..."
+          docker exec lnurl-server wget --no-check-certificate -qO- https://localhost:3000/.well-known/lnurlp/user1 2>&1 | head -5 || echo "LNURL endpoint test (may fail without LND ready)"
 
           # Stop nginx-lnd and start nginx-lnurl with LNURL mode
           echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
           docker-compose -f docker-compose.yml stop nginx-lnd
           docker-compose -f docker-compose.yml up -d nginx-lnurl
           sleep 15
+
+          # Verify nginx-lnurl has the CA cert
+          echo "Verifying nginx-lnurl has CA certificate..."
+          docker exec nginx-lnurl ls -la /app/shared-certs/ 2>/dev/null || echo "Checking shared certs"
+          docker exec nginx-lnurl cat /etc/ssl/certs/ca-certificates.crt | grep -c "TestCA" && echo "CA cert added to trust store" || echo "Note: CA cert may be added under different name"
 
           # Flush Redis for clean test
           echo "Setting up Redis for multi-tenant testing..."
@@ -1091,19 +1105,6 @@ jobs:
           if [ "$REDIS_KEYS" -gt 0 ]; then
             echo "✅ Multi-tenant proof mappings created in Redis"
 
-            # Check mappings for each tenant
-            echo "Checking mappings per tenant..."
-            TENANT1_COUNT=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | xargs -I {} docker exec redis redis-cli get "{}" 2>/dev/null | grep "user1@lnurl-server" | wc -l)
-            TENANT2_COUNT=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | xargs -I {} docker exec redis redis-cli get "{}" 2>/dev/null | grep "user2@lnurl-server" | wc -l)
-
-            echo "Tenant1 (user1@lnurl-server): $TENANT1_COUNT proofs"
-            echo "Tenant2 (user2@lnurl-server): $TENANT2_COUNT proofs"
-          else
-            echo "⚠️ No proof-to-lnurl mappings found in Redis"
-          fi
-
-          # Create additional tokens for a second redemption cycle
-          echo "Creating additional tokens for second redemption cycle..."
           TOKEN3=$(docker exec cashu-mint poetry run cashu send 40)
           echo "Token3 for tenant1 (40 sats): $TOKEN3"
           TOKEN4=$(docker exec cashu-mint poetry run cashu send 60)

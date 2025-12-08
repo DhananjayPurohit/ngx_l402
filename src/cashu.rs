@@ -204,6 +204,31 @@ fn set_proof_to_lnurl(proofs: cdk::nuts::Proofs, lnurl_route: Option<String>) ->
     Ok(())
 }
 
+/// Remove proof-to-lnurl mappings from Redis after proofs have been melted
+fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String> {
+    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+
+    let client_guard = client.lock()
+        .map_err(|_| "Failed to lock redis client".to_string())?;
+
+    let mut conn = client_guard.get_connection()
+        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+
+    for proof in proofs {
+        let secret = proof.secret.to_string();
+
+        let mut hasher = Sha256::new();
+        hasher.update(secret.as_bytes());
+
+        let proof_hash = hex::encode(hasher.finalize());
+
+        let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
+        let _: Result<(), _> = conn.del(&redis_key);
+    }
+
+    Ok(())
+}
+
 /// Group proofs by their associated lnurl address for multi-tenant redemption
 fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
@@ -767,7 +792,7 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
         info!("{}", msg);
         cashu_redemption_logger::log_redemption(&msg);
 
-        // Check if multi-tenant LNURL mode is enabled. Simply checks if lnclient is lnurl
+        // Check if multi-tenant LNURL mode is enabled. Simply checks if lnclient is lnurl for now
         let is_multi_tenant = is_multi_tenant_enabled();
 
         // Build proof groups based on mode
@@ -1084,6 +1109,11 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     cashu_redemption_logger::log_redemption(&msg);
                     total_redeemed += proofs_to_melt.len();
                     total_amount_redeemed_msat += redeemable_amount_msat;
+
+                    // Clean up Redis proof-to-lnurl mappings for melted proofs
+                    if let Err(e) = remove_proof_lnurl_mappings(&proofs_to_melt) {
+                        warn!("⚠️ Failed to clean up proof mappings for {}: {}", client_id, e);
+                    }
                 }
                 Err(e) => {
                     let msg = format!(

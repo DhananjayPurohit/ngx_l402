@@ -187,10 +187,10 @@ services:
       - REDIS_URL=redis://redis:6379
     volumes:
       - cashu-data:/app/data
+      - lnurl-ca-cert:/app/shared-certs:ro
     depends_on:
       - redis
       - grpc-content-server
-      - lnurl-server
 
   nginx-cln:
     container_name: nginx-cln
@@ -289,6 +289,7 @@ services:
       - PORT=3000
     volumes:
       - lndnode-receiver-data:/root/.lnd:ro
+      - lnurl-ca-cert:/app/shared-certs
     depends_on:
       - lndnode-receiver
     restart: unless-stopped
@@ -300,3 +301,4 @@ volumes:
   cashu-data:
   cln-data:
   redis_data:
+  lnurl-ca-cert:
