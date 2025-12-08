@@ -1,8 +1,8 @@
 use crate::cashu_redemption_logger;
 use cdk;
-use redis::{Commands, Connection};
+use redis::{Commands};
 use cdk::mint_url::MintUrl;
-use l402_middleware::lnclient;
+use l402_middleware::{lnclient, lnurl};
 use log::{debug, error, info, warn};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -117,7 +117,30 @@ pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
     WHITELISTED_MINTS.get()
 }
 
-fn set_token_to_lnurl(token: &str, lnurl_route: Option<String>) -> Result<(), String> {
+fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, String> {
+    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+
+    let mut client_guard = client.lock()
+        .map_err(|_| "Failed to lock redis client".to_string())?;
+
+    let secret = proof.secret.to_string();
+
+    let mut hasher = Sha256::new();
+    hasher.update(secret.as_bytes());
+
+    let proof_hash = hex::encode(hasher.finalize());
+
+    let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
+    let mut conn = client_guard.get_connection()
+        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+
+    let lnurl: Option<String> = conn.get(&redis_key)
+        .map_err(|e| format!("Failed to get proof mapping: {}", e))?;
+
+    Ok(lnurl)
+}
+
+fn set_proof_to_lnurl(proofs: cdk::nuts::Proofs, lnurl_route: Option<String>) -> Result<(), String> {
     let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
 
     let mut client_guard = client.lock()
@@ -131,16 +154,21 @@ fn set_token_to_lnurl(token: &str, lnurl_route: Option<String>) -> Result<(), St
         return Err("No LNURL address available for cashu token".to_string());
     }
 
-    let token_hash = Sha256::digest(token.as_bytes());
-    let token_hash_hex = hex::encode(token_hash);
-
     let mut conn = client_guard.get_connection()
         .map_err(|e| format!("Failed to get redis connection: {}", e))?;
 
-    conn.set(&token_hash_hex, &lnurl)
-        .map_err(|e| format!("Failed to map cashu token to lnurl in redis"))?;
+    for proof in proofs {
+        let secret = proof.secret.to_string();
 
-    info!("Stored token mapping: {} -> {}", &token_hash_hex, &lnurl);
+        let mut hasher = Sha256::new();
+        hasher.update(secret.as_bytes());
+
+        let proof_hash = hex::encode(hasher.finalize());
+
+        let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
+        conn.set::<_, _, ()>(&redis_key, &lnurl)
+            .map_err(|e| format!("Failed to set proof mapping: {}", e))?;
+    }
 
     Ok(())
 }
@@ -349,7 +377,10 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
                 mint_url
             );
 
-            set_token_to_lnurl(token, lnurl_addr);
+            let proofs = wallet.get_unspent_proofs().await
+                .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
+
+            set_proof_to_lnurl(proofs, lnurl_addr);
 
             // Add token to processed set after successful receive
             PROCESSED_TOKENS.with(|tokens| {
@@ -490,7 +521,6 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
     // Instead, we store the P2PK-locked proofs directly in the database as UNSPENT
     // without swapping them. They can be spent later using our private key.
 
-    use cdk::cdk_database::WalletDatabase;
     use cdk::nuts::State;
     use cdk::types::ProofInfo;
 
@@ -527,7 +557,10 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
         }
     });
 
-    set_token_to_lnurl(token, lnurl_addr);
+    let proofs = wallet.get_unspent_proofs().await
+        .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
+
+    set_proof_to_lnurl(proofs, lnurl_addr);
 
     info!(
         "✅ ACCEPTED ({} msat stored in CDK database)",
@@ -537,7 +570,7 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
     Ok(true)
 }
 
-pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Result<bool, String> {
+pub async fn redeem_to_lightning() -> Result<bool, String> {
     cashu_redemption_logger::log_redemption("🚀 Starting smart Cashu token redemption process...");
     info!("🚀 Starting smart Cashu token redemption process...");
 
@@ -782,30 +815,70 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
             redeemable_amount_msat
         ));
 
-        let (invoice, _payment_hash) = match ln_client_conn
-            .generate_invoice(lnrpc::Invoice {
-                value_msat: redeemable_amount_msat as i64,
-                memo: memo.clone(),
-                ..Default::default()
-            })
-            .await
-        {
-            Ok((invoice, payment_hash)) => {
-                cashu_redemption_logger::log_redemption(&format!(
-                    "✅ Generated invoice: payment_hash={}",
-                    payment_hash
-                ));
-                (invoice, payment_hash)
+        // Get lnurl address from first proof (all proofs in batch should have same lnurl)
+        let lnurl_addr = proofs_to_melt
+            .first()
+            .and_then(|proof| get_lnurl_from_proof(proof).ok().flatten());
+
+        let (invoice, _payment_hash) = if let Some(lnurl_address) = lnurl_addr {
+            // Create LNURL client for this specific address
+            let ln_client_config = lnclient::LNClientConfig {
+                ln_client_type: "LNURL".to_string(),
+                lnd_config: None,
+                lnurl_config: Some(lnurl::LNURLOptions { address: lnurl_address.clone() }),
+                nwc_config: None,
+                cln_config: None,
+                root_key: std::env::var("ROOT_KEY")
+                    .unwrap_or_else(|_| "root_key".to_string())
+                    .as_bytes()
+                    .to_vec(),
+            };
+
+            match lnurl::LnAddressUrlResJson::new_client(&ln_client_config).await {
+                Ok(ln_client) => {
+                    let ln_client_conn = lnclient::LNClientConn { ln_client };
+                    match ln_client_conn
+                        .generate_invoice(lnrpc::Invoice {
+                            value_msat: redeemable_amount_msat as i64,
+                            memo: memo.clone(),
+                            ..Default::default()
+                        })
+                        .await
+                    {
+                        Ok((invoice, payment_hash)) => {
+                            cashu_redemption_logger::log_redemption(&format!(
+                                "✅ Generated invoice via LNURL {}: payment_hash={}",
+                                lnurl_address, payment_hash
+                            ));
+                            (invoice, payment_hash)
+                        }
+                        Err(e) => {
+                            let msg = format!(
+                                "❌ Failed to generate invoice via LNURL {}: {}",
+                                lnurl_address, e
+                            );
+                            error!("{}", msg);
+                            cashu_redemption_logger::log_redemption(&msg);
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "❌ Failed to create LNURL client for {}: {}",
+                        lnurl_address, e
+                    );
+                    error!("{}", msg);
+                    cashu_redemption_logger::log_redemption(&msg);
+                    continue;
+                }
             }
-            Err(e) => {
-                let msg = format!(
-                    "❌ Failed to generate invoice for {}: {}",
-                    wallet.mint_url, e
-                );
-                error!("{}", msg);
-                cashu_redemption_logger::log_redemption(&msg);
-                continue;
-            }
+        } else {
+            // No LNURL address found, skip this batch
+            let msg = "⚠️ No LNURL address found for proofs, skipping redemption";
+            warn!("{}", msg);
+            cashu_redemption_logger::log_redemption(msg);
+            continue;
         };
 
         // Get melt quote with the redeemable amount
@@ -840,15 +913,18 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
                 // Verify our fee reserve was sufficient
                 let required_total_msat = amount_msat + actual_fee_reserve_msat;
                 if selected_total_msat < required_total_msat {
-                    let msg = format!("⚠️ Fee reserve insufficient: {} msat available < {} msat required ({} + {})", 
-                        selected_total_msat, required_total_msat, amount_msat, actual_fee_reserve_msat);
+                    let msg = format!("⚠️ Fee reserve insufficient: {} msat ava
+lable < {} msat required ({} + {})",
+                        selected_total_msat, required_total_msat, amount_msat,
+actual_fee_reserve_msat);
                     warn!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
                     continue;
                 }
 
                 if actual_fee_reserve_msat > fee_reserve_selected_msat {
-                    let msg = format!("⚠️ Actual fees ({} msat) higher than reserve ({} msat) - consider increasing fee reserve percentage", 
+                    let msg = format!("⚠️ Actual fees ({} msat) higher than res
+rve ({} msat) - consider increasing fee reserve percentage",
                         actual_fee_reserve_msat, fee_reserve_selected_msat);
                     warn!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);

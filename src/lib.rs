@@ -804,7 +804,6 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             .unwrap_or(3600);
 
         let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
-        let ln_client = module.middleware.ln_client.clone();
 
         // Spawn redemption task in a separate thread to avoid blocking nginx
         let _ = std::thread::Builder::new()
@@ -830,10 +829,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
 
                     // Run async redemption in the tokio runtime
                     let result = thread_rt.block_on(async {
-                        let ln_client_conn = lnclient::LNClientConn {
-                            ln_client: ln_client.clone(),
-                        };
-                        cashu::redeem_to_lightning(&ln_client_conn).await
+                        cashu::redeem_to_lightning().await
                     });
 
                     match result {
