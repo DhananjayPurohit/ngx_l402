@@ -64,7 +64,7 @@ jobs:
           echo ROOT_KEY=ABDEGHKLMPTC >> .env
           cat .env
 
-      - name: Start nginx-lnurl service
+      - name: Start LNURL service
         env:
           LNURL_ADDRESS: hello@getalby.com
         run: |
@@ -1006,11 +1006,12 @@ jobs:
           echo "✅ Cashu redemption on Lightning integration tests completed!"
 
       - name: Run Integration Tests - Multi-tenant LNURL Cashu Redemption
+        env:
+          CASHU_WHITELISTED_MINTS: http://cashu-mint:3338
+          CASHU_WALLET_SECRET: test_wallet_secret_for_ci
+          LNURL_ADDRESS: hello@getalby.com
         run: |
           echo "🏢 Testing Multi-tenant LNURL Cashu Redemption with 2 tenants..."
-
-          docker-compose -f docker-compose.yml stop nginx-lnd
-          sleep 5
 
           # Build and start lnurl-server for local LNURL address resolution
           echo "Building and starting lnurl-server..."
@@ -1024,10 +1025,9 @@ jobs:
 
           # Stop nginx-lnd and start nginx-lnurl with LNURL mode
           echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
+          docker-compose -f docker-compose.yml stop nginx-lnd
           docker-compose -f docker-compose.yml up -d nginx-lnurl
           sleep 15
-
-          docker logs nginx-lnurl 2>&1 | tail -100
 
           # Flush Redis for clean test
           echo "Setting up Redis for multi-tenant testing..."
