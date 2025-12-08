@@ -68,6 +68,10 @@ jobs:
         env:
           LNURL_ADDRESS: hello@getalby.com
         run: |
+          echo "Starting lnurl-server..."
+          docker-compose -f docker-compose.yml up -d lnurl-server
+          sleep 10
+          echo "Starting nginx-lnurl and grpc-content-server..."
           docker-compose -f docker-compose.yml up -d nginx-lnurl grpc-content-server
 
       - name: Run Integration Tests - LNURL
@@ -1012,12 +1016,6 @@ jobs:
           LNURL_ADDRESS: hello@getalby.com
         run: |
           echo "🏢 Testing Multi-tenant LNURL Cashu Redemption with 2 tenants..."
-
-          # Build and start lnurl-server for local LNURL address resolution
-          echo "Building and starting lnurl-server..."
-          docker-compose -f docker-compose.yml build lnurl-server
-          docker-compose -f docker-compose.yml up -d lnurl-server
-          sleep 10
 
           # Verify lnurl-server is running and CA cert is shared
           echo "Checking lnurl-server health..."
