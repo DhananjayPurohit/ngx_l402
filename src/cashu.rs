@@ -232,7 +232,8 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
 /// Group proofs by their associated lnurl address for multi-tenant redemption
 fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
-    let default_lnurl = std::env::var("LNURL_ADDRESS").unwrap_or_else(|| "admin@getalby.com")
+    let default_lnurl = std::env::var("LNURL_ADDRESS")
+        .unwrap_or_else(|_| "admin@getalby.com".to_string());
 
     for proof in proofs {
         let lnurl = get_lnurl_from_proof(&proof)
