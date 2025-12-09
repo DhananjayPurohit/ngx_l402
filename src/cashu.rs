@@ -86,7 +86,7 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     // Create runtime for async initialization
     let rt = Runtime::new().expect("Failed to create runtime");
 
-    // Initialize SQLite database with WAL mode and Redis
+    // Initialize SQLite database with WAL mode
     rt.block_on(async {
         match cdk_sqlite::WalletSqliteDatabase::new(db_url).await {
             Ok(db) => {
@@ -229,10 +229,15 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
     Ok(())
 }
 
+{
+ cashu:proof_lnurl:p1: lnurl1,
+ cashu:proof_lnurl:p2: lnurl2,
+}
+
 /// Group proofs by their associated lnurl address for multi-tenant redemption
 fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
-    let default_lnurl = std::env::var("LNURL_ADDRESS").unwrap_or_default();
+    let default_lnurl = std::env::var("LNURL_ADDRESS").unwrap_or_else(|| "admin@getalby.com")
 
     for proof in proofs {
         let lnurl = get_lnurl_from_proof(&proof)
@@ -241,7 +246,7 @@ fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts
             .unwrap_or_else(|| default_lnurl.clone());
 
         if lnurl.is_empty() {
-            continue; // Skip proofs without lnurl mapping
+            continue;
         }
 
         grouped.entry(lnurl).or_insert_with(Vec::new).push(proof);
@@ -454,12 +459,10 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
                 mint_url
             );
 
-            let proofs = wallet.get_unspent_proofs().await
-                .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
-
-            // Only store proof-to-lnurl mapping when using LNURL mode (multi-tenant)
             if is_multi_tenant_enabled() {
-                if let Err(e) = set_proof_to_lnurl(proofs, lnurl_addr) {
+                let proofs = wallet.get_unspent_proofs().await
+                .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
+                if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
                     warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
                 }
             }
@@ -632,19 +635,19 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
         .await
         .map_err(|e| format!("Failed to store proofs in database: {:?}", e))?;
 
+
+    if is_multi_tenant_enabled() {
+        if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
+            warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+        }
+    }
+
     // Mark as accepted in memory cache
     PROCESSED_TOKENS.with(|tokens| {
         if let Some(set) = tokens.borrow_mut().as_mut() {
             set.insert(token.to_string());
         }
     });
-
-    // Only store proof-to-lnurl mapping when using LNURL mode (multi-tenant)
-    if is_multi_tenant_enabled() {
-        if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
-            warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
-        }
-    }
 
     info!(
         "✅ ACCEPTED ({} msat stored in CDK database)",

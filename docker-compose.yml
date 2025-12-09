@@ -175,8 +175,6 @@ services:
         poetry run mint
     depends_on:
       - lndnode
-    networks:
-      - l402-network
 
   nginx-lnurl:
     container_name: nginx-lnurl
@@ -203,8 +201,6 @@ services:
     depends_on:
       - redis
       - grpc-content-server
-    networks:
-      - l402-network
 
   nginx-cln:
     container_name: nginx-cln
@@ -224,8 +220,6 @@ services:
     depends_on:
       - cln
       - redis
-    networks:
-      - l402-network
     entrypoint: sh -c "
       until [ -S /root/.lightning/regtest/lightning-rpc ]; do
         echo 'Waiting for lightning-rpc...';
@@ -249,8 +243,6 @@ services:
     depends_on:
       - cln
       - redis
-    networks:
-      - l402-network
 
   nginx-lnd:
     container_name: nginx-lnd
@@ -281,8 +273,6 @@ services:
       - lndnode-receiver
       - cashu-mint
       - redis
-    networks:
-      - l402-network
 
   grpc-content-server:
     container_name: grpc-content-server
@@ -293,13 +283,7 @@ services:
       - "50051:50051"
     environment:
       - RUST_LOG=info
-    networks:
-      - l402-network
     restart: unless-stopped
-
-networks:
-  l402-network:
-    driver: bridge
 
 volumes:
   bitcoin_data:
@@ -308,4 +292,3 @@ volumes:
   cashu-data:
   cln-data:
   redis_data:
-  lnurl-ca-cert:
