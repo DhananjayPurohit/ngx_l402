@@ -13,8 +13,6 @@ services:
       - "28333:28333"
     volumes:
       - bitcoin_data:/root/.bitcoin
-    networks:
-      - l402-network
 
   cln:
     image: elementsproject/lightningd:v25.05
@@ -51,8 +49,6 @@ services:
       - cln-data:/root/.lightning/regtest:rw
     depends_on:
       - bitcoind
-    networks:
-      - l402-network
 
   lndnode:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
@@ -91,8 +87,6 @@ services:
       HOME: /data
     depends_on:
       - bitcoind
-    networks:
-      - l402-network
 
   lndnode-receiver:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
@@ -131,8 +125,6 @@ services:
       HOME: /data
     depends_on:
       - bitcoind
-    networks:
-      - l402-network
 
   redis:
     image: redis:7.2
@@ -142,8 +134,6 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
-    networks:
-      - l402-network
 
   cashu-mint:
     container_name: cashu-mint
