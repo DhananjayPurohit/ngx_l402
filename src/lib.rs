@@ -14,6 +14,7 @@ use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConf
 use ngx::{ngx_log_error, ngx_null_command, ngx_string};
 use redis::Client as RedisClient;
 use redis::Commands;
+use std::collections::HashMap;
 use std::ffi::c_char;
 use std::ffi::CStr;
 use std::os::raw::c_void;
@@ -32,6 +33,55 @@ mod cashu_redemption_logger;
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 static REDIS_CLIENT: OnceLock<Mutex<RedisClient>> = OnceLock::new();
+
+// Cache for LNURL clients - lazy initialization on first use per address
+static LNURL_CLIENT_CACHE: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>>>> = OnceLock::new();
+
+/// Get or create a cached LNURL client for the given address
+/// This function is also used by cashu.rs for multi-tenant redemption
+pub async fn get_or_create_lnurl_client(
+    addr: &str,
+) -> Result<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>, String> {
+    let cache = LNURL_CLIENT_CACHE.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+
+    // Check if we already have a cached client
+    {
+        let cache_guard = cache.lock().await;
+        if let Some(client) = cache_guard.get(addr) {
+            debug!("Using cached LNURL client for: {}", addr);
+            return Ok(client.clone());
+        }
+    }
+
+    // Create a new client
+    info!("Creating new LNURL client for: {}", addr);
+    let ln_client_config = lnclient::LNClientConfig {
+        ln_client_type: "LNURL".to_string(),
+        lnd_config: None,
+        lnurl_config: Some(lnurl::LNURLOptions { address: addr.to_string() }),
+        nwc_config: None,
+        cln_config: None,
+        root_key: std::env::var("ROOT_KEY")
+            .unwrap_or_else(|_| "root_key".to_string())
+            .as_bytes()
+            .to_vec(),
+    };
+
+    match lnurl::LnAddressUrlResJson::new_client(&ln_client_config).await {
+        Ok(ln_client) => {
+            let client_arc = ln_client;
+            // Cache the new client
+            let mut cache_guard = cache.lock().await;
+            cache_guard.insert(addr.to_string(), client_arc.clone());
+            info!("✅ Cached LNURL client for: {}", addr);
+            Ok(client_arc)
+        }
+        Err(e) => {
+            error!("❌ Failed to create LNURL client for {}: {:?}", addr, e);
+            Err(format!("Failed to create LNURL client: {:?}", e))
+        }
+    }
+}
 
 pub struct L402Module {
     middleware: L402Middleware,
@@ -176,6 +226,7 @@ impl L402Module {
         mut caveats: Vec<String>,
         amount_msat: i64,
         timeout_secs: i64,
+        lnurl_addr: Option<String>,
     ) -> Option<String> {
         let ln_invoice = lnrpc::Invoice {
             value_msat: amount_msat,
@@ -183,47 +234,69 @@ impl L402Module {
             ..Default::default()
         };
 
-        let ln_client_conn = lnclient::LNClientConn {
-            ln_client: self.middleware.ln_client.clone(),
-        };
+        debug!("Invoice value: {} msat", amount_msat);
 
-        debug!("🧦 Invoice value: {} msat", amount_msat);
+        // If a per-location LNURL address is provided, use cached LNURL client
+        // Otherwise use the global ln_client from middleware
+        let (invoice, payment_hash) = if let Some(ref addr) = lnurl_addr {
+            debug!("Using per-location LNURL address for invoice: {}", addr);
 
-        match ln_client_conn.generate_invoice(ln_invoice).await {
-            Ok((invoice, payment_hash)) => {
-                debug!("📜 Generated invoice: {}", invoice);
-
-                // Only add expiry time caveat if timeout_secs > 0
-                if timeout_secs > 0 {
-                    let expiry = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64
-                        + timeout_secs;
-                    caveats.push(format!("ExpiresAt = {}", expiry));
+            match get_or_create_lnurl_client(addr).await {
+                Ok(ln_client) => {
+                    let ln_client_conn = lnclient::LNClientConn { ln_client };
+                    match ln_client_conn.generate_invoice(ln_invoice).await {
+                        Ok(result) => result,
+                        Err(e) => {
+                            error!("❌ Error generating invoice via LNURL {}: {:?}", addr, e);
+                            return None;
+                        }
+                    }
                 }
-
-                match macaroon_util::get_macaroon_as_string(
-                    payment_hash,
-                    caveats,
-                    self.middleware.root_key.clone(),
-                ) {
-                    Ok(macaroon_string) => {
-                        let header_value = format!(
-                            "L402 macaroon=\"{}\", invoice=\"{}\"",
-                            macaroon_string, invoice
-                        );
-                        debug!("🍪 Generated macaroon header: {}", header_value);
-                        Some(header_value)
-                    }
-                    Err(error) => {
-                        error!("❌ Error generating macaroon: {}", error);
-                        None
-                    }
+                Err(e) => {
+                    error!("❌ Error getting LNURL client for {}: {}", addr, e);
+                    return None;
                 }
             }
-            Err(e) => {
-                error!("❌ Error generating invoice: {:?}", e);
+        } else {
+            let ln_client_conn = lnclient::LNClientConn {
+                ln_client: self.middleware.ln_client.clone(),
+            };
+            match ln_client_conn.generate_invoice(ln_invoice).await {
+                Ok(result) => result,
+                Err(e) => {
+                    error!("❌ Error generating invoice: {:?}", e);
+                    return None;
+                }
+            }
+        };
+
+        debug!("📜 Generated invoice: {}", invoice);
+
+        // Only add expiry time caveat if timeout_secs > 0
+        if timeout_secs > 0 {
+            let expiry = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                + timeout_secs;
+            caveats.push(format!("ExpiresAt = {}", expiry));
+        }
+
+        match macaroon_util::get_macaroon_as_string(
+            payment_hash,
+            caveats,
+            self.middleware.root_key.clone(),
+        ) {
+            Ok(macaroon_string) => {
+                let header_value = format!(
+                    "L402 macaroon=\"{}\", invoice=\"{}\"",
+                    macaroon_string, invoice
+                );
+                debug!("🍪 Generated macaroon header: {}", header_value);
+                Some(header_value)
+            }
+            Err(error) => {
+                error!("❌ Error generating macaroon: {}", error);
                 None
             }
         }
@@ -492,7 +565,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         amount_msat
     };
 
-    let result = l402_access_handler(auth_header, uri, method, final_amount, caveats.clone(), lnurl_addr);
+    let result = l402_access_handler(auth_header, uri, method, final_amount, caveats.clone(), lnurl_addr.clone());
 
     // Only set L402 header if result is 402
     if result == 402 {
@@ -555,9 +628,10 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         }
 
         // Always send L402 header as well (for Lightning payments)
+        // Pass lnurl_addr for per-location LNURL-based invoice generation
         let header_result = rt.block_on(async {
             module
-                .get_l402_header(caveats.clone(), final_amount, macaroon_timeout)
+                .get_l402_header(caveats.clone(), final_amount, macaroon_timeout, lnurl_addr.clone())
                 .await
         });
 
