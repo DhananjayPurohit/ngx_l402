@@ -1,14 +1,18 @@
 use crate::cashu_redemption_logger;
 use cdk;
+use redis::Commands;
 use cdk::mint_url::MintUrl;
-use l402_middleware::lnclient;
+use l402_middleware::{lnclient, lnurl};
 use log::{debug, error, info, warn};
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
+use crate::REDIS_CLIENT;
+use sha2::{Sha256, Digest};
+use hex;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -31,12 +35,43 @@ static P2PK_PUBLIC_KEY: OnceLock<String> = OnceLock::new();
 // Cashu eCash support flag
 static CASHU_ECASH_ENABLED: OnceLock<bool> = OnceLock::new();
 
+// LN Client for non-LNURL redemption (single-tenant mode)
+static LN_CLIENT: OnceLock<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>> = OnceLock::new();
+static LN_CLIENT_TYPE: OnceLock<String> = OnceLock::new();
+
 pub fn is_p2pk_mode_enabled() -> bool {
     P2PK_MODE_ENABLED.get().copied().unwrap_or(false)
 }
 
 pub fn is_cashu_ecash_enabled() -> bool {
     CASHU_ECASH_ENABLED.get().copied().unwrap_or(false)
+}
+
+/// Check if multi-tenant LNURL mode is enabled (LN_CLIENT_TYPE=LNURL)
+pub fn is_multi_tenant_enabled() -> bool {
+    LN_CLIENT_TYPE.get().map_or(false, |t| t == "LNURL")
+}
+
+/// Initialize the LN client for cashu redemption (called from lib.rs)
+pub fn initialize_ln_client(
+    ln_client: Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>,
+    client_type: String,
+) -> Result<(), String> {
+    LN_CLIENT_TYPE
+        .set(client_type.clone())
+        .map_err(|_| "LN_CLIENT_TYPE already initialized".to_string())?;
+
+    LN_CLIENT
+        .set(ln_client)
+        .map_err(|_| "LN_CLIENT already initialized".to_string())?;
+
+    if is_multi_tenant_enabled() {
+        info!("🏢 Multi-tenant LNURL mode enabled for Cashu redemption");
+    } else {
+        info!("🔧 Single-tenant {} mode enabled for Cashu redemption", client_type);
+    }
+
+    Ok(())
 }
 
 pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
@@ -57,6 +92,7 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
             Ok(db) => {
                 info!("✅ Cashu SQLite database initialized successfully with WAL mode");
                 let _ = CASHU_DB.set(Arc::new(db));
+
                 Ok(())
             }
             Err(e) => {
@@ -110,6 +146,110 @@ pub fn is_mint_whitelisted(mint_url: &str) -> bool {
 
 pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
     WHITELISTED_MINTS.get()
+}
+
+fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, String> {
+    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+
+    let mut client_guard = client.lock()
+        .map_err(|_| "Failed to lock redis client".to_string())?;
+
+    let secret = proof.secret.to_string();
+
+    let mut hasher = Sha256::new();
+    hasher.update(secret.as_bytes());
+
+    let proof_hash = hex::encode(hasher.finalize());
+
+    let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
+    let mut conn = client_guard.get_connection()
+        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+
+    let lnurl: Option<String> = conn.get(&redis_key)
+        .map_err(|e| format!("Failed to get proof mapping: {}", e))?;
+
+    Ok(lnurl)
+}
+
+fn set_proof_to_lnurl(proofs: cdk::nuts::Proofs, lnurl_route: Option<String>) -> Result<(), String> {
+    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+
+    let mut client_guard = client.lock()
+        .map_err(|_| "Failed to lock redis client".to_string())?;
+
+    let lnurl = lnurl_route.unwrap_or_else(|| {
+        std::env::var("LNURL_ADDRESS").unwrap_or_default()
+    });
+
+    if lnurl.is_empty() {
+        return Err("No LNURL address available for cashu token".to_string());
+    }
+
+    let mut conn = client_guard.get_connection()
+        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+
+    for proof in proofs {
+        let secret = proof.secret.to_string();
+
+        let mut hasher = Sha256::new();
+        hasher.update(secret.as_bytes());
+
+        let proof_hash = hex::encode(hasher.finalize());
+
+        let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
+        conn.set::<_, _, ()>(&redis_key, &lnurl)
+            .map_err(|e| format!("Failed to set proof mapping: {}", e))?;
+    }
+
+    Ok(())
+}
+
+/// Remove proof-to-lnurl mappings from Redis after proofs have been melted
+fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String> {
+    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+
+    let client_guard = client.lock()
+        .map_err(|_| "Failed to lock redis client".to_string())?;
+
+    let mut conn = client_guard.get_connection()
+        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+
+    for proof in proofs {
+        let secret = proof.secret.to_string();
+
+        let mut hasher = Sha256::new();
+        hasher.update(secret.as_bytes());
+
+        let proof_hash = hex::encode(hasher.finalize());
+
+        let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
+        let _: Result<(), _> = conn.del(&redis_key)
+            .map_err(|e| format!("Failed to delete proof mapping: {}", e));
+    }
+
+    Ok(())
+}
+
+/// Group proofs by their associated lnurl address for multi-tenant redemption
+fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
+    let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
+    let default_lnurl = std::env::var("LNURL_ADDRESS")
+        .unwrap_or_else(|_| "admin@getalby.com".to_string());
+
+    for proof in proofs {
+        let lnurl = get_lnurl_from_proof(&proof)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| default_lnurl.clone());
+
+        if lnurl.is_empty() {
+            continue;
+        }
+
+        grouped.entry(lnurl).or_insert_with(Vec::new).push(proof);
+    }
+
+    grouped
 }
 
 /// Initialize P2PK mode if enabled
@@ -212,7 +352,7 @@ pub fn generate_payment_request(
     Ok(nut18_encoded)
 }
 
-pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, String> {
+pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
     // Log database status
     debug!("🔍 Verifying Cashu token, checking database connection...");
 
@@ -316,6 +456,14 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
                 mint_url
             );
 
+            if is_multi_tenant_enabled() {
+                let proofs = wallet.get_unspent_proofs().await
+                .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
+                if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
+                    warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                }
+            }
+
             // Add token to processed set after successful receive
             PROCESSED_TOKENS.with(|tokens| {
                 if let Some(set) = tokens.borrow_mut().as_mut() {
@@ -336,7 +484,7 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64) -> Result<bool, S
 
 /// Verify Cashu token using P2PK optimized mode (NUT-24)
 /// Stores proofs directly in CDK database using cached keysets - no mint swap call
-pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64) -> Result<bool, String> {
+pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
     info!("🔐 P2PK mode: Optimized token verification");
 
     // Check memory cache first
@@ -455,7 +603,6 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64) -> Result<bo
     // Instead, we store the P2PK-locked proofs directly in the database as UNSPENT
     // without swapping them. They can be spent later using our private key.
 
-    use cdk::cdk_database::WalletDatabase;
     use cdk::nuts::State;
     use cdk::types::ProofInfo;
 
@@ -485,6 +632,13 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64) -> Result<bo
         .await
         .map_err(|e| format!("Failed to store proofs in database: {:?}", e))?;
 
+
+    if is_multi_tenant_enabled() {
+        if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
+            warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+        }
+    }
+
     // Mark as accepted in memory cache
     PROCESSED_TOKENS.with(|tokens| {
         if let Some(set) = tokens.borrow_mut().as_mut() {
@@ -500,7 +654,7 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64) -> Result<bo
     Ok(true)
 }
 
-pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Result<bool, String> {
+pub async fn redeem_to_lightning() -> Result<bool, String> {
     cashu_redemption_logger::log_redemption("🚀 Starting smart Cashu token redemption process...");
     info!("🚀 Starting smart Cashu token redemption process...");
 
@@ -630,266 +784,348 @@ pub async fn redeem_to_lightning(ln_client_conn: &lnclient::LNClientConn) -> Res
             continue;
         }
 
-        // Convert to msats if needed
-        let total_amount_msat = if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
-            total_amount * MSAT_PER_SAT
-        } else {
-            total_amount
-        };
-
         let msg = format!(
-            "💰 Found {} proofs with total value {} msat for mint {}",
+            "💰 Found {} proofs for mint {}",
             proofs.len(),
-            total_amount_msat,
             wallet.mint_url
         );
         info!("{}", msg);
         cashu_redemption_logger::log_redemption(&msg);
 
-        // Check minimum balance threshold
-        if total_amount_msat < minimum_for_redemption_msat {
+        // Check if multi-tenant LNURL mode is enabled. Simply checks if lnclient is lnurl for now
+        let is_multi_tenant = is_multi_tenant_enabled();
+
+        // Build proof groups based on mode
+        let proof_groups: Vec<(String, cdk::nuts::Proofs)> = if is_multi_tenant {
+            // Multi-tenant: group proofs by their lnurl address
+            let proofs_by_lnurl = group_proofs_by_lnurl(proofs);
             let msg = format!(
-                "⏳ Skipping redemption for {} - balance {} msat is below minimum {} msat",
-                wallet.mint_url, total_amount_msat, minimum_for_redemption_msat
+                "Multi-tenant mode: Grouped proofs into {} tenant(s) for mint {}",
+                proofs_by_lnurl.len(),
+                wallet.mint_url
             );
             info!("{}", msg);
             cashu_redemption_logger::log_redemption(&msg);
-            continue;
-        }
-
-        // Calculate fee reserve based on percentage with minimum fallback
-        let percentage_fee_msat =
-            ((total_amount_msat as f64) * (fee_reserve_percent / 100.0)) as u64;
-        let fee_reserve_msat = percentage_fee_msat.max(min_fee_reserve_msat);
-
-        let msg = format!("💰 Fee calculation: {} msat total * {}% = {} msat, using max({}, {}) = {} msat reserve", 
-            total_amount_msat, fee_reserve_percent, percentage_fee_msat,
-            percentage_fee_msat, min_fee_reserve_msat, fee_reserve_msat);
-        info!("{}", msg);
-        cashu_redemption_logger::log_redemption(&msg);
-
-        // Ensure we have enough after fee reserve
-        if total_amount_msat <= fee_reserve_msat {
+            proofs_by_lnurl.into_iter().collect()
+        } else {
+            // Single-tenant: all proofs go to the configured LN client (LND, CLN, NWC, or LNURL)
+            let client_type = LN_CLIENT_TYPE.get().map_or("default", |s| s.as_str());
             let msg = format!(
-                "⚠️ Insufficient balance after fee reserve: {} msat total <= {} msat fees",
-                total_amount_msat, fee_reserve_msat
+                "🔧 Single-tenant {} mode: All {} proofs for mint {}",
+                client_type,
+                proofs.len(),
+                wallet.mint_url
             );
-            warn!("{}", msg);
+            info!("{}", msg);
             cashu_redemption_logger::log_redemption(&msg);
-            continue;
-        }
+            vec![(client_type.to_string(), proofs)]
+        };
 
-        // Select proofs to melt based on configured limit
-        let (proofs_to_melt, selected_total_msat) =
-            if max_proofs_per_melt > 0 && proofs.len() > max_proofs_per_melt {
-                // Limit exceeded - select only the configured number of proofs
-                let selected_proofs: Vec<_> =
-                    proofs.iter().take(max_proofs_per_melt).cloned().collect();
+        // Process each proof group
+        for (client_id, group_proofs) in proof_groups {
+            let msg = format!(
+                "🔄 Processing {} proofs for client: {}",
+                group_proofs.len(),
+                client_id
+            );
+            info!("{}", msg);
+            cashu_redemption_logger::log_redemption(&msg);
 
-                // Calculate total value of selected proofs
-                let selected_total: u64 = selected_proofs
-                    .iter()
-                    .map(|p| {
-                        let amount: u64 = p.amount.into();
-                        if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
-                            amount * MSAT_PER_SAT
-                        } else {
-                            amount
-                        }
-                    })
-                    .sum();
+            // Calculate total amount for this group
+            let group_total_msat: u64 = group_proofs
+                .iter()
+                .map(|p| {
+                    let amount: u64 = p.amount.into();
+                    if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
+                        amount * MSAT_PER_SAT
+                    } else {
+                        amount
+                    }
+                })
+                .sum();
 
+            // Check minimum balance threshold for this group
+            if group_total_msat < minimum_for_redemption_msat {
                 let msg = format!(
-                    "⚠️ Have {} proofs (>{} limit) - selecting first {} proofs worth {} sats",
-                    proofs.len(),
-                    max_proofs_per_melt,
-                    selected_proofs.len(),
-                    selected_total / MSAT_PER_SAT
+                    "⏳ Skipping {} - balance {} msat is below minimum {} msat",
+                    client_id, group_total_msat, minimum_for_redemption_msat
                 );
                 info!("{}", msg);
-                cashu_redemption_logger::log_redemption(&msg);
-
-                let msg = format!(
-                    "💡 {} proofs ({} sats) will remain for next redemption cycle",
-                    proofs.len() - selected_proofs.len(),
-                    (total_amount_msat - selected_total) / MSAT_PER_SAT
-                );
-                info!("{}", msg);
-                cashu_redemption_logger::log_redemption(&msg);
-
-                (selected_proofs, selected_total)
-            } else {
-                // No limit or under limit - use all proofs
-                (proofs.clone(), total_amount_msat)
-            };
-
-        // Calculate fee reserve based on selected proofs
-        let percentage_fee_selected =
-            ((selected_total_msat as f64) * (fee_reserve_percent / 100.0)) as u64;
-        let fee_reserve_selected_msat = percentage_fee_selected.max(min_fee_reserve_msat);
-        let redeemable_amount_msat = selected_total_msat - fee_reserve_selected_msat;
-
-        let msg = format!("💡 Redemption plan: {} proofs → {} msat total - {} msat fee reserve = {} msat redeemable", 
-            proofs_to_melt.len(), selected_total_msat, fee_reserve_selected_msat, redeemable_amount_msat);
-        info!("{}", msg);
-        cashu_redemption_logger::log_redemption(&msg);
-
-        // Generate Lightning invoice for the redeemable amount
-        let memo = format!(
-            "Redeeming {} proofs from {}",
-            proofs_to_melt.len(),
-            wallet.mint_url
-        );
-        cashu_redemption_logger::log_redemption(&format!(
-            "📝 Generating Lightning invoice for {} msat",
-            redeemable_amount_msat
-        ));
-
-        let (invoice, _payment_hash) = match ln_client_conn
-            .generate_invoice(lnrpc::Invoice {
-                value_msat: redeemable_amount_msat as i64,
-                memo: memo.clone(),
-                ..Default::default()
-            })
-            .await
-        {
-            Ok((invoice, payment_hash)) => {
-                cashu_redemption_logger::log_redemption(&format!(
-                    "✅ Generated invoice: payment_hash={}",
-                    payment_hash
-                ));
-                (invoice, payment_hash)
-            }
-            Err(e) => {
-                let msg = format!(
-                    "❌ Failed to generate invoice for {}: {}",
-                    wallet.mint_url, e
-                );
-                error!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
                 continue;
             }
-        };
 
-        // Get melt quote with the redeemable amount
-        cashu_redemption_logger::log_redemption(&format!(
-            "🔥 Getting melt quote for {} proofs...",
-            proofs_to_melt.len()
-        ));
+            // Select proofs to melt based on configured limit
+            let (proofs_to_melt, selected_total_msat) =
+                if max_proofs_per_melt > 0 && group_proofs.len() > max_proofs_per_melt {
+                    let selected_proofs: Vec<_> =
+                        group_proofs.iter().take(max_proofs_per_melt).cloned().collect();
+                    let selected_total: u64 = selected_proofs
+                        .iter()
+                        .map(|p| {
+                            let amount: u64 = p.amount.into();
+                            if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
+                                amount * MSAT_PER_SAT
+                            } else {
+                                amount
+                            }
+                        })
+                        .sum();
 
-        let quote = match wallet_clone.melt_quote(invoice.clone(), None).await {
-            Ok(q) => {
-                // Quote amounts are in the wallet's unit (sats), need to convert to msat for comparison
-                let actual_fee_reserve_sats: u64 = q.fee_reserve.into();
-                let amount_sats: u64 = q.amount.into();
+                    let msg = format!(
+                        "⚠️ Limiting to {} proofs ({} sats) for {}",
+                        selected_proofs.len(),
+                        selected_total / MSAT_PER_SAT,
+                        client_id
+                    );
+                    info!("{}", msg);
+                    cashu_redemption_logger::log_redemption(&msg);
 
-                // Convert to msat based on wallet unit
-                let (actual_fee_reserve_msat, amount_msat) =
-                    if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
-                        (
-                            actual_fee_reserve_sats * MSAT_PER_SAT,
-                            amount_sats * MSAT_PER_SAT,
-                        )
-                    } else {
-                        // Already in msat
-                        (actual_fee_reserve_sats, amount_sats)
-                    };
+                    (selected_proofs, selected_total)
+                } else {
+                    (group_proofs.clone(), group_total_msat)
+                };
 
-                let msg = format!("📋 Melt quote: amount={} sats ({} msat), actual_fee_reserve={} sats ({} msat), we reserved {} msat", 
-                    amount_sats, amount_msat, actual_fee_reserve_sats, actual_fee_reserve_msat, fee_reserve_selected_msat);
-                info!("{}", msg);
+            // Calculate fee reserve
+            let percentage_fee_selected =
+                ((selected_total_msat as f64) * (fee_reserve_percent / 100.0)) as u64;
+            let fee_reserve_selected_msat = percentage_fee_selected.max(min_fee_reserve_msat);
+
+            if selected_total_msat <= fee_reserve_selected_msat {
+                let msg = format!(
+                    "⚠️ Insufficient balance after fee reserve for {}: {} msat <= {} msat fees",
+                    client_id, selected_total_msat, fee_reserve_selected_msat
+                );
+                warn!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
+                continue;
+            }
 
-                // Verify our fee reserve was sufficient
-                let required_total_msat = amount_msat + actual_fee_reserve_msat;
-                if selected_total_msat < required_total_msat {
-                    let msg = format!("⚠️ Fee reserve insufficient: {} msat available < {} msat required ({} + {})", 
-                        selected_total_msat, required_total_msat, amount_msat, actual_fee_reserve_msat);
-                    warn!("{}", msg);
+            let redeemable_amount_msat = selected_total_msat - fee_reserve_selected_msat;
+
+            let msg = format!(
+                "💡 Redemption plan for {}: {} proofs → {} msat - {} msat fees = {} msat",
+                client_id, proofs_to_melt.len(), selected_total_msat,
+                fee_reserve_selected_msat, redeemable_amount_msat
+            );
+            info!("{}", msg);
+            cashu_redemption_logger::log_redemption(&msg);
+
+            // Generate Lightning invoice
+            let memo = format!(
+                "Redeeming {} proofs from {} for {}",
+                proofs_to_melt.len(),
+                wallet.mint_url,
+                client_id
+            );
+
+            let (invoice, _payment_hash) = if is_multi_tenant {
+                // Multi-tenant LNURL mode: Create LNURL client for each tenant's address
+                let ln_client_config = lnclient::LNClientConfig {
+                    ln_client_type: "LNURL".to_string(),
+                    lnd_config: None,
+                    lnurl_config: Some(lnurl::LNURLOptions { address: client_id.clone() }),
+                    nwc_config: None,
+                    cln_config: None,
+                    root_key: std::env::var("ROOT_KEY")
+                        .unwrap_or_else(|_| "root_key".to_string())
+                        .as_bytes()
+                        .to_vec(),
+                };
+
+                match lnurl::LnAddressUrlResJson::new_client(&ln_client_config).await {
+                    Ok(ln_client) => {
+                        let ln_client_conn = lnclient::LNClientConn { ln_client };
+                        match ln_client_conn
+                            .generate_invoice(lnrpc::Invoice {
+                                value_msat: redeemable_amount_msat as i64,
+                                memo: memo.clone(),
+                                ..Default::default()
+                            })
+                            .await
+                        {
+                            Ok((invoice, payment_hash)) => {
+                                cashu_redemption_logger::log_redemption(&format!(
+                                    "✅ Generated invoice via LNURL {}: payment_hash={}",
+                                    client_id, payment_hash
+                                ));
+                                (invoice, payment_hash)
+                            }
+                            Err(e) => {
+                                let msg = format!(
+                                    "❌ Failed to generate invoice via LNURL {}: {}",
+                                    client_id, e
+                                );
+                                error!("{}", msg);
+                                cashu_redemption_logger::log_redemption(&msg);
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!(
+                            "❌ Failed to create LNURL client for {}: {}",
+                            client_id, e
+                        );
+                        error!("{}", msg);
+                        cashu_redemption_logger::log_redemption(&msg);
+                        continue;
+                    }
+                }
+            } else {
+                // Single-tenant mode: Use the configured LN client (LND, CLN, NWC, or default LNURL)
+                let ln_client = match LN_CLIENT.get() {
+                    Some(client) => client.clone(),
+                    None => {
+                        let msg = "❌ LN client not initialized for single-tenant redemption";
+                        error!("{}", msg);
+                        cashu_redemption_logger::log_redemption(msg);
+                        continue;
+                    }
+                };
+
+                let ln_client_conn = lnclient::LNClientConn { ln_client };
+                match ln_client_conn
+                    .generate_invoice(lnrpc::Invoice {
+                        value_msat: redeemable_amount_msat as i64,
+                        memo: memo.clone(),
+                        ..Default::default()
+                    })
+                    .await
+                {
+                    Ok((invoice, payment_hash)) => {
+                        let client_type = LN_CLIENT_TYPE.get().map_or("unknown", |s| s.as_str());
+                        cashu_redemption_logger::log_redemption(&format!(
+                            "✅ Generated invoice via {}: payment_hash={}",
+                            client_type, payment_hash
+                        ));
+                        (invoice, payment_hash)
+                    }
+                    Err(e) => {
+                        let msg = format!("❌ Failed to generate invoice: {}", e);
+                        error!("{}", msg);
+                        cashu_redemption_logger::log_redemption(&msg);
+                        continue;
+                    }
+                }
+            };
+
+            // Get melt quote
+            cashu_redemption_logger::log_redemption(&format!(
+                "🔥 Getting melt quote for {} proofs...",
+                proofs_to_melt.len()
+            ));
+
+            let quote = match wallet_clone.melt_quote(invoice.clone(), None).await {
+                Ok(q) => {
+                    let actual_fee_reserve_sats: u64 = q.fee_reserve.into();
+                    let amount_sats: u64 = q.amount.into();
+                    let (actual_fee_reserve_msat, amount_msat) =
+                        if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
+                            (actual_fee_reserve_sats * MSAT_PER_SAT, amount_sats * MSAT_PER_SAT)
+                        } else {
+                            (actual_fee_reserve_sats, amount_sats)
+                        };
+
+                    let msg = format!(
+                        "📋 Melt quote for {}: amount={} msat, fee_reserve={} msat",
+                        client_id, amount_msat, actual_fee_reserve_msat
+                    );
+                    info!("{}", msg);
+                    cashu_redemption_logger::log_redemption(&msg);
+
+                    let required_total_msat = amount_msat + actual_fee_reserve_msat;
+                    if selected_total_msat < required_total_msat {
+                        let msg = format!(
+                            "⚠️ Fee reserve insufficient for {}: {} msat < {} msat required",
+                            client_id, selected_total_msat, required_total_msat
+                        );
+                        warn!("{}", msg);
+                        cashu_redemption_logger::log_redemption(&msg);
+                        continue;
+                    }
+
+                    q
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "❌ Failed to create melt quote for {}: {}",
+                        client_id, e
+                    );
+                    error!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
                     continue;
                 }
+            };
 
-                if actual_fee_reserve_msat > fee_reserve_selected_msat {
-                    let msg = format!("⚠️ Actual fees ({} msat) higher than reserve ({} msat) - consider increasing fee reserve percentage", 
-                        actual_fee_reserve_msat, fee_reserve_selected_msat);
-                    warn!("{}", msg);
-                    cashu_redemption_logger::log_redemption(&msg);
-                }
+            // Melt the proofs
+            let melt_result = if is_p2pk_mode_enabled() {
+                if let Some(private_key_hex) = P2PK_PRIVATE_KEY.get() {
+                    if let Ok(private_key) = cdk::nuts::SecretKey::from_hex(private_key_hex) {
+                        info!(
+                            "🔓 Melting {} P2PK-locked proofs for {}",
+                            proofs_to_melt.len(),
+                            client_id
+                        );
 
-                q
-            }
-            Err(e) => {
-                let msg = format!(
-                    "❌ Failed to create melt quote for {}: {}",
-                    wallet.mint_url, e
-                );
-                error!("{}", msg);
-                cashu_redemption_logger::log_redemption(&msg);
-                continue;
-            }
-        };
-
-        // Melt the proofs - if P2PK mode, we need to use melt_proofs with signing keys
-        let melt_result = if is_p2pk_mode_enabled() {
-            if let Some(private_key_hex) = P2PK_PRIVATE_KEY.get() {
-                if let Ok(private_key) = cdk::nuts::SecretKey::from_hex(private_key_hex) {
-                    info!(
-                        "🔓 Melting {} P2PK-locked proofs with witness signature",
-                        proofs_to_melt.len()
-                    );
-
-                    // Sign the selected proofs with our private key
-                    let mut signed_proofs = proofs_to_melt.clone();
-                    for proof in &mut signed_proofs {
-                        if let Err(e) = proof.sign_p2pk(private_key.clone()) {
-                            error!("❌ Failed to sign proof: {:?}", e);
+                        let mut signed_proofs = proofs_to_melt.clone();
+                        for proof in &mut signed_proofs {
+                            if let Err(e) = proof.sign_p2pk(private_key.clone()) {
+                                error!("❌ Failed to sign proof: {:?}", e);
+                            }
                         }
-                    }
 
-                    // Use melt_proofs with signed selected proofs
-                    wallet_clone.melt_proofs(&quote.id, signed_proofs).await
+                        wallet_clone.melt_proofs(&quote.id, signed_proofs).await
+                    } else {
+                        wallet_clone.melt(&quote.id).await
+                    }
                 } else {
-                    // Fallback to regular melt
                     wallet_clone.melt(&quote.id).await
                 }
             } else {
                 wallet_clone.melt(&quote.id).await
-            }
-        } else {
-            wallet_clone.melt(&quote.id).await
-        };
+            };
 
-        // Process melt result
-        match melt_result {
-            Ok(result) => {
-                let result_msg = format!("🔍 Melt result: {:?}", result);
-                info!("{}", result_msg);
-                cashu_redemption_logger::log_redemption(&result_msg);
+            // Process melt result
+            match melt_result {
+                Ok(result) => {
+                    let result_msg = format!("🔍 Melt result for {}: {:?}", client_id, result);
+                    info!("{}", result_msg);
+                    cashu_redemption_logger::log_redemption(&result_msg);
 
-                // Convert actual fees from quote (in sats) to msat
-                let actual_fees_sats: u64 = quote.fee_reserve.into();
-                let actual_fees_msat = if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
-                    actual_fees_sats * MSAT_PER_SAT
-                } else {
-                    actual_fees_sats
-                };
-                total_fees_paid_msat += actual_fees_msat;
+                    let actual_fees_sats: u64 = quote.fee_reserve.into();
+                    let actual_fees_msat = if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
+                        actual_fees_sats * MSAT_PER_SAT
+                    } else {
+                        actual_fees_sats
+                    };
+                    total_fees_paid_msat += actual_fees_msat;
 
-                let msg = format!("✅ Successfully redeemed {} proofs: {} msat to Lightning, {} msat fees, {} msat total", 
-                    proofs_to_melt.len(), redeemable_amount_msat, actual_fees_msat, selected_total_msat);
-                info!("{}", msg);
-                cashu_redemption_logger::log_redemption(&msg);
-                total_redeemed += proofs_to_melt.len();
-                total_amount_redeemed_msat += redeemable_amount_msat;
+                    let msg = format!(
+                        "✅ Redeemed {} proofs for {}: {} msat to Lightning",
+                        proofs_to_melt.len(), client_id, redeemable_amount_msat
+                    );
+                    info!("{}", msg);
+                    cashu_redemption_logger::log_redemption(&msg);
+                    total_redeemed += proofs_to_melt.len();
+                    total_amount_redeemed_msat += redeemable_amount_msat;
+
+                    // Clean up Redis proof-to-lnurl mappings for melted proofs
+                    if let Err(e) = remove_proof_lnurl_mappings(&proofs_to_melt) {
+                        warn!("⚠️ Failed to clean up proof mappings for {}: {}", client_id, e);
+                    }
+                }
+                Err(e) => {
+                    let msg = format!(
+                        "❌ Failed to melt proofs for {}: {}",
+                        client_id, e
+                    );
+                    error!("{}", msg);
+                    cashu_redemption_logger::log_redemption(&msg);
+                }
             }
-            Err(e) => {
-                let msg = format!("❌ Failed to melt proofs for {}: {}", wallet.mint_url, e);
-                error!("{}", msg);
-                cashu_redemption_logger::log_redemption(&msg);
-            }
-        }
-    }
+        } // end of lnurl group loop
+    } // end of mint loop
 
     let msg = format!(
         "✅ Smart Cashu redemption completed: {} proofs → {} msat to Lightning + {} msat fees",

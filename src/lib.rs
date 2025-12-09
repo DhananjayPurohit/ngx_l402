@@ -229,14 +229,14 @@ impl L402Module {
         }
     }
 
-    pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64) -> Result<bool, String> {
+    pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
         // Check if P2PK mode is enabled (use initialized state, not env vars)
         if cashu::is_p2pk_mode_enabled() {
             info!("🔐 Using P2PK local verification mode");
-            cashu::verify_cashu_token_p2pk(token, amount_msat).await
+            cashu::verify_cashu_token_p2pk(token, amount_msat, lnurl_addr).await
         } else {
             info!("💰 Using standard Cashu verification (with mint receive)");
-            cashu::verify_cashu_token(token, amount_msat).await
+            cashu::verify_cashu_token(token, amount_msat, lnurl_addr).await
         }
     }
 
@@ -309,9 +309,10 @@ pub struct ModuleConfig {
     enable: bool,
     amount_msat: i64,
     macaroon_timeout: i64,
+    lnurl_addr: Option<String>,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 4] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 5] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -332,6 +333,14 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 4] = [
         name: ngx_string!("l402_macaroon_timeout"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_timeout_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_lnurl_addr"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_l402_lnurl_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -400,6 +409,9 @@ impl Merge for ModuleConfig {
         if prev.macaroon_timeout > 0 && self.macaroon_timeout == 0 {
             self.macaroon_timeout = prev.macaroon_timeout;
         }
+        if self.lnurl_addr.is_none() && prev.lnurl_addr.is_some() {
+            self.lnurl_addr = prev.lnurl_addr.clone();
+        }
         Ok(())
     }
 }
@@ -409,7 +421,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let log_ref = log as *mut ngx_log_s;
 
     // Check if L402 is enabled for this location
-    let (auth_header, uri, method, amount_msat, macaroon_timeout) = unsafe {
+    let (auth_header, uri, method, amount_msat, macaroon_timeout, lnurl_addr) = unsafe {
         let r = &mut *request;
         let auth_header = if !r.headers_in.authorization.is_null() {
             Some(
@@ -451,12 +463,15 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             return 500;
         }
 
+        let lnurl_addr = conf.lnurl_addr.clone();
+
         (
             auth_header,
             uri.clone(),
             method,
             amount_msat,
             macaroon_timeout,
+            lnurl_addr,
         )
     };
 
@@ -477,7 +492,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         amount_msat
     };
 
-    let result = l402_access_handler(auth_header, uri, method, final_amount, caveats.clone());
+    let result = l402_access_handler(auth_header, uri, method, final_amount, caveats.clone(), lnurl_addr);
 
     // Only set L402 header if result is 402
     if result == 402 {
@@ -572,6 +587,7 @@ pub fn l402_access_handler(
     method: u32,
     amount_msat: i64,
     caveats: Vec<String>,
+    lnurl_addr: Option<String>,
 ) -> isize {
     let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
 
@@ -597,7 +613,7 @@ pub fn l402_access_handler(
             });
 
             let verify_result =
-                rt.block_on(async { module.verify_cashu_token(&token, amount_msat).await });
+                rt.block_on(async { module.verify_cashu_token(&token, amount_msat, lnurl_addr.clone()).await });
 
             match verify_result {
                 Ok(true) => {
@@ -755,6 +771,13 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             let rt = Runtime::new().expect("Failed to create runtime");
             let module = rt.block_on(async { L402Module::new().await });
 
+            // Initialize LN client for cashu redemption
+            let ln_client = module.middleware.ln_client.clone();
+            let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
+            if let Err(e) = cashu::initialize_ln_client(ln_client, ln_client_type) {
+                error!("⚠️ Failed to initialize LN client for cashu: {}", e);
+            }
+
             unsafe {
                 MODULE = Some(module);
             }
@@ -788,7 +811,6 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             .unwrap_or(3600);
 
         let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
-        let ln_client = module.middleware.ln_client.clone();
 
         // Spawn redemption task in a separate thread to avoid blocking nginx
         let _ = std::thread::Builder::new()
@@ -814,10 +836,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
 
                     // Run async redemption in the tokio runtime
                     let result = thread_rt.block_on(async {
-                        let ln_client_conn = lnclient::LNClientConn {
-                            ln_client: ln_client.clone(),
-                        };
-                        cashu::redeem_to_lightning(&ln_client_conn).await
+                        cashu::redeem_to_lightning().await
                     });
 
                     match result {
@@ -945,6 +964,30 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
             }
         }
     };
+
+    std::ptr::null_mut()
+}
+
+pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args = (*(*cf).args).elts as *mut ngx_str_t;
+
+        let val = (*args.add(1)).to_str().trim();
+
+        let lnurl_addr = if !val.is_empty() {
+            val.to_string()
+        } else {
+            std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "admin@getalby.com".to_string())
+        };
+
+        conf.lnurl_addr = Some(lnurl_addr.clone());
+        info!("Set L402 LNURL address to: {}", lnurl_addr);
+    }
 
     std::ptr::null_mut()
 }
