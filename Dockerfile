@@ -8,9 +8,6 @@ COPY index.html /usr/share/nginx/html/protected-timeout/index.html
 COPY index.html /usr/share/nginx/html/tenant1/index.html
 COPY index.html /usr/share/nginx/html/tenant2/index.html
 
-# Create directory for shared CA certs
-RUN mkdir -p /app/shared-certs
-
 USER root
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

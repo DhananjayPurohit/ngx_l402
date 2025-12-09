@@ -254,7 +254,7 @@ Environment=CASHU_REDEEM_ON_LIGHTNING=true
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=60
 ```
 
-> **Note**: For full multi-tenant support with different LN backends per route (e.g., tenant1 uses LND, tenant2 uses NWC), additional configuration options will be added in future releases.
+> **Note**: Right now, the module only supports multi-tenant for lnurl with cashu only
 
 5. Set up SQLite database directory (if accepting Cashu tokens):
 ```bash
