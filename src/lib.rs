@@ -982,7 +982,7 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
         let lnurl_addr = if !val.is_empty() {
             val.to_string()
         } else {
-            std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "lnurl_address".to_string())
+            std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "admin@getalby.com".to_string())
         };
 
         conf.lnurl_addr = Some(lnurl_addr.clone());

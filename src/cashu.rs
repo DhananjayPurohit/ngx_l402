@@ -1,6 +1,6 @@
 use crate::cashu_redemption_logger;
 use cdk;
-use redis::{Commands};
+use redis::Commands;
 use cdk::mint_url::MintUrl;
 use l402_middleware::{lnclient, lnurl};
 use log::{debug, error, info, warn};
@@ -223,7 +223,8 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
         let proof_hash = hex::encode(hasher.finalize());
 
         let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
-        let _: Result<(), _> = conn.del(&redis_key);
+        let _: Result<(), _> = conn.del(&redis_key)
+            .map_err(|e| format!("Failed to delete proof mapping: {}", e));
     }
 
     Ok(())
