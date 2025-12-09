@@ -229,11 +229,6 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
     Ok(())
 }
 
-{
- cashu:proof_lnurl:p1: lnurl1,
- cashu:proof_lnurl:p2: lnurl2,
-}
-
 /// Group proofs by their associated lnurl address for multi-tenant redemption
 fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
