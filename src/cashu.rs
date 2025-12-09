@@ -2,7 +2,7 @@ use crate::cashu_redemption_logger;
 use cdk;
 use redis::Commands;
 use cdk::mint_url::MintUrl;
-use l402_middleware::{lnclient, lnurl};
+use l402_middleware::lnclient;
 use log::{debug, error, info, warn};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -920,20 +920,8 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
             );
 
             let (invoice, _payment_hash) = if is_multi_tenant {
-                // Multi-tenant LNURL mode: Create LNURL client for each tenant's address
-                let ln_client_config = lnclient::LNClientConfig {
-                    ln_client_type: "LNURL".to_string(),
-                    lnd_config: None,
-                    lnurl_config: Some(lnurl::LNURLOptions { address: client_id.clone() }),
-                    nwc_config: None,
-                    cln_config: None,
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
-                };
-
-                match lnurl::LnAddressUrlResJson::new_client(&ln_client_config).await {
+                // Multi-tenant LNURL mode: Use cached LNURL client for each tenant's address
+                match crate::get_or_create_lnurl_client(&client_id).await {
                     Ok(ln_client) => {
                         let ln_client_conn = lnclient::LNClientConn { ln_client };
                         match ln_client_conn
@@ -964,7 +952,7 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     }
                     Err(e) => {
                         let msg = format!(
-                            "❌ Failed to create LNURL client for {}: {}",
+                            "❌ Failed to get LNURL client for {}: {}",
                             client_id, e
                         );
                         error!("{}", msg);

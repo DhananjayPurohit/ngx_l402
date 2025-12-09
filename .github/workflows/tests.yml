@@ -135,6 +135,38 @@ jobs:
             exit 1
           fi
 
+          echo "Testing Multi-tenant LNURL Lightning invoice generation..."
+
+          # Test tenant1 route - should generate invoice to hello@getalby.com
+          echo "Testing tenant1 route..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/tenant1)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Tenant1 route returned status $status_code, expected 402"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+
+          # Check if WWW-Authenticate header is present for tenant1
+          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
+            echo "Error: WWW-Authenticate header is missing for tenant1"
+            echo "$response"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+
+          # Extract invoice from tenant1 response
+          invoice_tenant1=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice_tenant1" ]; then
+            echo "Error: No invoice found for tenant1"
+            echo "$response"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+          echo "✅ Tenant1 returned L402 challenge with invoice: ${invoice_tenant1:0:50}..."
+
+          echo "✅ Multi-tenant LNURL Lightning integration tests completed!"
+
       - name: Run Integration Tests - gRPC
         run: |
           docker logs grpc-content-server
