@@ -149,8 +149,31 @@ pub fn get_payment_html(
                     const authHeader = 'L402 ' + macaroon + ':' + preimage;
                     
                     // Reload with header
-                    // After successful payment, reload the page to get access.
-                    window.location.reload();
+                    // After successful payment, fetch the page with L402 header and replace content.
+                    fetch(window.location.href, {
+                        headers: {
+                            'Authorization': authHeader
+                        }
+                    })
+                    .then(res => {
+                        if (res.ok) {
+                            const contentType = res.headers.get("content-type");
+                            if (contentType && contentType.indexOf("application/json") !== -1) {
+                                return res.json().then(data => {
+                                    document.body.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+                                });
+                            } else {
+                                return res.text().then(html => {
+                                    document.open();
+                                    document.write(html);
+                                    document.close();
+                                });
+                            }
+                        } else {
+                            alert('Payment failed or invalid L402 authentication');
+                        }
+                    })
+                    .catch(err => alert('Error: ' + err));
                 }} catch (err) {{
                     console.error('WebLN error:', err);
                 }}
