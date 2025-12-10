@@ -188,7 +188,7 @@ pub fn get_payment_html(
 </html>
 "#,
         amount = amount_msat / 1000,
-        short_invoice = &invoice[..invoice.len().min(20)],
+        short_invoice = invoice.chars().take(20).collect::<String>(),
         invoice = invoice,
         macaroon = macaroon,
         cashu_section = cashu_section
