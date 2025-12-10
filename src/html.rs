@@ -155,8 +155,32 @@ pub fn get_payment_html(
                     console.error('WebLN error:', err);
                 }}
             }} else {{
-                // Manual payment polling is not supported for L402 authentication.
-                // Please use a compatible wallet or browser extension (e.g., Alby) to pay and authenticate.
+                // Manual payment polling for L402 authentication.
+                // If you pay manually, we'll check for payment every few seconds.
+                document.body.insertAdjacentHTML('beforeend', `
+                    <div id="polling-msg" style="text-align:center; margin-top:1em; color:#444;">
+                        <p>Waiting for payment confirmation...<br>
+                        If you paid manually, this page will unlock automatically once payment is detected.</p>
+                    </div>
+                `);
+                async function pollPaymentStatus() {
+                    try {
+                        // Replace '/check_invoice_paid' with your actual endpoint
+                        const resp = await fetch('/check_invoice_paid?invoice=' + encodeURIComponent(invoice));
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            if (data.paid) {
+                                // Payment detected, reload to access resource
+                                window.location.reload();
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        // Ignore errors, try again
+                    }
+                    setTimeout(pollPaymentStatus, 3000);
+                }
+                pollPaymentStatus();
             }}
         }});
     </script>
