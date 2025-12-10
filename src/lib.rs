@@ -722,18 +722,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
 
 // Helper to parse WWW-Authenticate header value
-fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invoice)
-    let mac_start = header.find("macaroon=\"").map(|i| i + 10).unwrap_or(0);
-    let mac_end = header[mac_start..].find("\"").map(|i| mac_start + i).unwrap_or(header.len());
-    let macaroon = header[mac_start..mac_end].to_string();
-
-    let inv_start = header.find("invoice=\"").map(|i| i + 9).unwrap_or(0);
-    let inv_end = header[inv_start..].find("\"").map(|i| inv_start + i).unwrap_or(header.len());
-    let invoice = header[inv_start..inv_end].to_string();
-
-    (macaroon, invoice)
-}
-
 // FFI helper to send HTML response
 
         match header_result {
