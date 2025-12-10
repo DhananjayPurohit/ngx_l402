@@ -720,7 +720,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 .await
         });
 
-mod html;
 
 // Helper to parse WWW-Authenticate header value
 fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invoice)
