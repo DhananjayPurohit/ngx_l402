@@ -720,7 +720,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 .await
         });
 
-
 // Helper to parse WWW-Authenticate header value
 // FFI helper to send HTML response
                 // Fallback: Check User-Agent for Mozilla/Chrome/Safari
