@@ -125,13 +125,8 @@ pub fn get_payment_html(
                     const authHeader = 'L402 ' + macaroon + ':' + preimage;
                     
                     // Reload with header
-                    fetch(window.location.href, {{
-                        headers: {{ 'Authorization': authHeader }}
-                    }}).then(res => res.text()).then(html => {{
-                        document.open();
-                        document.write(html);
-                        document.close();
-                    }});
+                    // After successful payment, reload the page to get access.
+                    window.location.reload();
                 }} catch (err) {{
                     console.error('WebLN error:', err);
                 }}
