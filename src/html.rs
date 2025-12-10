@@ -90,26 +90,50 @@ pub fn get_payment_html(
                     'Authorization': 'Cashu ' + token
                 }}
             }})
-            .then(res => {{
+            .then(async res => {{
                 if (res.ok) {{
                     // Determine content type of response
                     const contentType = res.headers.get("content-type");
                     if (contentType && contentType.indexOf("application/json") !== -1) {{
-                        return res.json().then(data => {{
-                           document.body.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
-                        }});
+                        const data = await res.json();
+                        document.body.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
                     }} else {{
-                        return res.text().then(html => {{
-                            document.open();
-                            document.write(html);
-                            document.close();
-                        }});
+                        const html = await res.text();
+                        document.open();
+                        document.write(html);
+                        document.close();
                     }}
                 }} else {{
-                    alert('Payment failed or invalid token');
+                    let errorMsg = 'Payment failed or invalid token';
+                    try {{
+                        const contentType = res.headers.get("content-type");
+                        if (contentType && contentType.indexOf("application/json") !== -1) {{
+                            const errData = await res.json();
+                            if (errData && errData.error) {{
+                                errorMsg = errData.error;
+                            }} else if (errData && errData.message) {{
+                                errorMsg = errData.message;
+                            }}
+                        }} else {{
+                            const text = await res.text();
+                            if (text) {{
+                                errorMsg = text;
+                            }}
+                        }}
+                    }} catch (e) {{
+                        // Ignore parsing errors, use default errorMsg
+                    }}
+                    if (res.status === 402) {{
+                        errorMsg = "Payment required or insufficient token. " + errorMsg;
+                    }} else if (res.status === 401) {{
+                        errorMsg = "Unauthorized. " + errorMsg;
+                    }}
+                    alert(errorMsg);
                 }}
             }})
-            .catch(err => alert('Error: ' + err));
+            .catch(err => {{
+                alert('Network or server error: ' + (err && err.message ? err.message : err));
+            }});
         }}
 
         // WebLN Support
