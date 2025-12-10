@@ -713,53 +713,6 @@ fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invo
 }
 
 // FFI helper to send HTML response
-unsafe fn send_html_response(r: *mut ngx_http_request_t, html: String) -> isize {
-    // Set Status
-    (*r).headers_out.status = 402;
-    
-    // Set Content-Type
-    let ct = "text/html";
-    (*r).headers_out.content_type.len = ct.len();
-    (*r).headers_out.content_type.data = ct.as_ptr() as *mut u8;
-    
-    // Set Content-Length
-    (*r).headers_out.content_length_n = html.len() as i64;
-
-    // Send Headers
-    if ngx::ffi::ngx_http_send_header(r) == NGX_ERROR as isize {
-        return NGX_ERROR as isize;
-    }
-
-    // Allocate buffer
-    let pool = (*r).pool;
-    let b = ngx::ffi::ngx_pcalloc(pool, std::mem::size_of::<ngx::ffi::ngx_buf_t>()) as *mut ngx::ffi::ngx_buf_t;
-    if b.is_null() {
-        return NGX_ERROR as isize;
-    }
-
-    // Copy data to buffer (must be alive or allocated in pool, but if we block, maybe strict lifetime? 
-    // Usually we allocate in pool. String `html` will drop. We must copy.)
-    let data_ptr = ngx::ffi::ngx_palloc(pool, html.len()) as *mut u8;
-    if data_ptr.is_null() {
-        return NGX_ERROR as isize;
-    }
-    std::ptr::copy_nonoverlapping(html.as_ptr(), data_ptr, html.len());
-
-    (*b).pos = data_ptr;
-    (*b).last = data_ptr.add(html.len());
-    (*b).memory = 1; // data is in read-only memory? No, palloc. 
-    // memory=1 usually means it's in memory (not file).
-    (*b).last_buf = 1; // Last buffer in chain/request
-
-    // Create chain
-    let mut out = ngx::ffi::ngx_chain_t {
-        buf: b,
-        next: std::ptr::null_mut(),
-    };
-
-    ngx::ffi::ngx_http_output_filter(r, &mut out)
-}
-
 // ... existing code ...
 
         match header_result {
