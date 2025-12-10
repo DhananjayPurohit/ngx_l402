@@ -512,8 +512,13 @@ unsafe fn send_html_response(r: *mut ngx_http_request_t, html: String) -> isize 
     
     // Set Content-Type
     let ct = "text/html";
+    let ct_ptr = ngx::ffi::ngx_palloc((*r).pool, ct.len()) as *mut u8;
+    if ct_ptr.is_null() {
+        return NGX_ERROR as isize;
+    }
+    std::ptr::copy_nonoverlapping(ct.as_ptr(), ct_ptr, ct.len());
     (*r).headers_out.content_type.len = ct.len();
-    (*r).headers_out.content_type.data = ct.as_ptr() as *mut u8;
+    (*r).headers_out.content_type.data = ct_ptr;
     
     // Set Content-Length
     (*r).headers_out.content_length_n = html.len() as i64;
