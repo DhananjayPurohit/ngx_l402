@@ -10,7 +10,7 @@ pub fn get_payment_html(
             <h3>Pay with Cashu</h3>
             <div class="input-group">
                 <input type="text" id="cashu-token" placeholder="Paste Cashu token (cashuA...)" />
-                <button onclick="submitCashu()">Pay</button>
+                <button type="button" aria-label="Submit Cashu payment" onclick="submitCashu()">Pay</button>
             </div>
         </div>
         "#
