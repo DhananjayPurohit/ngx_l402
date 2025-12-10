@@ -523,7 +523,31 @@ fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invo
     (macaroon, invoice)
 }
 
-// FFI helper to send HTML response
+/// Sends an HTML response with status 402 to the given nginx HTTP request.
+///
+/// # Safety
+///
+/// This function is unsafe because it directly manipulates raw pointers and nginx FFI structures.
+/// The caller must ensure that:
+/// - `r` is a valid, non-null pointer to an `ngx_http_request_t` structure allocated and managed by nginx.
+/// - The function is called from the correct nginx request handling context.
+/// - The memory pool associated with `r` is valid for the duration of this call.
+/// - No concurrent modifications are made to the request or its memory pool while this function executes.
+///
+/// # Parameters
+/// - `r`: A mutable pointer to an nginx HTTP request (`ngx_http_request_t`). Must be valid and non-null.
+/// - `html`: The HTML content to send as the response body. The function will copy this data into nginx-managed memory.
+///
+/// # Return Value
+/// Returns the result of `ngx_http_output_filter` as an `isize`. Returns `NGX_ERROR` on allocation or send errors, or the result of the output filter otherwise.
+///
+/// # Errors
+/// Returns `NGX_ERROR` if memory allocation fails or if sending headers fails.
+///
+/// # Side Effects
+/// - Modifies the response status, content type, and content length of the nginx request.
+/// - Allocates memory from the nginx request pool.
+/// - Sends the response headers and body to the client.
 unsafe fn send_html_response(r: *mut ngx_http_request_t, html: String) -> isize {
     // Set Status
     (*r).headers_out.status = 402;
