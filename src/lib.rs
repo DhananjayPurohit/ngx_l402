@@ -755,7 +755,6 @@ fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invo
                     let ua = CStr::from_ptr((*(*request).headers_in.user_agent).value.data as *const i8)
                         .to_str().unwrap_or("").to_lowercase();
                     if ua.contains("mozilla") || ua.contains("chrome") || ua.contains("safari") {
-                        // is_html_request = true; // Maybe user-agent check is too aggressive? 
                         is_html_request = true;
                     }
                 }
