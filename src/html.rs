@@ -38,7 +38,7 @@ pub fn get_payment_html(
         button:hover {{ background: #2980b9; }}
         .copy-hint {{ font-size: 0.8rem; color: #7f8c8d; margin-top: 0.5rem; }}
     </style>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js" integrity="sha384-+Qn6l0e6QF6UVx/F4WRzEwA9HkQn6QkQn6QkQn6QkQn6QkQn6QkQn6QkQn6QkQn6" crossorigin="anonymous"></script>
 </head>
 <body>
     <div class="card">
