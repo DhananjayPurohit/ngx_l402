@@ -49,7 +49,7 @@ pub fn get_payment_html(
             <canvas id="qr" aria-label="QR code for Lightning invoice"></canvas>
         </div>
         
-        <div class="invoice-text" onclick="copyInvoice()" title="Click to copy">
+        <div class="invoice-text" onclick="copyInvoice()" title="Click to copy" role="button" aria-label="Click to copy invoice">
             {short_invoice}...
         </div>
         <div class="copy-hint" id="copy-msg">Click invoice to copy</div>
