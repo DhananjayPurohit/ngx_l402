@@ -492,7 +492,26 @@ impl Merge for ModuleConfig {
     }
 }
 
-// Helper to parse WWW-Authenticate header value
+/// Parses a `WWW-Authenticate` header value to extract the `macaroon` and `invoice` fields.
+///
+/// # Arguments
+///
+/// * `header` - A string slice representing the value of a `WWW-Authenticate` HTTP header.
+///   The function expects the header to contain fields in the format: `macaroon="..."` and `invoice="..."`.
+///
+/// # Returns
+///
+/// A tuple `(macaroon, invoice)` where each element is a `String` containing the value of the respective field.
+/// If a field is missing or malformed, its value in the tuple will be an empty string.
+///
+/// # Example
+///
+/// ```
+/// let header = r#"L402 macaroon="abc", invoice="lnbc123""#;
+/// let (macaroon, invoice) = parse_www_authenticate(header);
+/// assert_eq!(macaroon, "abc");
+/// assert_eq!(invoice, "lnbc123");
+/// ```
 fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invoice)
     // Parse macaroon
     let macaroon = if let Some(mac_start) = header.find("macaroon=\"") {
