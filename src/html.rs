@@ -136,17 +136,8 @@ pub fn get_payment_html(
                     console.error('WebLN error:', err);
                 }}
             }} else {{
-                 // Polling for manual payment (naive reload every 5s)
-                 // Only reload if we are not typing in cashu input
-                 setInterval(() => {{
-                     if (document.activeElement.id !== 'cashu-token') {{
-                         // Simple reload won't work for L402 as we need to attach credentials.
-                         // But if the server supported session cookies, it would.
-                         // Without cookies, reload just shows 402 again.
-                         // So we assume the user uses a browser extension (Alby) that intercepts.
-                         location.reload(); 
-                     }}
-                 }}, 5000);
+                // Manual payment polling is not supported for L402 authentication.
+                // Please use a compatible wallet or browser extension (e.g., Alby) to pay and authenticate.
             }}
         }});
     </script>
