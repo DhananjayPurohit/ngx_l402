@@ -723,7 +723,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
 // Helper to parse WWW-Authenticate header value
 // FFI helper to send HTML response
-                
                 // Fallback: Check User-Agent for Mozilla/Chrome/Safari
                  if !is_html_request && !(*request).headers_in.user_agent.is_null() {
                     let ua = CStr::from_ptr((*(*request).headers_in.user_agent).value.data as *const i8)
