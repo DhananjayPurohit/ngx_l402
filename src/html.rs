@@ -46,7 +46,7 @@ pub fn get_payment_html(
         <div class="amount">{amount} sats</div>
         
         <div class="qr-container">
-            <canvas id="qr"></canvas>
+            <canvas id="qr" aria-label="QR code for Lightning invoice"></canvas>
         </div>
         
         <div class="invoice-text" onclick="copyInvoice()" title="Click to copy">
