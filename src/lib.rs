@@ -736,7 +736,6 @@ fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invo
 }
 
 // FFI helper to send HTML response
-// ... existing code ...
 
         match header_result {
             Some(header_value) => unsafe {
