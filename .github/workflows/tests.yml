@@ -503,9 +503,9 @@ jobs:
           
           echo "Received Invoice/Offer: $invoice"
           
-          # Check if it looks like a lightning offer (starts with lno) or bolt11 (lnbc)
-          if [[ "$invoice" != lno* ]] && [[ "$invoice" != lnbc* ]]; then
-             echo "Error: Invoice does not look like BOLT12 offer or BOLT11 invoice"
+          # Check if it looks like a BOLT12 offer (lno), BOLT12 invoice (lni), or BOLT11 (lnbc/lntb)
+          if [[ "$invoice" != lno* ]] && [[ "$invoice" != lni* ]] && [[ "$invoice" != lnbc* ]] && [[ "$invoice" != lntb* ]]; then
+             echo "Error: Invoice does not look like BOLT12 offer/invoice or BOLT11 invoice"
              exit 1
           fi
           
