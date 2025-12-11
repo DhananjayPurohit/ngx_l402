@@ -141,6 +141,10 @@ impl L402Module {
                 let address =
                     std::env::var("LND_ADDRESS").unwrap_or_else(|_| "localhost:10009".to_string());
                 info!("🔗 Using LND address: {}", address);
+                let socks5_proxy = std::env::var("SOCKS5_PROXY").ok();
+                if let Some(ref proxy) = socks5_proxy {
+                    info!("🔒 Using SOCKS5 proxy: {}", proxy);
+                }
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: Some(lnd::LNDOptions {
@@ -149,6 +153,7 @@ impl L402Module {
                             .unwrap_or_else(|_| "admin.macaroon".to_string()),
                         cert_file: std::env::var("CERT_FILE_PATH")
                             .unwrap_or_else(|_| "tls.cert".to_string()),
+                        socks5_proxy, // Optional: e.g., "127.0.0.1:9050" for Tor
                     }),
                     lnurl_config: None,
                     nwc_config: None,
