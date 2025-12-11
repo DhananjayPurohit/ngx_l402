@@ -516,9 +516,17 @@ jobs:
 
       - name: Verify LND node
         run: |
+          wallet_name="my_wallet"
+          # Ensure wallet exists/loaded (bitcoind may be recreated earlier)
+          if docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass listwallets | grep -q "\"$wallet_name\""; then
+            docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet "$wallet_name" 2>/dev/null || true
+          else
+            docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet "$wallet_name"
+          fi
+
           identity_pubkey_lndnode=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           echo "Pubkey: $identity_pubkey_lndnode"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -generate 5
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name -generate 5
 
           # Get node info for both lightning nodes
           echo "Getting CLN node info..."
@@ -534,10 +542,10 @@ jobs:
           echo "Generated address for LND: $address"
 
           # Send 10 BTC to LND node
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$address" 10
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$address" 10
           
           # Generate blocks to confirm the transaction
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
           # Connect nodes
           echo "Connecting LND to CLN..."
@@ -548,7 +556,7 @@ jobs:
           docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000
 
           # Generate blocks to confirm channel
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
 
