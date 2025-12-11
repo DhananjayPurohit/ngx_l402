@@ -458,9 +458,14 @@ jobs:
           echo "BOLT12_OFFER=$BOLT12_OFFER" >> $GITHUB_ENV
 
       - name: Start nginx-bolt12
+        env:
+          BOLT12_OFFER: ${{ env.BOLT12_OFFER }}
         run: |
+          echo "Starting nginx-bolt12 with BOLT12_OFFER: $BOLT12_OFFER"
           docker-compose -f docker-compose.yml up -d nginx-bolt12
           sleep 10
+          # Set permissions on CLN socket (same as CLN tests)
+          docker exec nginx-bolt12 chmod 777 /root /root/.lightning /root/.lightning/regtest
 
       - name: Run Integration Tests - BOLT12
         run: |
