@@ -451,17 +451,20 @@ jobs:
           docker-compose -f docker-compose.yml stop nginx-cln
 
       # ========== BOLT12 Tests (runs while CLN is still up) ==========
-      - name: Generate BOLT12 Offer
+      - name: Generate BOLT12 Offer and Start nginx-bolt12
         run: |
           echo "Generating BOLT12 Offer..."
           BOLT12_OFFER=$(docker exec cln lightning-cli offer any "L402 Access" | jq -r '.bolt12')
-          echo "BOLT12_OFFER=$BOLT12_OFFER" >> $GITHUB_ENV
-
-      - name: Start nginx-bolt12
-        env:
-          BOLT12_OFFER: ${{ env.BOLT12_OFFER }}
-        run: |
-          echo "Starting nginx-bolt12 with BOLT12_OFFER: $BOLT12_OFFER"
+          echo "Generated BOLT12_OFFER: $BOLT12_OFFER"
+          
+          if [ -z "$BOLT12_OFFER" ] || [ "$BOLT12_OFFER" = "null" ]; then
+            echo "Error: Failed to generate BOLT12 offer"
+            docker logs cln
+            exit 1
+          fi
+          
+          echo "Starting nginx-bolt12 with BOLT12_OFFER..."
+          export BOLT12_OFFER
           docker-compose -f docker-compose.yml up -d nginx-bolt12
           sleep 10
           # Set permissions on CLN socket (same as CLN tests)
