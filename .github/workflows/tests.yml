@@ -454,7 +454,7 @@ jobs:
       - name: Generate BOLT12 Offer and Start nginx-bolt12
         run: |
           echo "Generating BOLT12 Offer..."
-          BOLT12_OFFER=$(docker exec cln lightning-cli offer any "L402 Access" | jq -r '.bolt12')
+          BOLT12_OFFER=$(docker exec cln lightning-cli --network=regtest offer any "L402 Access" | jq -r '.bolt12')
           echo "Generated BOLT12_OFFER: $BOLT12_OFFER"
           
           if [ -z "$BOLT12_OFFER" ] || [ "$BOLT12_OFFER" = "null" ]; then
