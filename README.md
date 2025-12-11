@@ -8,17 +8,17 @@ An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authent
 graph TD;
     A[Request Received] --> B{Endpoint L402 Enabled?}
     B -->|No| C[Return 200 OK]
-    B -->|Yes| D{Authorization Header present in request?}
+    B -->|Yes| D{"Any auth header present? (L402 or X-Cashu)"}
     D -->|No| F[Generate L402 Header macaroon & invoice]
     F --> G{Header Generation Success?}
     G -->|Yes| H[Add WWW-Authenticate Header]
     G -->|No| I[Return 500 Internal Server Error]
     H --> J[Return 402 Payment Required]
-    D -->|Yes| K[Parse L402 Header macaroon & preimage]
-    K --> L{Parse Success?}
+    D -->|Yes| K["Parse L402 macaroon/preimage or X-Cashu (if present)"]
+    K --> L{"Parse Success?"}
     L -->|No| M[Return 500 Internal Server Error]
-    L -->|Yes| N[Verify L402]
-    N --> O{Verification Success?}
+    L -->|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount >= price)"]
+    N --> O{"Verification Success?"}
     O -->|Yes| P[Return 200 OK]
     O -->|No| Q[Return 401 Unauthorized]
 ```
@@ -465,3 +465,4 @@ cargo build --release --features export-modules
 ```
 
 The compiled module will be created at `/target/release/libngx_l402_lib.so`.
+
