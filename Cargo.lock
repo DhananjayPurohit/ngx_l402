@@ -2284,24 +2284,31 @@ dependencies = [
 
 [[package]]
 name = "l402_middleware"
-version = "1.8.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d5df84ff353590361f9e5b14dc6efb7610bee22bd6b91f92f8c455659ee6543"
+checksum = "5786ef011d2db0109df2e50be17fac62199e346d8b1d2821b6dab544f95f22a7"
 dependencies = [
  "base64 0.21.7",
  "bitcoin 0.32.5",
  "cln-rpc",
  "dotenv",
  "hex",
+ "http 0.2.12",
  "lightning 0.0.125",
  "lightning-invoice 0.32.0",
  "macaroon",
  "nwc",
+ "openssl",
  "reqwest",
  "rocket",
  "serde",
  "tokio",
+ "tokio-openssl",
+ "tokio-socks",
+ "tonic 0.7.2",
+ "tonic-openssl",
  "tonic_openssl_lnd",
+ "tower 0.4.13",
  "uuid",
 ]
 

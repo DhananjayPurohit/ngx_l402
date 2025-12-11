@@ -1038,6 +1038,76 @@ jobs:
 
           echo "✅ Cashu redemption on Lightning integration tests completed!"
 
+      - name: Stop nginx-lnd
+        run: docker-compose -f docker-compose.yml stop nginx-lnd
+
+      - name: Start CLN for BOLT12
+        run: |
+          docker-compose -f docker-compose.yml start cln
+
+      - name: Generate BOLT12 Offer
+        run: |
+          echo "Waiting for CLN to be ready..."
+          until docker exec cln lightning-cli getinfo > /dev/null 2>&1; do
+            echo "Waiting for CLN..."
+            sleep 2
+          done
+          echo "CLN is ready."
+          echo "Generating BOLT12 Offer..."
+          # Use cln to generate offer
+          BOLT12_OFFER=$(docker exec cln lightning-cli offer any "L402 Access" | jq -r '.bolt12')
+          echo "BOLT12_OFFER=$BOLT12_OFFER" >> $GITHUB_ENV
+
+      - name: Start nginx-bolt12
+        run: |
+          docker-compose -f docker-compose.yml up -d nginx-bolt12
+          sleep 10
+
+      - name: Run Integration Tests - BOLT12
+        run: |
+          echo "Testing with BOLT12 configuration..."
+          
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://127.0.0.1:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx-bolt12
+            exit 1
+          fi
+          
+          # Check if WWW-Authenticate header is present
+          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
+            echo "Error: WWW-Authenticate header is missing in the 402 response"
+            echo "$response"
+            docker logs nginx-bolt12
+            exit 1
+          fi
+
+          # Extract and verify invoice (which might be an offer or bolt12 invoice)
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header"
+            echo "$response"
+            docker logs nginx-bolt12
+            exit 1
+          fi
+          
+          echo "Received Invoice/Offer: $invoice"
+          
+          # Check if it looks like a lightning offer (starts with lno) or bolt11 (lnbc)
+          # Depending on implementation, it might be either. If it's reusable endpoint, likely offer.
+          if [[ "$invoice" != lno* ]] && [[ "$invoice" != lnbc* ]]; then
+             echo "Error: Invoice does not look like BOLT12 offer or BOLT11 invoice"
+             exit 1
+          fi
+          
+          echo "✅ BOLT12 Integration test passed (Header verification)"
+
+      - name: Stop nginx-bolt12
+        run: docker-compose -f docker-compose.yml stop nginx-bolt12
+
       - name: Stop nginx-lnd and start nginx-lnurl
         env: 
           CASHU_WHITELISTED_MINTS: http://cashu-mint:3338

@@ -19,7 +19,7 @@ services:
     container_name: cln
     user: root
     entrypoint:
-      - sh 
+      - sh
       - -c
       - |
         # Install NWC plugin
@@ -41,6 +41,7 @@ services:
           --grpc-port=9996 \
           --plugin=/usr/local/libexec/c-lightning/plugins/cln-nip47 \
           --nip47-relays=wss://relay.damus.io \
+          --experimental-offers \
           --rpc-file-mode=0666
     ports:
       - "9835:9835"
@@ -54,7 +55,7 @@ services:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
     container_name: lndnode
     user: root
-    entrypoint: 
+    entrypoint:
       - sh
       - -c
       - |
@@ -92,7 +93,7 @@ services:
     image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
     container_name: lndnode-receiver
     user: root
-    entrypoint: 
+    entrypoint:
       - sh
       - -c
       - |
@@ -209,13 +210,7 @@ services:
     depends_on:
       - cln
       - redis
-    entrypoint: sh -c "
-      until [ -S /root/.lightning/regtest/lightning-rpc ]; do
-        echo 'Waiting for lightning-rpc...';
-        sleep 1;
-      done;
-      echo 'lightning-rpc found, starting nginx...';
-      exec nginx -g 'daemon off;'"
+    entrypoint: sh -c " until [ -S /root/.lightning/regtest/lightning-rpc ]; do echo 'Waiting for lightning-rpc...'; sleep 1; done; echo 'lightning-rpc found, starting nginx...'; exec nginx -g 'daemon off;'"
 
   nginx-nwc:
     container_name: nginx-nwc
@@ -232,6 +227,28 @@ services:
     depends_on:
       - cln
       - redis
+
+  nginx-bolt12:
+    container_name: nginx-bolt12
+    user: root
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8000:8000"
+    environment:
+      - LN_CLIENT_TYPE=BOLT12
+      - BOLT12_OFFER=${BOLT12_OFFER}
+      - CLN_LIGHTNING_RPC_FILE_PATH=/root/.lightning/regtest/lightning-rpc
+      - ROOT_KEY=${ROOT_KEY}
+    volumes:
+      - cln-data:/root/.lightning/regtest:rw
+    depends_on:
+      - cln
+      - redis
+    entrypoint: sh -c " until [ -S /root/.lightning/regtest/lightning-rpc ]; do echo 'Waiting for lightning-rpc...'; sleep 1; done; echo 'lightning-rpc found, starting nginx...'; exec nginx -g 'daemon off;'"
 
   nginx-lnd:
     container_name: nginx-lnd
