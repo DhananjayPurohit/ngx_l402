@@ -1,6 +1,6 @@
 # L402 Nginx Module
 
-An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning Network URL (LNURL), and Nostr Wallet Connect (NWC) for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
+An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning Network URL (LNURL), Nostr Wallet Connect (NWC), and BOLT12 Lightning Offers for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
 
 ![L402 module demo](https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9)
 
@@ -8,17 +8,17 @@ An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authent
 graph TD;
     A[Request Received] --> B{Endpoint L402 Enabled?}
     B -->|No| C[Return 200 OK]
-    B -->|Yes| D{"Any auth header present? (L402 or X-Cashu)"}
+    B -->|Yes| D{Authorization Header present in request?}
     D -->|No| F[Generate L402 Header macaroon & invoice]
     F --> G{Header Generation Success?}
     G -->|Yes| H[Add WWW-Authenticate Header]
     G -->|No| I[Return 500 Internal Server Error]
     H --> J[Return 402 Payment Required]
-    D -->|Yes| K["Parse L402 macaroon/preimage or X-Cashu (if present)"]
-    K --> L{"Parse Success?"}
+    D -->|Yes| K[Parse L402 Header macaroon & preimage]
+    K --> L{Parse Success?}
     L -->|No| M[Return 500 Internal Server Error]
-    L -->|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount >= price)"]
-    N --> O{"Verification Success?"}
+    L -->|Yes| N[Verify L402]
+    N --> O{Verification Success?}
     O -->|Yes| P[Return 200 OK]
     O -->|No| Q[Return 401 Unauthorized]
 ```
@@ -76,6 +76,11 @@ Environment=ROOT_KEY=your-root-key
 # if using NWC (supports NIP47 NWC URIs only):
 Environment=LN_CLIENT_TYPE=NWC
 Environment=NWC_URI=nostr+walletconnect://<pubkey>?relay=<relay_url>&secret=<secret>
+Environment=ROOT_KEY=your-root-key
+# if using BOLT12 (Reusable Offers):
+Environment=LN_CLIENT_TYPE=BOLT12
+Environment=BOLT12_OFFER=lno1...
+Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
 Environment=ROOT_KEY=your-root-key
 
 # To use redis to set price dynamically
@@ -374,6 +379,19 @@ docker run -d \
   ghcr.io/dhananjaypurohit/ngx_l402:latest
 ```
 
+**6. BOLT12 Backend (Reusable Offers)**
+```bash
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=BOLT12 \
+  -e BOLT12_OFFER=lno1... \
+  -e CLN_LIGHTNING_RPC_FILE_PATH=/app/data/lightning-rpc \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  -v ~/.lightning/bitcoin/lightning-rpc:/app/data/lightning-rpc:ro \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
 #### Required Secrets Generation
 
 Before running, generate the required secrets:
@@ -465,4 +483,3 @@ cargo build --release --features export-modules
 ```
 
 The compiled module will be created at `/target/release/libngx_l402_lib.so`.
-

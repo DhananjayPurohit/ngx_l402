@@ -1,6 +1,6 @@
 use env_logger;
 use l402_middleware::middleware::L402Middleware;
-use l402_middleware::{cln, l402, lnclient, lnd, lnurl, macaroon_util, nwc, utils};
+use l402_middleware::{bolt12, cln, l402, lnclient, lnd, lnurl, macaroon_util, nwc, utils};
 use log::{debug, error, info, warn};
 use macaroon::Verifier;
 use ngx::ffi::{
@@ -35,7 +35,9 @@ static mut MODULE: Option<L402Module> = None;
 static REDIS_CLIENT: OnceLock<Mutex<RedisClient>> = OnceLock::new();
 
 // Cache for LNURL clients - lazy initialization on first use per address
-static LNURL_CLIENT_CACHE: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>>>> = OnceLock::new();
+static LNURL_CLIENT_CACHE: OnceLock<
+    tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>>>,
+> = OnceLock::new();
 
 /// Get or create a cached LNURL client for the given address
 /// This function is also used by cashu.rs for multi-tenant redemption
@@ -58,9 +60,12 @@ pub async fn get_or_create_lnurl_client(
     let ln_client_config = lnclient::LNClientConfig {
         ln_client_type: "LNURL".to_string(),
         lnd_config: None,
-        lnurl_config: Some(lnurl::LNURLOptions { address: addr.to_string() }),
+        lnurl_config: Some(lnurl::LNURLOptions {
+            address: addr.to_string(),
+        }),
         nwc_config: None,
         cln_config: None,
+        bolt12_config: None,
         root_key: std::env::var("ROOT_KEY")
             .unwrap_or_else(|_| "root_key".to_string())
             .as_bytes()
@@ -124,6 +129,7 @@ impl L402Module {
                     lnurl_config: Some(lnurl::LNURLOptions { address }),
                     nwc_config: None,
                     cln_config: None,
+                    bolt12_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -135,6 +141,10 @@ impl L402Module {
                 let address =
                     std::env::var("LND_ADDRESS").unwrap_or_else(|_| "localhost:10009".to_string());
                 info!("🔗 Using LND address: {}", address);
+                let socks5_proxy = std::env::var("SOCKS5_PROXY").ok();
+                if let Some(ref proxy) = socks5_proxy {
+                    info!("🔒 Using SOCKS5 proxy: {}", proxy);
+                }
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: Some(lnd::LNDOptions {
@@ -143,10 +153,12 @@ impl L402Module {
                             .unwrap_or_else(|_| "admin.macaroon".to_string()),
                         cert_file: std::env::var("CERT_FILE_PATH")
                             .unwrap_or_else(|_| "tls.cert".to_string()),
+                        socks5_proxy, // Optional: e.g., "127.0.0.1:9050" for Tor
                     }),
                     lnurl_config: None,
                     nwc_config: None,
                     cln_config: None,
+                    bolt12_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -163,6 +175,7 @@ impl L402Module {
                     lnurl_config: None,
                     cln_config: None,
                     nwc_config: Some(nwc::NWCOptions { uri }),
+                    bolt12_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -180,6 +193,37 @@ impl L402Module {
                     lnurl_config: None,
                     nwc_config: None,
                     cln_config: Some(cln::CLNOptions { lightning_dir }),
+                    bolt12_config: None,
+                    root_key: std::env::var("ROOT_KEY")
+                        .unwrap_or_else(|_| "root_key".to_string())
+                        .as_bytes()
+                        .to_vec(),
+                }
+            }
+            "BOLT12" => {
+                info!("🔧 Configuring BOLT12 client");
+                let offer =
+                    std::env::var("BOLT12_OFFER").unwrap_or_else(|_| "bolt12_offer".to_string());
+                let lightning_dir = std::env::var("CLN_LIGHTNING_RPC_FILE_PATH")
+                    .unwrap_or_else(|_| "CLN_LIGHTNING_RPC_FILE_PATH".to_string());
+                info!("⚡ Using BOLT12 Offer: {}", offer);
+                info!(
+                    "🖾 Using CLN LIGHTNING RPC FILE PATH for BOLT12: {}",
+                    lightning_dir
+                );
+                lnclient::LNClientConfig {
+                    ln_client_type,
+                    lnd_config: None,
+                    lnurl_config: None,
+                    nwc_config: None,
+                    // CLN is still required to fetch invoices from the reusable offer.
+                    cln_config: Some(cln::CLNOptions {
+                        lightning_dir: lightning_dir.clone(),
+                    }),
+                    bolt12_config: Some(bolt12::Bolt12Options {
+                        offer,
+                        lightning_dir,
+                    }),
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -197,6 +241,7 @@ impl L402Module {
                     lnurl_config: Some(lnurl::LNURLOptions { address }),
                     nwc_config: None,
                     cln_config: None,
+                    bolt12_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -302,7 +347,12 @@ impl L402Module {
         }
     }
 
-    pub async fn verify_cashu_token(&self, token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
+    pub async fn verify_cashu_token(
+        &self,
+        token: &str,
+        amount_msat: i64,
+        lnurl_addr: Option<String>,
+    ) -> Result<bool, String> {
         // Check if P2PK mode is enabled (use initialized state, not env vars)
         if cashu::is_p2pk_mode_enabled() {
             info!("🔐 Using P2PK local verification mode");
@@ -565,7 +615,14 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         amount_msat
     };
 
-    let result = l402_access_handler(auth_header, uri, method, final_amount, caveats.clone(), lnurl_addr.clone());
+    let result = l402_access_handler(
+        auth_header,
+        uri,
+        method,
+        final_amount,
+        caveats.clone(),
+        lnurl_addr.clone(),
+    );
 
     // Only set L402 header if result is 402
     if result == 402 {
@@ -631,7 +688,12 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         // Pass lnurl_addr for per-location LNURL-based invoice generation
         let header_result = rt.block_on(async {
             module
-                .get_l402_header(caveats.clone(), final_amount, macaroon_timeout, lnurl_addr.clone())
+                .get_l402_header(
+                    caveats.clone(),
+                    final_amount,
+                    macaroon_timeout,
+                    lnurl_addr.clone(),
+                )
                 .await
         });
 
@@ -686,8 +748,11 @@ pub fn l402_access_handler(
                     .expect("tokio runtime init")
             });
 
-            let verify_result =
-                rt.block_on(async { module.verify_cashu_token(&token, amount_msat, lnurl_addr.clone()).await });
+            let verify_result = rt.block_on(async {
+                module
+                    .verify_cashu_token(&token, amount_msat, lnurl_addr.clone())
+                    .await
+            });
 
             match verify_result {
                 Ok(true) => {
@@ -847,7 +912,8 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
 
             // Initialize LN client for cashu redemption
             let ln_client = module.middleware.ln_client.clone();
-            let ln_client_type = std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
+            let ln_client_type =
+                std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
             if let Err(e) = cashu::initialize_ln_client(ln_client, ln_client_type) {
                 error!("⚠️ Failed to initialize LN client for cashu: {}", e);
             }
@@ -909,9 +975,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                     info!("🔄 Cashu redemption iteration #{} starting...", iteration);
 
                     // Run async redemption in the tokio runtime
-                    let result = thread_rt.block_on(async {
-                        cashu::redeem_to_lightning().await
-                    });
+                    let result = thread_rt.block_on(async { cashu::redeem_to_lightning().await });
 
                     match result {
                         Ok(true) => {

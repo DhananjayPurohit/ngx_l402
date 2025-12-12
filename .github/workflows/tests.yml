@@ -450,11 +450,79 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-cln
 
+      # ========== BOLT12 Tests (runs while CLN is still up) ==========
+      - name: Generate BOLT12 Offer and Start nginx-bolt12
+        run: |
+          echo "Generating BOLT12 Offer..."
+          BOLT12_OFFER=$(docker exec cln lightning-cli --network=regtest offer any "L402 Access" | jq -r '.bolt12')
+          echo "Generated BOLT12_OFFER: $BOLT12_OFFER"
+          
+          if [ -z "$BOLT12_OFFER" ] || [ "$BOLT12_OFFER" = "null" ]; then
+            echo "Error: Failed to generate BOLT12 offer"
+            docker logs cln
+            exit 1
+          fi
+          
+          echo "Starting nginx-bolt12 with BOLT12_OFFER..."
+          export BOLT12_OFFER
+          docker-compose -f docker-compose.yml up -d nginx-bolt12
+          sleep 10
+          # Set permissions on CLN socket (same as CLN tests)
+          docker exec nginx-bolt12 chmod 777 /root /root/.lightning /root/.lightning/regtest
+
+      - name: Run Integration Tests - BOLT12
+        run: |
+          echo "Testing with BOLT12 configuration..."
+          
+          # Test protected route without header
+          echo "Testing protected route without header..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://127.0.0.1:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx-bolt12
+            exit 1
+          fi
+          
+          # Check if WWW-Authenticate header is present
+          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
+            echo "Error: WWW-Authenticate header is missing in the 402 response"
+            echo "$response"
+            docker logs nginx-bolt12
+            exit 1
+          fi
+
+          # Extract and verify invoice (which might be an offer or bolt12 invoice)
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header"
+            echo "$response"
+            docker logs nginx-bolt12
+            exit 1
+          fi
+          
+          echo "Received Invoice/Offer: $invoice"
+          
+          # Check if it looks like a BOLT12 offer (lno), BOLT12 invoice (lni), or BOLT11 (lnbc/lntb)
+          if [[ "$invoice" != lno* ]] && [[ "$invoice" != lni* ]] && [[ "$invoice" != lnbc* ]] && [[ "$invoice" != lntb* ]]; then
+             echo "Error: Invoice does not look like BOLT12 offer/invoice or BOLT11 invoice"
+             exit 1
+          fi
+          
+          echo "✅ BOLT12 Integration test passed (Header verification)"
+
+      - name: Stop nginx-bolt12
+        run: docker-compose -f docker-compose.yml stop nginx-bolt12
+
       - name: Verify LND node
         run: |
+          # Load the wallet created earlier
+          wallet_name="my_wallet"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet "$wallet_name" 2>/dev/null || true
+
           identity_pubkey_lndnode=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           echo "Pubkey: $identity_pubkey_lndnode"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -generate 5
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name -generate 5
 
           # Get node info for both lightning nodes
           echo "Getting CLN node info..."
@@ -470,21 +538,32 @@ jobs:
           echo "Generated address for LND: $address"
 
           # Send 10 BTC to LND node
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$address" 10
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$address" 10
           
           # Generate blocks to confirm the transaction
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$address"
+
+          # Wait for LND to sync after receiving funds
+          echo "Waiting for LND to sync..."
+          sleep 5
 
           # Connect nodes
           echo "Connecting LND to CLN..."
           docker exec lndnode lncli -n regtest connect $cln_pubkey@cln:9835
 
-          # Open channel from LND to CLN
+          # Open channel from LND to CLN (with retry)
           echo "Opening channel from LND to CLN..."
-          docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000
+          for i in 1 2 3; do
+            if docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000; then
+              echo "Channel opened successfully"
+              break
+            fi
+            echo "Attempt $i failed, waiting 10 seconds..."
+            sleep 10
+          done
 
           # Generate blocks to confirm channel
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$address"
 
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
 
