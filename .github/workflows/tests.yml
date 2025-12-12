@@ -551,6 +551,10 @@ jobs:
           # Generate blocks to confirm the transaction
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
 
+          # Wait for LND to sync with blockchain
+          echo "Waiting for LND to sync..."
+          sleep 10
+
           # Connect nodes
           echo "Connecting LND to CLN..."
           docker exec lndnode lncli -n regtest connect $cln_pubkey@cln:9835
