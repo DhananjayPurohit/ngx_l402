@@ -258,49 +258,8 @@ jobs:
       - name: Start LND node, LND node receiver and cashu-mint
         run: |
           docker-compose -f docker-compose.yml up -d --no-deps lndnode lndnode-receiver cashu-mint
-          echo "Waiting for LND nodes to start..."
-          
-          # Wait for lndnode to be ready
-          echo "Checking lndnode readiness..."
-          lndnode_ready=false
-          for i in {1..30}; do
-            if docker exec lndnode lncli -n regtest getinfo >/dev/null 2>&1; then
-              echo "✅ lndnode is ready"
-              lndnode_ready=true
-              break
-            fi
-            echo "lndnode not ready yet (attempt $i/30), waiting..."
-            sleep 2
-          done
-          
-          if [ "$lndnode_ready" = "false" ]; then
-            echo "❌ lndnode failed to start properly"
-            docker logs lndnode | tail -50
-            exit 1
-          fi
-          
-          # Wait for lndnode-receiver to be ready
-          echo "Checking lndnode-receiver readiness..."
-          receiver_ready=false
-          for i in {1..30}; do
-            if docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 getinfo >/dev/null 2>&1; then
-              echo "✅ lndnode-receiver is ready"
-              receiver_ready=true
-              break
-            fi
-            echo "lndnode-receiver not ready yet (attempt $i/30), waiting..."
-            sleep 2
-          done
-          
-          if [ "$receiver_ready" = "false" ]; then
-            echo "❌ lndnode-receiver failed to start properly"
-            docker logs lndnode-receiver | tail -50
-            exit 1
-          fi
-          
-          # Additional wait for stability
-          echo "Both nodes ready, waiting 5 more seconds for stability..."
-          sleep 5
+          echo "waiting for 30 seconds..."
+          sleep 30
 
       - name: Verify Bitcoin daemon Service, create wallet and fund lndnode and lndnode-receiver
         run: |
@@ -369,80 +328,17 @@ jobs:
           # -------- CHANNEL (LND NODE RECEIVER - LND NODE) --------
           echo "Opening channel from LND-receiver node to LND node..."
 
-          # Step 1: Verify both nodes are synced
-          echo "Verifying LND node sync status..."
-          lnd_sync_attempts=0
-          max_lnd_sync_attempts=20
-          
-          while [ $lnd_sync_attempts -lt $max_lnd_sync_attempts ]; do
-            lnd_sync_attempts=$((lnd_sync_attempts + 1))
-            lnd_info=$(docker exec lndnode lncli -n regtest getinfo 2>/dev/null || echo "{}")
-            lnd_synced=$(echo "$lnd_info" | jq -r '.synced_to_chain // false')
-            
-            if [ "$lnd_synced" = "true" ]; then
-              echo "✅ LND node is synced"
-              break
-            fi
-            echo "LND node not synced yet (attempt $lnd_sync_attempts/$max_lnd_sync_attempts), waiting..."
-            sleep 3
-          done
-
-          echo "Verifying LND-receiver node sync status..."
-          receiver_sync_attempts=0
-          max_receiver_sync_attempts=20
-          
-          while [ $receiver_sync_attempts -lt $max_receiver_sync_attempts ]; do
-            receiver_sync_attempts=$((receiver_sync_attempts + 1))
-            receiver_info=$(docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 getinfo 2>/dev/null || echo "{}")
-            receiver_synced=$(echo "$receiver_info" | jq -r '.synced_to_chain // false')
-            
-            if [ "$receiver_synced" = "true" ]; then
-              echo "✅ LND-receiver node is synced"
-              break
-            fi
-            echo "LND-receiver node not synced yet (attempt $receiver_sync_attempts/$max_receiver_sync_attempts), waiting..."
-            sleep 3
-          done
-
-          # Step 2: Get LND node pubkey
+          # Step 1: Get LND node pubkey
           LNDNODE_PUBKEY=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           echo "LND node pubkey: $LNDNODE_PUBKEY"
 
-          # Step 3: Connect receiver to LND node
+          # Step 2: Connect receiver to LND node
           echo "Connecting LND-receiver to LND node..."
-          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 connect "$LNDNODE_PUBKEY"@lndnode:9735 || {
-            echo "Connection might already exist or failed, checking peers..."
-            docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 listpeers
-          }
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 connect "$LNDNODE_PUBKEY"@lndnode:9735 || true
 
-          # Step 4: Open channel from receiver to LND node with retry
+          # Step 3: Open channel from receiver to LND node
           echo "Opening channel from LND-receiver to LND node..."
-          channel_attempts=0
-          max_channel_attempts=3
-          channel_success=false
-          
-          while [ $channel_attempts -lt $max_channel_attempts ]; do
-            channel_attempts=$((channel_attempts + 1))
-            echo "Channel opening attempt $channel_attempts/$max_channel_attempts..."
-            
-            if docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 openchannel --node_key="$LNDNODE_PUBKEY" --local_amt=1000000 2>&1; then
-              channel_success=true
-              echo "✅ Channel opened successfully!"
-              break
-            else
-              if [ $channel_attempts -lt $max_channel_attempts ]; then
-                echo "Channel opening failed, waiting 10 seconds before retry..."
-                sleep 10
-              fi
-            fi
-          done
-          
-          if [ "$channel_success" = "false" ]; then
-            echo "❌ Failed to open channel after $max_channel_attempts attempts"
-            docker logs lndnode-receiver | tail -50
-            docker logs lndnode | tail -50
-            exit 1
-          fi
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 openchannel --node_key="$LNDNODE_PUBKEY" --local_amt=1000000
 
           # Step 4: Mine 6 blocks to confirm channel
           echo "Mining 6 blocks to confirm channel..."
@@ -620,21 +516,9 @@ jobs:
 
       - name: Verify LND node
         run: |
-          wallet_name="my_wallet"
-          # Ensure wallet exists/loaded (bitcoind may be recreated earlier)
-          if docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass listwallets | grep -q "\"$wallet_name\""; then
-            echo "Wallet $wallet_name already loaded"
-          elif docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass listwalletdir | jq -r '.wallets[].name' | grep -q "^$wallet_name$"; then
-            echo "Loading existing wallet $wallet_name"
-            docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass loadwallet "$wallet_name" || true
-          else
-            echo "Creating wallet $wallet_name"
-            docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet "$wallet_name"
-          fi
-
           identity_pubkey_lndnode=$(docker exec lndnode lncli -n regtest getinfo | jq -r '.identity_pubkey')
           echo "Pubkey: $identity_pubkey_lndnode"
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name -generate 5
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -generate 5
 
           # Get node info for both lightning nodes
           echo "Getting CLN node info..."
@@ -650,91 +534,21 @@ jobs:
           echo "Generated address for LND: $address"
 
           # Send 10 BTC to LND node
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name sendtoaddress "$address" 10
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass sendtoaddress "$address" 10
           
           # Generate blocks to confirm the transaction
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
-
-          # Wait for LND to sync with blockchain
-          echo "Waiting for LND to sync with blockchain..."
-          max_sync_attempts=30
-          sync_attempt=0
-          lnd_synced=false
-          
-          while [ $sync_attempt -lt $max_sync_attempts ]; do
-            sync_attempt=$((sync_attempt + 1))
-            echo "Sync check attempt $sync_attempt/$max_sync_attempts..."
-            
-            # Check if LND is synced to chain and graph
-            sync_status=$(docker exec lndnode lncli -n regtest getinfo 2>/dev/null || echo "{}")
-            synced_to_chain=$(echo "$sync_status" | jq -r '.synced_to_chain // false')
-            synced_to_graph=$(echo "$sync_status" | jq -r '.synced_to_graph // false')
-            
-            echo "LND synced_to_chain: $synced_to_chain, synced_to_graph: $synced_to_graph"
-            
-            if [ "$synced_to_chain" = "true" ] && [ "$synced_to_graph" = "true" ]; then
-              lnd_synced=true
-              echo "✅ LND is fully synced!"
-              break
-            fi
-            
-            echo "LND not fully synced yet, waiting 5 seconds..."
-            sleep 5
-          done
-          
-          if [ "$lnd_synced" = "false" ]; then
-            echo "❌ Error: LND failed to sync after $max_sync_attempts attempts"
-            docker logs lndnode | tail -100
-            exit 1
-          fi
-
-          # Additional wait to ensure stability
-          echo "Waiting additional 5 seconds for stability..."
-          sleep 5
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
 
           # Connect nodes
           echo "Connecting LND to CLN..."
-          docker exec lndnode lncli -n regtest connect $cln_pubkey@cln:9835 || {
-            echo "Connection might already exist, continuing..."
-          }
+          docker exec lndnode lncli -n regtest connect $cln_pubkey@cln:9835
 
-          # Verify connection
-          echo "Verifying node connection..."
-          docker exec lndnode lncli -n regtest listpeers
-
-          # Open channel from LND to CLN with retry logic
+          # Open channel from LND to CLN
           echo "Opening channel from LND to CLN..."
-          max_channel_attempts=3
-          channel_attempt=0
-          channel_opened=false
-          
-          while [ $channel_attempt -lt $max_channel_attempts ]; do
-            channel_attempt=$((channel_attempt + 1))
-            echo "Channel opening attempt $channel_attempt/$max_channel_attempts..."
-            
-            if docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000 2>&1; then
-              channel_opened=true
-              echo "✅ Channel opening command succeeded!"
-              break
-            else
-              if [ $channel_attempt -lt $max_channel_attempts ]; then
-                echo "Channel opening failed, waiting 10 seconds before retry..."
-                sleep 10
-              fi
-            fi
-          done
-          
-          if [ "$channel_opened" = "false" ]; then
-            echo "❌ Error: Failed to open channel after $max_channel_attempts attempts"
-            echo "LND logs:"
-            docker logs lndnode | tail -100
-            echo "CLN logs:"
-            docker logs cln | tail -100
-            exit 1
-          fi
+          docker exec lndnode lncli -n regtest openchannel $cln_pubkey 1000000
 
           # Generate blocks to confirm channel
-          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name generatetoaddress 6 "$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=$wallet_name getnewaddress)"
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass generatetoaddress 6 "$address"
 
           echo "NWC_URI=$(docker exec cln lightning-cli --network=regtest nip47-create label=nwc-for-l402 budget_msat=0 | jq -r '.uri')" >> $GITHUB_ENV
 
@@ -1287,9 +1101,6 @@ jobs:
           fi
 
           echo "✅ Cashu redemption on Lightning integration tests completed!"
-
-      - name: Stop nginx-lnd
-        run: docker-compose -f docker-compose.yml stop nginx-lnd
 
       - name: Stop nginx-lnd and start nginx-lnurl
         env: 
