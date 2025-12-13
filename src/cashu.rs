@@ -24,6 +24,20 @@ const MSAT_PER_SAT: u64 = 1000;
 // Database singleton using cdk-sqlite
 static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new();
 
+// Mutex to prevent concurrent wallet operations (receive/melt race conditions)
+// Key: mint_url, Value: mutex for that mint's wallet operations
+static WALLET_LOCKS: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+
+/// Get or create a lock for a specific mint to serialize wallet operations
+async fn get_mint_lock(mint_url: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let locks = WALLET_LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+    let mut locks_guard = locks.lock().await;
+    locks_guard
+        .entry(mint_url.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 // Whitelisted mints singleton
 static WHITELISTED_MINTS: OnceLock<HashSet<String>> = OnceLock::new();
 
@@ -442,25 +456,67 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
     seed[..32].copy_from_slice(seed_hash.as_bytes());
     debug!("🔑 Using seed for receiving token from mint {}", mint_url);
 
+    // Acquire lock for this mint to prevent concurrent wallet operations
+    let mint_lock = get_mint_lock(&mint_url.to_string()).await;
+    let _lock_guard = mint_lock.lock().await;
+    debug!("🔒 Acquired wallet lock for mint {}", mint_url);
+
     // Create wallet directly for this specific mint
     let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), seed, None)
         .map_err(|e| format!("Failed to create wallet: {}", e))?;
+
+    // Get proofs from token before receive (these are the proofs we'll map to lnurl)
+    let token_proofs = if is_multi_tenant_enabled() {
+        // Load keysets to extract proofs from token
+        match wallet.get_mint_keysets().await {
+            Ok(keysets) => {
+                match token_decoded.proofs(&keysets) {
+                    Ok(proofs) => Some(proofs),
+                    Err(e) => {
+                        warn!("⚠️ Failed to extract proofs from token: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(_) => {
+                // Try loading keysets from mint if not cached
+                match wallet.load_mint_keysets().await {
+                    Ok(keysets) => {
+                        match token_decoded.proofs(&keysets) {
+                            Ok(proofs) => Some(proofs),
+                            Err(e) => {
+                                warn!("⚠️ Failed to extract proofs from token: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to load keysets: {}", e);
+                        None
+                    }
+                }
+            }
+        }
+    } else {
+        None
+    };
 
     match wallet
         .receive(token, cdk::wallet::ReceiveOptions::default())
         .await
     {
-        Ok(_) => {
+        Ok(_received_amount) => {
             info!(
                 "✅ Cashu token received successfully from mint: {}",
                 mint_url
             );
 
             if is_multi_tenant_enabled() {
-                let proofs = wallet.get_unspent_proofs().await
-                .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
-                if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
-                    warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                // Map the token's proofs to lnurl (now safe - we're inside the lock)
+                if let Some(proofs) = token_proofs {
+                    if let Err(e) = set_proof_to_lnurl(proofs, lnurl_addr) {
+                        warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                    }
                 }
             }
 
@@ -731,6 +787,11 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
             warn!("⚠️ Invalid mint URL format: {}", mint_url_str);
             continue;
         }
+
+        // Acquire lock for this mint to prevent concurrent wallet operations
+        let mint_lock = get_mint_lock(mint_url_str).await;
+        let _lock_guard = mint_lock.lock().await;
+        debug!("🔒 Acquired wallet lock for mint {} (redemption)", mint_url_str);
 
         // Create wallet for this mint
         let wallet = match cdk::wallet::Wallet::new(
