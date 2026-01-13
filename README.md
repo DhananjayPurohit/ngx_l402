@@ -197,6 +197,32 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 
 > **Note**: The module supports dynamic pricing through Redis, allowing you to change endpoint prices in real-time without restarting Nginx. When Redis is configured, the module will check Redis for a price override before using the default price specified in the nginx configuration.
 
+### Dynamic Configuration via Redis
+
+The module supports real-time configuration updates via Redis without requiring an Nginx reload. This is useful for dynamic pricing and multi-tenant routing.
+
+#### 1. Dynamic Pricing
+Set the price for a specific path in Redis:
+```bash
+# Set price to 1000 msats for /api/resource
+SET /api/resource 1000
+```
+
+#### 2. Dynamic LNURL (Multi-Tenant)
+Override the LNURL address for a specific path dynamically. This takes precedence over the `l402_lnurl_addr` in nginx.conf.
+
+**Key Format**: `lnurl:<request_path>`
+
+```bash
+# Route payments for /api/tenant1 to a specific LNURL
+SET lnurl:/api/tenant1 alice@getalby.com
+
+# Route payments for /api/tenant2 to another LNURL
+SET lnurl:/api/tenant2 bob@getalby.com
+```
+
+> **Updates are Immediate**: Changes made in Redis are picked up immediately by the next request. No Nginx reload is required.
+
 ### Multi-Tenant Configuration
 
 The module supports **multi-tenant mode**, allowing different API routes to use different Lightning/LNURL backends. This is useful for platforms hosting multiple merchants or services, where each tenant receives payments to their own wallet.
