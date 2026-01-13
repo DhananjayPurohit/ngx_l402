@@ -402,7 +402,24 @@ impl L402Module {
                 return price.unwrap_or(0); // Return 0 if no price found
             }
         }
+
         0 // Return 0 if Redis is not configured or connection fails
+    }
+
+    pub fn get_dynamic_lnurl(&self, path: &str) -> Option<String> {
+        if let Some(redis_client) = REDIS_CLIENT.get() {
+            if let Ok(mut conn) = redis_client
+                .lock()
+                .expect("Failed to lock Redis client")
+                .get_connection()
+            {
+                // Try to get lnurl from Redis using the path as key with "lnurl:" prefix
+                let key = format!("lnurl:{}", path);
+                let lnurl: Option<String> = conn.get(key).unwrap_or(None);
+                return lnurl;
+            }
+        }
+        None // Return None if Redis is not configured or connection fails
     }
 }
 
@@ -615,13 +632,17 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         amount_msat
     };
 
+    // Get dynamic LNURL from Redis (takes precedence over nginx config)
+    let dynamic_lnurl = module.get_dynamic_lnurl(&request_path);
+    let final_lnurl_addr = dynamic_lnurl.or(lnurl_addr);
+
     let result = l402_access_handler(
         auth_header,
         uri,
         method,
         final_amount,
         caveats.clone(),
-        lnurl_addr.clone(),
+        final_lnurl_addr.clone(),
     );
 
     // Only set L402 header if result is 402
@@ -692,7 +713,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                     caveats.clone(),
                     final_amount,
                     macaroon_timeout,
-                    lnurl_addr.clone(),
+                    final_lnurl_addr.clone(),
                 )
                 .await
         });
