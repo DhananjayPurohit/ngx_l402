@@ -138,23 +138,54 @@ impl L402Module {
             }
             "LND" => {
                 info!("🔧 Configuring LND client");
-                let address =
-                    std::env::var("LND_ADDRESS").unwrap_or_else(|_| "localhost:10009".to_string());
-                info!("🔗 Using LND address: {}", address);
-                let socks5_proxy = std::env::var("SOCKS5_PROXY").ok();
-                if let Some(ref proxy) = socks5_proxy {
-                    info!("🔒 Using SOCKS5 proxy: {}", proxy);
-                }
+                
+                // Check if using LNC (Lightning Node Connect)
+                let lnc_pairing_phrase = std::env::var("LNC_PAIRING_PHRASE").ok();
+                let lnc_mailbox_server = std::env::var("LNC_MAILBOX_SERVER").ok();
+                
+                // Configure based on connection type
+                let lnd_options = if lnc_pairing_phrase.is_some() {
+                    // LNC mode - only pairing phrase needed, no cert/macaroon required
+                    info!("🔗 Using LNC (Lightning Node Connect) mode");
+                    if let Some(ref phrase) = lnc_pairing_phrase {
+                        info!("📱 LNC pairing phrase configured (length: {})", phrase.len());
+                    }
+                    if let Some(ref server) = lnc_mailbox_server {
+                        info!("📮 LNC mailbox server: {}", server);
+                    }
+                    lnd::LNDOptions {
+                        address: None,
+                        macaroon_file: None,
+                        cert_file: None,
+                        socks5_proxy: None,
+                        lnc_pairing_phrase,
+                        lnc_mailbox_server,
+                    }
+                } else {
+                    // Traditional LND mode - all required
+                    info!("⚡ Using traditional LND mode");
+                    let address =
+                        std::env::var("LND_ADDRESS").unwrap_or_else(|_| "localhost:10009".to_string());
+                    info!("🔗 Using LND address: {}", address);
+                    let socks5_proxy = std::env::var("SOCKS5_PROXY").ok();
+                    if let Some(ref proxy) = socks5_proxy {
+                        info!("🔒 Using SOCKS5 proxy: {}", proxy);
+                    }
+                    lnd::LNDOptions {
+                        address: Some(address),
+                        macaroon_file: Some(std::env::var("MACAROON_FILE_PATH")
+                            .unwrap_or_else(|_| "admin.macaroon".to_string())),
+                        cert_file: Some(std::env::var("CERT_FILE_PATH")
+                            .unwrap_or_else(|_| "tls.cert".to_string())),
+                        socks5_proxy,
+                        lnc_pairing_phrase: None,
+                        lnc_mailbox_server: None,
+                    }
+                };
+                
                 lnclient::LNClientConfig {
                     ln_client_type,
-                    lnd_config: Some(lnd::LNDOptions {
-                        address,
-                        macaroon_file: std::env::var("MACAROON_FILE_PATH")
-                            .unwrap_or_else(|_| "admin.macaroon".to_string()),
-                        cert_file: std::env::var("CERT_FILE_PATH")
-                            .unwrap_or_else(|_| "tls.cert".to_string()),
-                        socks5_proxy, // Optional: e.g., "127.0.0.1:9050" for Tor
-                    }),
+                    lnd_config: Some(lnd_options),
                     lnurl_config: None,
                     nwc_config: None,
                     cln_config: None,

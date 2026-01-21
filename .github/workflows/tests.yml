@@ -1315,6 +1315,168 @@ jobs:
 
           echo "✅ Multi-tenant LNURL Cashu Redemption integration test completed with 2 tenants!"
 
+      - name: Stop nginx-lnurl and start litd
+        run: |
+          echo "Stopping nginx-lnurl and starting litd (Lightning Terminal)..."
+          docker-compose -f docker-compose.yml stop nginx-lnurl
+          docker-compose -f docker-compose.yml up -d litd
+          sleep 20
+          echo "Waiting for litd to fully start..."
+          
+          # Check if litd is responding
+          max_attempts=30
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            if docker exec litd wget -q -O- http://localhost:8443 > /dev/null 2>&1; then
+              echo "✓ litd is responding"
+              break
+            fi
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt/$max_attempts: Waiting for litd..."
+            sleep 2
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "Warning: litd may not be fully ready, but continuing..."
+            docker logs litd
+          fi
+
+      - name: Generate LNC Pairing Phrase
+        run: |
+          echo "Generating LNC pairing phrase..."
+          
+          # Wait for litd to be fully ready
+          sleep 10
+          
+          max_attempts=10
+          attempt=0
+          PAIRING_PHRASE=""
+          
+          while [ $attempt -lt $max_attempts ] && [ -z "$PAIRING_PHRASE" ]; do
+            echo "Attempt $attempt/$max_attempts: Creating LNC session..."
+            
+            SESSION_OUTPUT=$(docker exec litd litcli --network=regtest sessions add --label="ci_test" --type=admin 2>&1 || true)
+            
+            echo "Debug: Session output:"
+            echo "$SESSION_OUTPUT"
+            
+            if echo "$SESSION_OUTPUT" | grep -q "pairing_secret_mnemonic"; then
+              # Extract the full mnemonic - it should be the value of pairing_secret_mnemonic field
+              # The output is JSON-like, so we extract everything between the quotes after pairing_secret_mnemonic
+              PAIRING_PHRASE=$(echo "$SESSION_OUTPUT" | grep "pairing_secret_mnemonic" | sed 's/.*"pairing_secret_mnemonic"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr -d '\n')
+              
+              # Count words to verify we got the full phrase
+              WORD_COUNT=$(echo "$PAIRING_PHRASE" | wc -w)
+              echo "Debug: Extracted phrase with $WORD_COUNT words"
+              
+              if [ "$WORD_COUNT" -eq 10 ] && [ -n "$PAIRING_PHRASE" ]; then
+                echo "✓ Generated pairing phrase with 10 words"
+                echo "LNC_PAIRING_PHRASE=$PAIRING_PHRASE" >> $GITHUB_ENV
+                break
+              else
+                echo "Warning: Got $WORD_COUNT words instead of 10, retrying..."
+                PAIRING_PHRASE=""
+              fi
+            fi
+            
+            attempt=$((attempt + 1))
+            if [ $attempt -lt $max_attempts ]; then
+              sleep 3
+            fi
+          done
+          
+          if [ -z "$PAIRING_PHRASE" ]; then
+            echo "Error: Could not generate LNC pairing phrase after $max_attempts attempts"
+            echo "Checking litd logs:"
+            docker logs litd | tail -100
+            exit 1
+          fi
+          
+          echo "✓ LNC pairing phrase generated successfully"
+          echo "Pairing phrase: ${PAIRING_PHRASE:0:50}..."
+
+      - name: Start nginx-lnc
+        run: |
+          echo "Starting nginx-lnc with LNC configuration..."
+          docker-compose -f docker-compose.yml up -d nginx-lnc
+          sleep 15
+
+      - name: Run Integration Tests - LNC
+        run: |
+          echo "Testing with LNC (Lightning Node Connect) configuration..."
+          
+          # Test free route
+          echo "Testing free route..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Free route returned status $status_code, expected 200"
+            docker logs nginx-lnc
+            exit 1
+          fi
+          echo "✅ Free route test passed"
+
+          # Test protected route without header - should return 402 with invoice
+          echo "Testing protected route without header (LNC invoice generation)..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx-lnc
+            exit 1
+          fi
+          echo "✅ Protected route returned 402 Payment Required"
+          
+          # Check if WWW-Authenticate header is present
+          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
+            echo "Error: WWW-Authenticate header is missing in the 402 response"
+            echo "$response"
+            docker logs nginx-lnc
+            exit 1
+          fi
+          echo "✅ WWW-Authenticate header present"
+
+          # Extract and validate invoice from header
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header"
+            echo "$response"
+            docker logs nginx-lnc
+            exit 1
+          fi
+          echo "✅ Invoice extracted: ${invoice:0:50}..."
+
+          # Validate invoice format (should start with lnbc for mainnet or lnbcrt for regtest)
+          if [[ "$invoice" =~ ^lnbc ]]; then
+            echo "✅ Invoice has valid BOLT11 format (lnbc prefix)"
+          elif [[ "$invoice" =~ ^lntb ]]; then
+            echo "✅ Invoice has valid BOLT11 testnet format (lntb prefix)"
+          elif [[ "$invoice" =~ ^lnbcrt ]]; then
+            echo "✅ Invoice has valid BOLT11 regtest format (lnbcrt prefix)"
+          else
+            echo "Error: Invoice does not have valid BOLT11 format"
+            echo "Invoice: $invoice"
+            exit 1
+          fi
+
+          # Decode invoice to verify it was generated correctly
+          echo "Decoding invoice to verify structure..."
+          decoded=$(docker exec lndnode lncli -n regtest decodepayreq "$invoice" 2>&1)
+          if echo "$decoded" | grep -q "num_msat"; then
+            amount=$(echo "$decoded" | jq -r '.num_msat' 2>/dev/null || echo "unknown")
+            echo "✅ Invoice decoded successfully (amount: $amount msat)"
+          else
+            echo "Warning: Could not decode invoice, but invoice was generated"
+            echo "Decoded output: $decoded"
+          fi
+
+          echo "✅ LNC invoice generation test completed successfully!"
+          echo "✅ LNC integration with Lightning Terminal verified!"
+
+      - name: Stop nginx-lnc and litd
+        run: |
+          docker-compose -f docker-compose.yml stop nginx-lnc litd
+
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

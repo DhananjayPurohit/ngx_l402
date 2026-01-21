@@ -71,9 +71,10 @@ services:
       - bitcoind
 
   lndnode:
-    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    image: lightninglabs/lndinit:v0.1.33-beta-lnd-v0.20.0-beta
     container_name: lndnode
     user: root
+    hostname: lnd
     entrypoint:
       - sh
       - -c
@@ -94,7 +95,11 @@ services:
         if [ ! -f "/data/.lnd/umbrel-lnd.conf" ]; then
           touch "/data/.lnd/umbrel-lnd.conf"
         fi
-        lnd --listen=0.0.0.0:9735 --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create
+        # Remove old TLS cert if it exists to force regeneration with correct hostname
+        if [ -f "/root/.lnd/tls.cert" ]; then
+          rm -f /root/.lnd/tls.cert /root/.lnd/tls.key
+        fi
+        exec lnd --lnddir=/root/.lnd --listen=0.0.0.0:9735 --rpclisten=0.0.0.0:10009 --restlisten=0.0.0.0:8080 --bitcoin.active --bitcoin.regtest --bitcoin.node=bitcoind --bitcoind.rpchost=bitcoind --bitcoind.rpcuser=user --bitcoind.rpcpass=pass --bitcoind.zmqpubrawblock=tcp://bitcoind:28332 --bitcoind.zmqpubrawtx=tcp://bitcoind:28333 --configfile=/data/.lnd/umbrel-lnd.conf --wallet-unlock-password-file=/data/walletpassword.txt --wallet-unlock-allow-create --rpcmiddleware.enable --tlsextradomain=lnd --tlsextraip=127.0.0.1
     ports:
       - "9735:9735"
       - "10009:10009"
@@ -109,7 +114,7 @@ services:
       - bitcoind
 
   lndnode-receiver:
-    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    image: lightninglabs/lndinit:v0.1.33-beta-lnd-v0.20.0-beta
     container_name: lndnode-receiver
     user: root
     entrypoint:
@@ -145,6 +150,51 @@ services:
       HOME: /data
     depends_on:
       - bitcoind
+
+  litd:
+    image: "lightninglabs/lightning-terminal:v0.14.1-alpha-path-prefix"
+    container_name: litd
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    expose:
+      - "8080"
+    ports:
+      - "8443:8080"
+    volumes:
+      - "litd-data:/root/.lit"
+      - "lndnode-data:/root/.lnd:ro"
+    depends_on:
+      - bitcoind
+      - lndnode
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo "Waiting for LND files in /root/.lnd..."
+        while [ ! -f /root/.lnd/tls.cert ]; do
+          sleep 2
+        done
+        while [ ! -f /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon ]; do
+          sleep 2
+        done
+        echo "LND files found, starting litd..."
+        exec litd "$$@"
+    command:
+      - "--insecure-httplisten=0.0.0.0:8080"
+      - "--network=regtest"
+      - "--uipassword=password123"
+      - "--lnd-mode=remote"
+      - "--remote.lnd.rpcserver=lnd:10009"
+      - "--remote.lnd.macaroonpath=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon"
+      - "--remote.lnd.tlscertpath=/root/.lnd/tls.cert"
+      - "--faraday.connect_bitcoin"
+      - "--faraday.bitcoin.host=bitcoind:18443"
+      - "--faraday.bitcoin.user=user"
+      - "--faraday.bitcoin.password=pass"
+      - "--autopilot.disable"
+      - "--remote.lit-debuglevel=trace"
 
   redis:
     image: redis:7.2
@@ -299,6 +349,23 @@ services:
       - cashu-mint
       - redis
 
+  nginx-lnc:
+    container_name: nginx-lnc
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8000:8000"
+    environment:
+      - LN_CLIENT_TYPE=LND
+      - LNC_PAIRING_PHRASE=${LNC_PAIRING_PHRASE}
+      - LNC_MAILBOX_SERVER=${LNC_MAILBOX_SERVER:-mailbox.terminal.lightning.today:443}
+    depends_on:
+      - litd
+      - redis
+
   grpc-content-server:
     container_name: grpc-content-server
     build:
@@ -314,6 +381,7 @@ volumes:
   bitcoin_data:
   lndnode-data:
   lndnode-receiver-data:
+  litd-data:
   cashu-data:
   cln-data:
   redis_data:
