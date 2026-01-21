@@ -71,7 +71,7 @@ services:
       - bitcoind
 
   lndnode:
-    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    image: lightninglabs/lndinit:v0.1.33-beta-lnd-v0.20.0-beta
     container_name: lndnode
     user: root
     hostname: lnd
@@ -114,7 +114,7 @@ services:
       - bitcoind
 
   lndnode-receiver:
-    image: lightninglabs/lndinit:v0.1.21-beta-lnd-v0.18.0-beta
+    image: lightninglabs/lndinit:v0.1.33-beta-lnd-v0.20.0-beta
     container_name: lndnode-receiver
     user: root
     entrypoint:
