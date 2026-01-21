@@ -161,7 +161,7 @@ services:
     expose:
       - "8080"
     ports:
-      - "8081:8080"
+      - "8443:8080"
     volumes:
       - "litd-data:/root/.lit"
       - "lndnode-data:/root/.lnd:ro"
