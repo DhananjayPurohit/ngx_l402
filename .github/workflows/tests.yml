@@ -1446,9 +1446,9 @@ jobs:
           fi
           echo "Invoice: ${invoice:0:50}..."
 
-          # Pay invoice using lndnode to get preimage
-          echo "Paying invoice through LND..."
-          payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice 2>&1)
+          # Pay invoice using lndnode-receiver (different node to avoid self-payment)
+          echo "Paying invoice through LND-receiver..."
+          payment_result=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest payinvoice -f $invoice 2>&1)
           echo "Payment initiated"
           
           # Wait for payment to settle
@@ -1456,7 +1456,7 @@ jobs:
           sleep 5
           
           # Get payment result with preimage
-          payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1]')
+          payment_result=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest listpayments | jq -r '.payments[-1]')
           payment_status=$(echo "$payment_result" | jq -r '.status')
           echo "Payment status: $payment_status"
           
@@ -1465,6 +1465,7 @@ jobs:
             echo "Payment result: $payment_result"
             docker logs nginx-lnc
             docker logs litd
+            docker logs lndnode-receiver
             exit 1
           fi
 
