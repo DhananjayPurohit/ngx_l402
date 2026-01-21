@@ -1345,45 +1345,55 @@ jobs:
         run: |
           echo "Generating LNC pairing phrase..."
           
-          # Wait a bit more for litd to be ready
-          sleep 5
+          # Wait for litd to be fully ready
+          sleep 10
           
-          # Try to generate a pairing phrase using the litd REST API
-          # The endpoint is /v1/sessions - we need to create a new session
-          # Use the uipassword from docker-compose (password123)
+          max_attempts=10
+          attempt=0
+          PAIRING_PHRASE=""
           
-          echo "Attempting to create LNC session via litd API..."
-          
-          # Try using litcli if available in the container
-          if docker exec litd which litcli > /dev/null 2>&1; then
-            echo "Using litcli to create session..."
-            # Create session with litcli
-            PAIRING_PHRASE=$(docker exec litd litcli sessions add --type admin --label "CI Test Session" --mailbox_server_addr mailbox.terminal.lightning.today:443 2>&1 | grep -o 'nostr+walletconnect://[^"]*' || true)
-          else
-            echo "litcli not available, using direct API call..."
-            # Try direct API call
-            PAIRING_RESPONSE=$(docker exec litd wget -q -O- --post-data='{"label":"CI Test Session","type":"admin","mailbox_server_addr":"mailbox.terminal.lightning.today:443"}' --header='Content-Type: application/json' http://localhost:8443/v1/sessions 2>&1 || true)
-            echo "API Response: $PAIRING_RESPONSE"
-            PAIRING_PHRASE=$(echo "$PAIRING_RESPONSE" | grep -o 'nostr+walletconnect://[^"]*' || true)
-          fi
-          
-          if [ -z "$PAIRING_PHRASE" ]; then
-            echo "Failed to generate pairing phrase via API, trying alternative method..."
-            docker logs litd | tail -50
+          while [ $attempt -lt $max_attempts ] && [ -z "$PAIRING_PHRASE" ]; do
+            echo "Attempt $attempt/$max_attempts: Creating LNC session..."
             
-            # Try extracting from logs if available
-            PAIRING_PHRASE=$(docker logs litd 2>&1 | grep -o 'nostr+walletconnect://[^"]*' | tail -1 || true)
-          fi
+            SESSION_OUTPUT=$(docker exec litd litcli --network=regtest sessions add --label="ci_test" --type=admin 2>&1 || true)
+            
+            echo "Debug: Session output:"
+            echo "$SESSION_OUTPUT"
+            
+            if echo "$SESSION_OUTPUT" | grep -q "pairing_secret_mnemonic"; then
+              # Extract the full mnemonic - it should be the value of pairing_secret_mnemonic field
+              # The output is JSON-like, so we extract everything between the quotes after pairing_secret_mnemonic
+              PAIRING_PHRASE=$(echo "$SESSION_OUTPUT" | grep "pairing_secret_mnemonic" | sed 's/.*"pairing_secret_mnemonic"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' | tr -d '\n')
+              
+              # Count words to verify we got the full phrase
+              WORD_COUNT=$(echo "$PAIRING_PHRASE" | wc -w)
+              echo "Debug: Extracted phrase with $WORD_COUNT words"
+              
+              if [ "$WORD_COUNT" -eq 10 ] && [ -n "$PAIRING_PHRASE" ]; then
+                echo "✓ Generated pairing phrase with 10 words"
+                echo "LNC_PAIRING_PHRASE=$PAIRING_PHRASE" >> $GITHUB_ENV
+                break
+              else
+                echo "Warning: Got $WORD_COUNT words instead of 10, retrying..."
+                PAIRING_PHRASE=""
+              fi
+            fi
+            
+            attempt=$((attempt + 1))
+            if [ $attempt -lt $max_attempts ]; then
+              sleep 3
+            fi
+          done
           
           if [ -z "$PAIRING_PHRASE" ]; then
-            echo "Error: Could not generate LNC pairing phrase"
+            echo "Error: Could not generate LNC pairing phrase after $max_attempts attempts"
             echo "Checking litd logs:"
-            docker logs litd
+            docker logs litd | tail -100
             exit 1
           fi
           
-          echo "Generated LNC Pairing Phrase: ${PAIRING_PHRASE:0:80}..."
-          echo "LNC_PAIRING_PHRASE=$PAIRING_PHRASE" >> $GITHUB_ENV
+          echo "✓ LNC pairing phrase generated successfully"
+          echo "Pairing phrase: ${PAIRING_PHRASE:0:50}..."
 
       - name: Start nginx-lnc
         run: |

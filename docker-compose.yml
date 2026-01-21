@@ -159,9 +159,9 @@ services:
       - 8.8.8.8
       - 8.8.4.4
     expose:
-      - "8443"
+      - "8080"
     ports:
-      - "8443:8443"
+      - "8081:8080"
     volumes:
       - "litd-data:/root/.lit"
       - "lndnode-data:/root/.lnd:ro"
@@ -182,7 +182,7 @@ services:
         echo "LND files found, starting litd..."
         exec litd "$$@"
     command:
-      - "--insecure-httplisten=0.0.0.0:8443"
+      - "--insecure-httplisten=0.0.0.0:8080"
       - "--network=regtest"
       - "--uipassword=password123"
       - "--lnd-mode=remote"
