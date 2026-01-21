@@ -1,6 +1,6 @@
 # L402 Nginx Module
 
-An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Core Lightning (CLN), Lightning Network URL (LNURL), Nostr Wallet Connect (NWC), and BOLT12 Lightning Offers for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
+An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Node Connect (LNC) for LND, Core Lightning (CLN), Lightning Network URL (LNURL), Nostr Wallet Connect (NWC), and BOLT12 Lightning Offers for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
 
 ![L402 module demo](https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9)
 
@@ -63,11 +63,16 @@ location /protected {
 Environment=LN_CLIENT_TYPE=LNURL
 Environment=LNURL_ADDRESS=username@your-lnurl-server.com
 Environment=ROOT_KEY=your-root-key
-# if using LND:
+# if using LND (traditional gRPC):
 Environment=LN_CLIENT_TYPE=LND
 Environment=LND_ADDRESS=your-lnd-ip.com
 Environment=MACAROON_FILE_PATH=/path/to/macaroon
 Environment=CERT_FILE_PATH=/path/to/cert
+Environment=ROOT_KEY=your-root-key
+# if using LND via LNC (Lightning Node Connect):
+Environment=LN_CLIENT_TYPE=LND
+Environment=LNC_PAIRING_PHRASE=<10-word-mnemonic-from-litd>
+Environment=LNC_MAILBOX_SERVER=mailbox.terminal.lightning.today:443
 Environment=ROOT_KEY=your-root-key
 # if using CLN:
 Environment=LN_CLIENT_TYPE=CLN
@@ -355,6 +360,22 @@ docker run -d \
   -e CASHU_REDEEM_ON_LIGHTNING=true \
   -e REDIS_URL=redis://redis:6379 \
   -v ~/l402-data:/app/data \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
+**2b. LND via Lightning Node Connect (LNC)**
+```bash
+# LNC uses Lightning Terminal for secure remote connections
+# Generate a pairing phrase from Lightning Terminal (litd):
+# litcli sessions add --label="nginx-l402" --type=admin
+
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LND \
+  -e LNC_PAIRING_PHRASE="word1 word2 word3 word4 word5 word6 word7 word8 word9 word10" \
+  -e LNC_MAILBOX_SERVER=mailbox.terminal.lightning.today:443 \
+  -e ROOT_KEY=your-32-byte-hex-key \
   ghcr.io/dhananjaypurohit/ngx_l402:latest
 ```
 
