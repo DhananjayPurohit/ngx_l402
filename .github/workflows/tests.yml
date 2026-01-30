@@ -107,11 +107,19 @@ jobs:
 
           # Flush Redis to clear any previously stored preimages (replay protection)
           echo "Flushing Redis for clean test state..."
+          echo "Keys before flush:"
+          docker exec redis redis-cli keys "l402:*"
           docker exec redis redis-cli flushall
+          echo "Keys after flush:"
+          docker exec redis redis-cli keys "l402:*"
+          docker exec redis redis-cli dbsize
           
-          # Test with valid L402 credentials (use /protected/ to avoid redirect)
+          # Wait a moment for flush to propagate
+          sleep 2
+          
+          # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
@@ -121,7 +129,7 @@ jobs:
 
           # Test with invalid preimage
           echo "Testing with invalid preimage..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 401"
@@ -131,7 +139,7 @@ jobs:
 
           # Test with macaroon without caveats
           echo "Testing with macaroon without caveats..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
@@ -540,7 +548,7 @@ jobs:
           
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
@@ -550,7 +558,7 @@ jobs:
 
           # Test with invalid preimage
           echo "Testing with invalid preimage..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 401"
@@ -560,7 +568,7 @@ jobs:
 
           # Test with macaroon without caveats
           echo "Testing with macaroon without caveats..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
@@ -810,7 +818,7 @@ jobs:
 
           # Test with invalid preimage
           echo "Testing with invalid preimage..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 401"
@@ -820,7 +828,7 @@ jobs:
 
           # Test with macaroon without caveats
           echo "Testing with macaroon without caveats..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
@@ -962,7 +970,7 @@ jobs:
           
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
@@ -972,7 +980,7 @@ jobs:
 
           # Test with invalid preimage
           echo "Testing with invalid preimage..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:fbe9ac25c04e14b10177514e2d57b0e39224e70277ac1a2cd23c28e58cd4ea35" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with invalid preimage returned status $status_code, expected 401"
@@ -982,7 +990,7 @@ jobs:
 
           # Test with macaroon without caveats
           echo "Testing with macaroon without caveats..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 AgEETFNBVALmAUr/gQMBARJNYWNhcm9vbklkZW50aWZpZXIB/4IAAQMBB1ZlcnNpb24BBgABC1BheW1lbnRIYXNoAf+EAAEHVG9rZW5JZAH/hgAAABT/gwEBAQRIYXNoAf+EAAEGAUAAABn/hQEBAQlbMzJddWludDgB/4YAAQYBQAAAa/+CAiD/pv/jOjY1/9oC/4z/tHb/qf/2Jf+d/4H/u/+YGHj/+/+O/8D/v/+P/8X/qRL/5v/x/4r/tkIBIA1Y/8j/pR3/0P+b/7cwWP+W/87/sD18GP//Hf/f/9Aj//NcBFs2/9VhNEUF/70AAAAGIDlR1jVm5IfEJgvuSQoJLqLg4FcW4Ib1vW8sbkRHdUWX:651505fae9ea341c770c6ebef207d8560d546eb3aee26985e584c15d1c987875" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with macaroon without caveats returned status $status_code, expected 401"
@@ -1033,7 +1041,7 @@ jobs:
           
           while [ $retry_count -lt $max_retries ] && [ "$status_code" -ne 200 ]; do
             echo "Attempt $(($retry_count + 1)) of $max_retries..."
-            response=$(curl -v -s -i -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected/)
+            response=$(curl -v -s -i -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
             status_code=$(echo "$response" | tail -n1)
             
             if [ "$status_code" -ne 200 ]; then
@@ -1063,7 +1071,7 @@ jobs:
           sleep 5
           
           # Test with the invalid token
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $INVALID_CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           
           # This should fail verification due to insufficient amount
@@ -1093,7 +1101,7 @@ jobs:
           sleep 5
           
           # Test with the malformed token
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_MALFORMED_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           
           # This should fail verification due to empty proofs
@@ -1133,7 +1141,7 @@ jobs:
           sleep 5
           
           # Test with the non-whitelisted token
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_NON_WHITELISTED_TOKEN" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $ENCODED_NON_WHITELISTED_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           
           # This should fail verification due to non-whitelisted mint
@@ -1160,7 +1168,7 @@ jobs:
           echo "Testing L402 preimage replay attack prevention..."
           
           # First request with valid L402 credentials should succeed
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "❌ Error: First request with valid L402 preimage returned status $status_code, expected 200"
@@ -1182,7 +1190,7 @@ jobs:
           echo "✅ Preimage stored in Redis successfully"
           
           # Second request with SAME preimage should fail (replay attack)
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "❌ Error: Replay attack with same L402 preimage returned status $status_code, expected 401"
@@ -1199,7 +1207,7 @@ jobs:
           echo "Created Cashu token: ${CASHU_TOKEN:0:50}..."
           
           # First request with Cashu token should succeed
-          response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "❌ Error: First request with Cashu token returned status $status_code, expected 200"
@@ -1221,7 +1229,7 @@ jobs:
           echo "✅ Cashu token stored in Redis successfully"
           
           # Second request with SAME Cashu token should fail (replay attack)
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "❌ Error: Replay attack with same Cashu token returned status $status_code, expected 401"
@@ -1279,7 +1287,7 @@ jobs:
           echo "Cashu Token of amount 100: $cashu_token"
 
           # access protected nginx-lnd route with cashu token
-          response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $cashu_token" http://0.0.0.0:8000/protected/)
+          response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $cashu_token" http://0.0.0.0:8000/protected)
 
           if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
             echo "Error: unable to access protected route with Cashu token with response $(echo "$response" | tail -n1)"
