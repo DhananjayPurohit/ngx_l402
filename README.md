@@ -88,8 +88,12 @@ Environment=BOLT12_OFFER=lno1...
 Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
 Environment=ROOT_KEY=your-root-key
 
-# To use redis to set price dynamically
+# To use redis to set price dynamically and enable replay attack prevention
 Environment=REDIS_URL=redis://127.0.0.1:6379
+
+# Optional: Configure TTL for replay attack prevention (default: 86400 = 24 hours)
+Environment=L402_PREIMAGE_TTL_SECONDS=86400
+Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400
 
 # To accept Cashu tokens as Ecash for L402:
 Environment=CASHU_ECASH_SUPPORT=true
@@ -227,6 +231,19 @@ SET lnurl:/api/tenant2 bob@getalby.com
 ```
 
 > **Updates are Immediate**: Changes made in Redis are picked up immediately by the next request. No Nginx reload is required.
+
+### Replay Attack Prevention
+
+Redis is used to enforce single-use of L402 preimages and Cashu tokens, preventing replay attacks across distributed deployments.
+
+**Configuration:**
+```bash
+Environment=REDIS_URL=redis://127.0.0.1:6379
+Environment=L402_PREIMAGE_TTL_SECONDS=86400      # Default: 24 hours
+Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400   # Default: 24 hours
+```
+
+**How it works:** After successful verification, SHA256 hashes of preimages/tokens are stored in Redis with TTL. Subsequent use of the same credential is rejected with 401. Protection persists across restarts and works with multiple Nginx instances.
 
 ### Multi-Tenant Configuration
 

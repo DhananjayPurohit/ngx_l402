@@ -1133,6 +1133,101 @@ jobs:
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
 
+      - name: Run Integration test - Redis Replay Attack Prevention
+        run: |
+          echo "🔒 Testing Redis replay attack prevention for L402 preimages and Cashu tokens..."
+          
+          # Flush Redis to start clean
+          docker exec redis redis-cli flushall
+          
+          # ========== TEST 1: L402 Preimage Replay Attack Prevention ==========
+          echo "Testing L402 preimage replay attack prevention..."
+          
+          # First request with valid L402 credentials should succeed
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "❌ Error: First request with valid L402 preimage returned status $status_code, expected 200"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+          echo "✅ First request with valid L402 preimage succeeded"
+          
+          # Wait a moment for Redis to store the preimage
+          sleep 2
+          
+          # Check Redis for stored preimage
+          PREIMAGE_KEYS=$(docker exec redis redis-cli keys "l402:preimage:*" 2>/dev/null | wc -l)
+          echo "Found $PREIMAGE_KEYS preimage entries in Redis"
+          if [ "$PREIMAGE_KEYS" -lt 1 ]; then
+            echo "❌ Error: Preimage was not stored in Redis"
+            exit 1
+          fi
+          echo "✅ Preimage stored in Redis successfully"
+          
+          # Second request with SAME preimage should fail (replay attack)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 401 ]; then
+            echo "❌ Error: Replay attack with same L402 preimage returned status $status_code, expected 401"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+          echo "✅ L402 preimage replay attack prevented successfully!"
+          
+          # ========== TEST 2: Cashu Token Replay Attack Prevention ==========
+          echo "Testing Cashu token replay attack prevention..."
+          
+          # Create a Cashu token
+          CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
+          echo "Created Cashu token: ${CASHU_TOKEN:0:50}..."
+          
+          # First request with Cashu token should succeed
+          response=$(curl -s -w "\n%{http_code}" --max-time 60 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "❌ Error: First request with Cashu token returned status $status_code, expected 200"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "✅ First request with Cashu token succeeded"
+          
+          # Wait a moment for Redis to store the token
+          sleep 2
+          
+          # Check Redis for stored Cashu token
+          CASHU_KEYS=$(docker exec redis redis-cli keys "l402:cashu_token:*" 2>/dev/null | wc -l)
+          echo "Found $CASHU_KEYS Cashu token entries in Redis"
+          if [ "$CASHU_KEYS" -lt 1 ]; then
+            echo "❌ Error: Cashu token was not stored in Redis"
+            exit 1
+          fi
+          echo "✅ Cashu token stored in Redis successfully"
+          
+          # Second request with SAME Cashu token should fail (replay attack)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 401 ]; then
+            echo "❌ Error: Replay attack with same Cashu token returned status $status_code, expected 401"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "✅ Cashu token replay attack prevented successfully!"
+          
+          # ========== SUMMARY ==========
+          echo "📊 Redis replay attack prevention summary:"
+          echo "  - L402 preimage entries: $PREIMAGE_KEYS"
+          echo "  - Cashu token entries: $CASHU_KEYS"
+          
+          # Show sample Redis keys
+          echo "Sample Redis keys:"
+          docker exec redis redis-cli keys "l402:*" | head -5
+          
+          echo "✅ All Redis replay attack prevention tests passed!"
+        env:
+          CASHU_WHITELISTED_MINTS: http://cashu-mint:3338
+          CASHU_WALLET_SECRET: test_wallet_secret_for_ci
+
       - name: Run Integration test - Cashu redemption on Lightning
         run: |
           # Capture initial channel balance (not wallet balance, since Lightning payments affect channels)
