@@ -14,6 +14,8 @@ use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConf
 use ngx::{ngx_log_error, ngx_null_command, ngx_string};
 use redis::Client as RedisClient;
 use redis::Commands;
+use sha2::{Sha256, Digest};
+use hex;
 use std::collections::HashMap;
 use std::ffi::c_char;
 use std::ffi::CStr;
@@ -86,6 +88,156 @@ pub async fn get_or_create_lnurl_client(
             Err(format!("Failed to create LNURL client: {:?}", e))
         }
     }
+}
+
+/// Check if a preimage has been used before (replay attack prevention)
+/// Returns true if preimage is already used, false if it's new
+fn is_preimage_used(preimage: &[u8]) -> bool {
+    // If Redis is not configured, we can't track preimages (fallback to no protection)
+    let Some(redis_client) = REDIS_CLIENT.get() else {
+        warn!("⚠️ Redis not configured - preimage replay protection disabled");
+        return false;
+    };
+
+    let Ok(mut client_guard) = redis_client.lock() else {
+        error!("❌ Failed to lock Redis client for preimage check");
+        return false;
+    };
+
+    let Ok(mut conn) = client_guard.get_connection() else {
+        error!("❌ Failed to get Redis connection for preimage check");
+        return false;
+    };
+
+    // Create a hash of the preimage for the key
+    let mut hasher = Sha256::new();
+    hasher.update(preimage);
+    let preimage_hash = hex::encode(hasher.finalize());
+    let redis_key = format!("l402:preimage:{}", preimage_hash);
+
+    // Check if key exists
+    match conn.exists::<_, bool>(&redis_key) {
+        Ok(exists) => {
+            if exists {
+                warn!("⚠️ Preimage replay attack detected: {}", preimage_hash);
+            }
+            exists
+        }
+        Err(e) => {
+            error!("❌ Failed to check preimage in Redis: {}", e);
+            false
+        }
+    }
+}
+
+/// Store a preimage as used with TTL (default 24 hours)
+/// This prevents replay attacks by marking preimages as consumed
+fn store_preimage_as_used(preimage: &[u8]) -> Result<(), String> {
+    let redis_client = REDIS_CLIENT
+        .get()
+        .ok_or("Redis not configured")?;
+
+    let mut client_guard = redis_client
+        .lock()
+        .map_err(|_| "Failed to lock Redis client")?;
+
+    let mut conn = client_guard
+        .get_connection()
+        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+
+    // Create a hash of the preimage for the key
+    let mut hasher = Sha256::new();
+    hasher.update(preimage);
+    let preimage_hash = hex::encode(hasher.finalize());
+    let redis_key = format!("l402:preimage:{}", preimage_hash);
+
+    // Get TTL from environment or default to 24 hours
+    let ttl_seconds = std::env::var("L402_PREIMAGE_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(86400); // 24 hours default
+
+    // Store with TTL (SETEX: SET with EXpire)
+    conn.set_ex::<_, _, ()>(&redis_key, "used", ttl_seconds)
+        .map_err(|e| format!("Failed to store preimage in Redis: {}", e))?;
+
+    info!("✅ Stored preimage as used: {} (TTL: {}s)", preimage_hash, ttl_seconds);
+    Ok(())
+}
+
+/// Check if a Cashu token has been used before (replay attack prevention)
+/// Returns true if token is already used, false if it's new
+pub fn is_cashu_token_used(token: &str) -> bool {
+    // If Redis is not configured, we can't track tokens (fallback to thread-local only)
+    let Some(redis_client) = REDIS_CLIENT.get() else {
+        warn!("⚠️ Redis not configured - Cashu token replay protection limited to memory");
+        return false;
+    };
+
+    let Ok(mut client_guard) = redis_client.lock() else {
+        error!("❌ Failed to lock Redis client for Cashu token check");
+        return false;
+    };
+
+    let Ok(mut conn) = client_guard.get_connection() else {
+        error!("❌ Failed to get Redis connection for Cashu token check");
+        return false;
+    };
+
+    // Create a hash of the token for the key
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = hex::encode(hasher.finalize());
+    let redis_key = format!("l402:cashu_token:{}", token_hash);
+
+    // Check if key exists
+    match conn.exists::<_, bool>(&redis_key) {
+        Ok(exists) => {
+            if exists {
+                warn!("⚠️ Cashu token replay attack detected: {}", &token_hash[..16]);
+            }
+            exists
+        }
+        Err(e) => {
+            error!("❌ Failed to check Cashu token in Redis: {}", e);
+            false
+        }
+    }
+}
+
+/// Store a Cashu token as used with TTL (default 24 hours)
+/// This prevents replay attacks by marking tokens as consumed
+pub fn store_cashu_token_as_used(token: &str) -> Result<(), String> {
+    let redis_client = REDIS_CLIENT
+        .get()
+        .ok_or("Redis not configured")?;
+
+    let mut client_guard = redis_client
+        .lock()
+        .map_err(|_| "Failed to lock Redis client")?;
+
+    let mut conn = client_guard
+        .get_connection()
+        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+
+    // Create a hash of the token for the key
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let token_hash = hex::encode(hasher.finalize());
+    let redis_key = format!("l402:cashu_token:{}", token_hash);
+
+    // Get TTL from environment or default to 24 hours
+    let ttl_seconds = std::env::var("L402_CASHU_TOKEN_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(86400); // 24 hours default
+
+    // Store with TTL (SETEX: SET with EXpire)
+    conn.set_ex::<_, _, ()>(&redis_key, "used", ttl_seconds)
+        .map_err(|e| format!("Failed to store Cashu token in Redis: {}", e))?;
+
+    info!("✅ Stored Cashu token as used: {} (TTL: {}s)", &token_hash[..16], ttl_seconds);
+    Ok(())
 }
 
 pub struct L402Module {
@@ -822,6 +974,12 @@ pub fn l402_access_handler(
         } else {
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
+                    // Check for replay attack - has this preimage been used before?
+                    if is_preimage_used(&preimage.0) {
+                        error!("🚨 Replay attack detected: preimage already used");
+                        return 401;
+                    }
+
                     // Check expiry using verifier
                     let mut verifier = Verifier::default();
                     verifier.satisfy_general(|predicate| {
@@ -859,6 +1017,13 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
+                            
+                            // Store preimage as used to prevent replay attacks
+                            if let Err(e) = store_preimage_as_used(&preimage.0) {
+                                error!("⚠️ Failed to store preimage in Redis: {}", e);
+                                // Continue anyway - verification was successful
+                            }
+                            
                             return NGX_DECLINED.try_into().unwrap();
                         }
                         Err(e) => {

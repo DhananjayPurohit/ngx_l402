@@ -356,7 +356,13 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
     // Log database status
     debug!("🔍 Verifying Cashu token, checking database connection...");
 
-    // Check if token was already processed
+    // Check Redis first for replay attack prevention (persistent, distributed)
+    if crate::is_cashu_token_used(token) {
+        error!("🚨 Replay attack detected: Cashu token already used (Redis)");
+        return Err("Cashu token already used".to_string());
+    }
+
+    // Check thread-local memory cache (fast fallback)
     let token_already_processed = PROCESSED_TOKENS.with(|tokens| {
         if let Some(set) = tokens.borrow().as_ref() {
             set.contains(token)
@@ -366,7 +372,7 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
     });
 
     if token_already_processed {
-        debug!("✅ Cashu token already processed");
+        debug!("✅ Cashu token already processed (memory cache)");
         return Ok(true);
     }
 
@@ -464,7 +470,13 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
                 }
             }
 
-            // Add token to processed set after successful receive
+            // Store token as used in Redis to prevent replay attacks (persistent, distributed)
+            if let Err(e) = crate::store_cashu_token_as_used(token) {
+                warn!("⚠️ Failed to store Cashu token in Redis: {}", e);
+                // Continue anyway - we'll still use memory cache
+            }
+
+            // Add token to processed set after successful receive (memory cache)
             PROCESSED_TOKENS.with(|tokens| {
                 if let Some(set) = tokens.borrow_mut().as_mut() {
                     set.insert(token.to_string());
@@ -487,7 +499,13 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
 pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
     info!("🔐 P2PK mode: Optimized token verification");
 
-    // Check memory cache first
+    // Check Redis first for replay attack prevention (persistent, distributed)
+    if crate::is_cashu_token_used(token) {
+        error!("🚨 Replay attack detected: Cashu token already used (Redis)");
+        return Err("Cashu token already used".to_string());
+    }
+
+    // Check memory cache (fast fallback)
     let token_seen = PROCESSED_TOKENS.with(|tokens| {
         tokens
             .borrow()
@@ -496,7 +514,7 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
     });
 
     if token_seen {
-        info!("✅ Token already accepted (cache hit)");
+        info!("✅ Token already accepted (memory cache)");
         return Ok(true);
     }
 
@@ -637,6 +655,12 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
         if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
             warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
         }
+    }
+
+    // Store token as used in Redis to prevent replay attacks (persistent, distributed)
+    if let Err(e) = crate::store_cashu_token_as_used(token) {
+        warn!("⚠️ Failed to store Cashu token in Redis: {}", e);
+        // Continue anyway - we'll still use memory cache
     }
 
     // Mark as accepted in memory cache
