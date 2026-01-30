@@ -105,6 +105,10 @@ jobs:
             exit 1
           fi
 
+          # Flush Redis to clear any previously stored preimages (replay protection)
+          echo "Flushing Redis for clean test state..."
+          docker exec redis redis-cli flushall
+          
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
@@ -238,6 +242,10 @@ jobs:
             exit 1
           fi
 
+          # Flush Redis for gRPC test
+          echo "Flushing Redis for gRPC test..."
+          docker exec redis redis-cli flushall
+          
           # Test with valid L402 credentials for gRPC
           echo "Testing gRPC endpoint with valid L402 credentials..."
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -H "Content-Type: application/grpc" -H "grpc-timeout: 60S" -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" -X POST http://0.0.0.0:8000/content.ContentService/GetProtectedContent)
@@ -526,6 +534,10 @@ jobs:
             exit 1
           fi
 
+          # Flush Redis for CLN test
+          echo "Flushing Redis for CLN test..."
+          docker exec redis redis-cli flushall
+          
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
@@ -944,6 +956,10 @@ jobs:
             exit 1
           fi
 
+          # Flush Redis for LND test
+          echo "Flushing Redis for LND test..."
+          docker exec redis redis-cli flushall
+          
           # Test with valid L402 credentials
           echo "Testing with valid L402 credentials..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: L402 MDAxMmxvY2F0aW9uIEw0MDIKMDAzMGlkZW50aWZpZXIgM460twjJAuVrQN-u5JPUZ0aKNWevybkbveRc2DeF2ZAKMDAyMWNpZCBSZXF1ZXN0UGF0aCA9IC9wcm90ZWN0ZWQKMDAyZnNpZ25hdHVyZSCwR6G2lDj1thda81BPwQuo73_shURzPf1XOwuejNLwVwo=:e582fba50ca50a9a262cbb92fc38617ce0a2413ef1dd4c7062cbaef22b33a404" http://0.0.0.0:8000/protected)
