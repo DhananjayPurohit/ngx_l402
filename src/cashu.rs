@@ -880,6 +880,9 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
 
         // Fetch Mint Info for dynamic parameter discovery
         info!("Fetching Mint Info for dynamic parameter discovery...");
+        cashu_redemption_logger::log_redemption(
+            "Fetching Mint Info for dynamic parameter discovery...",
+        );
         match wallet_clone.fetch_mint_info().await {
             Ok(mint_info) => {
                 debug!("Mint Info fetched");
@@ -923,6 +926,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                                                     "Found dynamic melt minimum: {} {}",
                                                     min_amount, unit
                                                 );
+                                                cashu_redemption_logger::log_redemption(&format!(
+                                                    "Found dynamic melt minimum: {} {}",
+                                                    min_amount, unit
+                                                ));
                                             }
                                             // Note: max_amount could be used to inform batching, but we'll keep current behavior for now
                                         }
@@ -955,6 +962,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                                                 "Found dynamic fee: {} ppk -> {}%",
                                                 ppk, current_fee_reserve_percent
                                             );
+                                            cashu_redemption_logger::log_redemption(&format!(
+                                                "Found dynamic fee: {} ppk -> {}%",
+                                                ppk, current_fee_reserve_percent
+                                            ));
                                             found = true;
                                         }
 
@@ -967,6 +978,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                                                 min_fee
                                             };
                                             info!("Found dynamic min fee: {} {}", min_fee, unit);
+                                            cashu_redemption_logger::log_redemption(&format!(
+                                                "Found dynamic min fee: {} {}",
+                                                min_fee, unit
+                                            ));
                                         }
                                     }
                                 }
@@ -989,6 +1004,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     "Failed to fetch Mint Info: {}. Using default parameters.",
                     e
                 );
+                cashu_redemption_logger::log_redemption(&format!(
+                    "Failed to fetch Mint Info: {}. Using default parameters.",
+                    e
+                ));
             }
         }
 

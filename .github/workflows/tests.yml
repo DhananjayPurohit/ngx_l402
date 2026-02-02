@@ -1371,51 +1371,42 @@ jobs:
           echo "════════════════════════════════════════════════════"
           echo ""
           
-          echo "[1/3] Checking if feature was triggered during redemption..."
+          # Redemption logs are written to a dedicated file, not stdout
+          REDEMPTION_LOG="/var/log/nginx/cashu_redemption.log"
           
-          # Check logs for the feature trigger
-          if docker logs nginx-lnd 2>&1 | grep -q "Fetching Mint Info for dynamic parameter discovery"; then
-            echo "✅ Dynamic parameter discovery feature triggered successfully"
+          echo "[1/3] Checking redemption log file..."
+          if docker exec nginx-lnd test -f "$REDEMPTION_LOG"; then
+            echo "✅ Redemption log file exists"
             echo ""
             
-            echo "[2/3] Extracting discovery results from logs..."
-            docker logs nginx-lnd 2>&1 | grep -E "(Fetching Mint Info|Found dynamic|Using default)" | tail -15
-            echo ""
-            
-            echo "[3/3] Verifying discovery outcomes..."
-            
-            # Check NUT-05 (melt limits)
-            if docker logs nginx-lnd 2>&1 | grep -q "Found dynamic melt minimum:"; then
-              MELT_MIN=$(docker logs nginx-lnd 2>&1 | grep "Found dynamic melt minimum:" | tail -1)
-              echo "✅ NUT-05: $MELT_MIN"
-            else
-              echo "ℹ️  NUT-05: Using default minimum (mint didn't provide)"
-            fi
-            
-            # Check NUT-08 (fees)
-            if docker logs nginx-lnd 2>&1 | grep -q "Found dynamic fee:.*ppk"; then
-              FEE_LINE=$(docker logs nginx-lnd 2>&1 | grep "Found dynamic fee:.*ppk" | tail -1)
-              echo "✅ NUT-08: $FEE_LINE"
+            echo "[2/3] Checking if dynamic parameter discovery triggered..."
+            if docker exec nginx-lnd grep -q "Fetching Mint Info for dynamic parameter discovery" "$REDEMPTION_LOG"; then
+              echo "✅ Dynamic parameter discovery feature triggered"
+              echo ""
               
-              if docker logs nginx-lnd 2>&1 | grep -q "Found dynamic min fee:"; then
-                MIN_FEE_LINE=$(docker logs nginx-lnd 2>&1 | grep "Found dynamic min fee:" | tail -1)
-                echo "✅ NUT-08: $MIN_FEE_LINE"
-              fi
+              echo "[3/3] Extracting discovery results..."
+              docker exec nginx-lnd grep -E "(Fetching Mint Info|Found dynamic|NUT-05|NUT-08|Using default)" "$REDEMPTION_LOG" | tail -10
+              echo ""
+              echo "════════════════════════════════════════════════════"
+              echo "   ✅ Dynamic Parameter Discovery Test PASSED"
+              echo "════════════════════════════════════════════════════"
             else
-              echo "ℹ️  NUT-08: Using default fees (mint didn't provide)"
+              echo "❌ FAILED: Dynamic parameter discovery did NOT trigger"
+              echo ""
+              echo "Redemption log contents:"
+              docker exec nginx-lnd cat "$REDEMPTION_LOG"
+              echo ""
+              echo "════════════════════════════════════════════════════"
+              echo "   ❌ Dynamic Parameter Discovery Test FAILED"
+              echo "════════════════════════════════════════════════════"
+              exit 1
             fi
-            
-            echo ""
-            echo "════════════════════════════════════════════════════"
-            echo "   ✅ Dynamic Parameter Discovery Test PASSED"
-            echo "════════════════════════════════════════════════════"
           else
-            echo "❌ FAILED: Dynamic parameter discovery feature did NOT trigger"
+            echo "❌ FAILED: Redemption log file not found"
+            echo "Expected: $REDEMPTION_LOG"
             echo ""
-            echo "Expected to find log message: 'Fetching Mint Info for dynamic parameter discovery'"
-            echo ""
-            echo "Recent nginx-lnd logs (last 100 lines):"
-            docker logs nginx-lnd 2>&1 | tail -100
+            echo "Checking nginx-lnd container logs:"
+            docker logs nginx-lnd 2>&1 | tail -50
             echo ""
             echo "════════════════════════════════════════════════════"
             echo "   ❌ Dynamic Parameter Discovery Test FAILED"

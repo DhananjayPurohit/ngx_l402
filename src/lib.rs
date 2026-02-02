@@ -1,4 +1,5 @@
 use env_logger;
+use hex;
 use l402_middleware::middleware::L402Middleware;
 use l402_middleware::{bolt12, cln, l402, lnclient, lnd, lnurl, macaroon_util, nwc, utils};
 use log::{debug, error, info, warn};
@@ -14,8 +15,7 @@ use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConf
 use ngx::{ngx_log_error, ngx_null_command, ngx_string};
 use redis::Client as RedisClient;
 use redis::Commands;
-use sha2::{Sha256, Digest};
-use hex;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ffi::c_char;
 use std::ffi::CStr;
@@ -133,9 +133,7 @@ fn is_preimage_used(preimage: &[u8]) -> bool {
 /// Store a preimage as used with TTL (default 24 hours)
 /// This prevents replay attacks by marking preimages as consumed
 fn store_preimage_as_used(preimage: &[u8]) -> Result<(), String> {
-    let redis_client = REDIS_CLIENT
-        .get()
-        .ok_or("Redis not configured")?;
+    let redis_client = REDIS_CLIENT.get().ok_or("Redis not configured")?;
 
     let mut client_guard = redis_client
         .lock()
@@ -161,7 +159,10 @@ fn store_preimage_as_used(preimage: &[u8]) -> Result<(), String> {
     conn.set_ex::<_, _, ()>(&redis_key, "used", ttl_seconds)
         .map_err(|e| format!("Failed to store preimage in Redis: {}", e))?;
 
-    info!("✅ Stored preimage as used: {} (TTL: {}s)", preimage_hash, ttl_seconds);
+    info!(
+        "✅ Stored preimage as used: {} (TTL: {}s)",
+        preimage_hash, ttl_seconds
+    );
     Ok(())
 }
 
@@ -194,7 +195,10 @@ pub fn is_cashu_token_used(token: &str) -> bool {
     match conn.exists::<_, bool>(&redis_key) {
         Ok(exists) => {
             if exists {
-                warn!("⚠️ Cashu token replay attack detected: {}", &token_hash[..16]);
+                warn!(
+                    "⚠️ Cashu token replay attack detected: {}",
+                    &token_hash[..16]
+                );
             }
             exists
         }
@@ -208,9 +212,7 @@ pub fn is_cashu_token_used(token: &str) -> bool {
 /// Store a Cashu token as used with TTL (default 24 hours)
 /// This prevents replay attacks by marking tokens as consumed
 pub fn store_cashu_token_as_used(token: &str) -> Result<(), String> {
-    let redis_client = REDIS_CLIENT
-        .get()
-        .ok_or("Redis not configured")?;
+    let redis_client = REDIS_CLIENT.get().ok_or("Redis not configured")?;
 
     let mut client_guard = redis_client
         .lock()
@@ -236,7 +238,11 @@ pub fn store_cashu_token_as_used(token: &str) -> Result<(), String> {
     conn.set_ex::<_, _, ()>(&redis_key, "used", ttl_seconds)
         .map_err(|e| format!("Failed to store Cashu token in Redis: {}", e))?;
 
-    info!("✅ Stored Cashu token as used: {} (TTL: {}s)", &token_hash[..16], ttl_seconds);
+    info!(
+        "✅ Stored Cashu token as used: {} (TTL: {}s)",
+        &token_hash[..16],
+        ttl_seconds
+    );
     Ok(())
 }
 
@@ -1024,13 +1030,13 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
-                            
+
                             // Store preimage as used to prevent replay attacks
                             if let Err(e) = store_preimage_as_used(&preimage.0) {
                                 error!("⚠️ Failed to store preimage in Redis: {}", e);
                                 // Continue anyway - verification was successful
                             }
-                            
+
                             return NGX_DECLINED.try_into().unwrap();
                         }
                         Err(e) => {
