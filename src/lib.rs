@@ -1167,7 +1167,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             .parse::<u64>()
             .unwrap_or(3600);
 
-        let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+        let _module = unsafe { MODULE.as_ref().expect("Module not initialized") };
 
         // Spawn redemption task in a separate thread to avoid blocking nginx
         let _ = std::thread::Builder::new()

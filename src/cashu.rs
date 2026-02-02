@@ -157,7 +157,7 @@ fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, Stri
         .get()
         .ok_or("Redis client is not initialised")?;
 
-    let mut client_guard = client
+    let client_guard = client
         .lock()
         .map_err(|_| "Failed to lock redis client".to_string())?;
 
@@ -183,12 +183,12 @@ fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, Stri
 fn set_proof_to_lnurl(
     proofs: cdk::nuts::Proofs,
     lnurl_route: Option<String>,
-) -> Result<(), String> {
+)-> Result<(), String> {
     let client = REDIS_CLIENT
         .get()
         .ok_or("Redis client is not initialised")?;
 
-    let mut client_guard = client
+    let client_guard = client
         .lock()
         .map_err(|_| "Failed to lock redis client".to_string())?;
 
@@ -629,7 +629,7 @@ pub async fn verify_cashu_token_p2pk(
         .ok_or("P2PK public key not initialized")?;
 
     // Reconstruct keys from hex strings
-    let private_key = cdk::nuts::SecretKey::from_hex(private_key_hex)
+    let _private_key = cdk::nuts::SecretKey::from_hex(private_key_hex)
         .map_err(|e| format!("Failed to parse private key: {:?}", e))?;
     let public_key = cdk::nuts::PublicKey::from_hex(public_key_str)
         .map_err(|e| format!("Failed to parse public key: {:?}", e))?;
@@ -879,7 +879,7 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
 
         // Fetch Mint Info for dynamic fee discovery
         info!("Fetching Mint Info for dynamic fee discovery...");
-        match wallet_clone.get_mint_info().await {
+        match wallet_clone.fetch_mint_info().await {
             Ok(mint_info) => {
                 debug!("Mint Info fetched");
                 match serde_json::to_value(&mint_info) {
