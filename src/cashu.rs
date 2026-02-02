@@ -873,31 +873,73 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
             vec![(client_type.to_string(), proofs)]
         };
 
-        // Initialize dynamic fee variables with defaults
+        // Initialize dynamic variables with defaults
         let mut current_fee_reserve_percent = fee_reserve_percent;
         let mut current_min_fee_reserve_msat = min_fee_reserve_msat;
+        let mut current_minimum_for_redemption_msat = minimum_for_redemption_msat;
 
-        // Fetch Mint Info for dynamic fee discovery
-        info!("Fetching Mint Info for dynamic fee discovery...");
+        // Fetch Mint Info for dynamic parameter discovery
+        info!("Fetching Mint Info for dynamic parameter discovery...");
         match wallet_clone.fetch_mint_info().await {
             Ok(mint_info) => {
                 debug!("Mint Info fetched");
                 match serde_json::to_value(&mint_info) {
                     Ok(info_json) => {
-                        // Attempt to find NUT-08 settings
-                        // NUT-08 can be under nuts["8"] or nuts["nut08"] or top-level "nut08"
+                        let target_unit = match wallet.unit {
+                            cdk::nuts::CurrencyUnit::Sat => "sat",
+                            cdk::nuts::CurrencyUnit::Msat => "msat",
+                            _ => "sat",
+                        };
+
+                        // NUT-05: Melt limits (min_amount, max_amount)
+                        let nut05 = info_json
+                            .get("nuts")
+                            .and_then(|n| n.get("5").or(n.get("nut05")))
+                            .or_else(|| info_json.get("nut05"));
+
+                        if let Some(nut05_obj) = nut05 {
+                            if let Some(methods) =
+                                nut05_obj.get("methods").and_then(|m| m.as_array())
+                            {
+                                for method in methods {
+                                    if method.get("method").and_then(|m| m.as_str())
+                                        == Some("bolt11")
+                                    {
+                                        let unit = method
+                                            .get("unit")
+                                            .and_then(|u| u.as_str())
+                                            .unwrap_or("sat");
+                                        if unit == target_unit {
+                                            if let Some(min_amount) =
+                                                method.get("min_amount").and_then(|m| m.as_u64())
+                                            {
+                                                current_minimum_for_redemption_msat =
+                                                    if unit == "sat" {
+                                                        min_amount * MSAT_PER_SAT
+                                                    } else {
+                                                        min_amount
+                                                    };
+                                                info!(
+                                                    "Found dynamic melt minimum: {} {}",
+                                                    min_amount, unit
+                                                );
+                                            }
+                                            // Note: max_amount could be used to inform batching, but we'll keep current behavior for now
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            debug!("NUT-05 config not found in Mint Info");
+                        }
+
+                        // NUT-08: Melt quote fees (ppk, min)
                         let nut08 = info_json
                             .get("nuts")
                             .and_then(|n| n.get("8").or(n.get("nut08")))
                             .or_else(|| info_json.get("nut08"));
 
                         if let Some(nut08_list) = nut08.and_then(|v| v.as_array()) {
-                            let target_unit = match wallet.unit {
-                                cdk::nuts::CurrencyUnit::Sat => "sat",
-                                cdk::nuts::CurrencyUnit::Msat => "msat",
-                                _ => "sat",
-                            };
-
                             let mut found = false;
                             for entry in nut08_list {
                                 if entry.get("method").and_then(|m| m.as_str()) == Some("bolt11") {
@@ -936,14 +978,17 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                                 );
                             }
                         } else {
-                            warn!("NUT-08 config not found or invalid format in Mint Info");
+                            debug!("NUT-08 config not found in Mint Info");
                         }
                     }
                     Err(e) => warn!("Failed to serialize Mint Info for inspection: {}", e),
                 }
             }
             Err(e) => {
-                warn!("Failed to fetch Mint Info: {}. Using default fees.", e);
+                warn!(
+                    "Failed to fetch Mint Info: {}. Using default parameters.",
+                    e
+                );
             }
         }
 
@@ -971,10 +1016,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                 .sum();
 
             // Check minimum balance threshold for this group
-            if group_total_msat < minimum_for_redemption_msat {
+            if group_total_msat < current_minimum_for_redemption_msat {
                 let msg = format!(
                     "⏳ Skipping {} - balance {} msat is below minimum {} msat",
-                    client_id, group_total_msat, minimum_for_redemption_msat
+                    client_id, group_total_msat, current_minimum_for_redemption_msat
                 );
                 info!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
