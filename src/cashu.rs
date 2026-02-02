@@ -183,7 +183,7 @@ fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, Stri
 fn set_proof_to_lnurl(
     proofs: cdk::nuts::Proofs,
     lnurl_route: Option<String>,
-)-> Result<(), String> {
+) -> Result<(), String> {
     let client = REDIS_CLIENT
         .get()
         .ok_or("Redis client is not initialised")?;
@@ -930,7 +930,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                                 }
                             }
                             if !found {
-                                warn!("NUT-08 found but no matching 'bolt11' settings for unit '{}'", target_unit);
+                                warn!(
+                                    "NUT-08 found but no matching 'bolt11' settings for unit '{}'",
+                                    target_unit
+                                );
                             }
                         } else {
                             warn!("NUT-08 config not found or invalid format in Mint Info");
