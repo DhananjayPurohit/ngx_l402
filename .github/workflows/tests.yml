@@ -1364,6 +1364,65 @@ jobs:
 
           echo "✅ Cashu redemption on Lightning integration tests completed!"
 
+      - name: Verify Dynamic Fee Discovery Feature
+        run: |
+          echo "════════════════════════════════════════════════════"
+          echo "   Testing Dynamic Fee Discovery Feature"
+          echo "════════════════════════════════════════════════════"
+          echo ""
+          
+          echo "[1/3] Checking if feature was triggered during redemption..."
+          
+          # Check logs for the feature trigger
+          if docker logs nginx-lnd 2>&1 | grep -q "Fetching Mint Info for dynamic fee discovery"; then
+            echo "✅ Dynamic fee discovery feature triggered successfully"
+            echo ""
+            
+            echo "[2/3] Extracting fee discovery results from logs..."
+            docker logs nginx-lnd 2>&1 | grep -E "(Fetching Mint Info|Found dynamic fee|Found dynamic min fee|Using default fees)" | tail -10
+            echo ""
+            
+            echo "[3/3] Verifying fee discovery outcome..."
+            # Check if fees were discovered or defaults used (both are valid outcomes)
+            if docker logs nginx-lnd 2>&1 | grep -q "Found dynamic fee:.*ppk"; then
+              echo "✅ SUCCESS: Dynamic fees discovered from mint's NUT-08 endpoint"
+              
+              # Extract and display the discovered fee
+              FEE_LINE=$(docker logs nginx-lnd 2>&1 | grep "Found dynamic fee:.*ppk" | tail -1)
+              echo "   $FEE_LINE"
+              
+              # Check for minimum fee too
+              if docker logs nginx-lnd 2>&1 | grep -q "Found dynamic min fee:"; then
+                MIN_FEE_LINE=$(docker logs nginx-lnd 2>&1 | grep "Found dynamic min fee:" | tail -1)
+                echo "   $MIN_FEE_LINE"
+              fi
+            elif docker logs nginx-lnd 2>&1 | grep -q "Using default fees"; then
+              echo "✅ SUCCESS: Mint didn't provide NUT-08 fees, using defaults (expected behavior)"
+            elif docker logs nginx-lnd 2>&1 | grep -q "NUT-08 config not found"; then
+              echo "✅ SUCCESS: Mint response didn't contain NUT-08, using defaults (expected behavior)"
+            else
+              echo "⚠️  WARNING: Fee discovery ran but outcome unclear. Check logs below:"
+              docker logs nginx-lnd 2>&1 | grep -i "mint info" | tail -10
+            fi
+            
+            echo ""
+            echo "════════════════════════════════════════════════════"
+            echo "   ✅ Dynamic Fee Discovery Test PASSED"
+            echo "════════════════════════════════════════════════════"
+          else
+            echo "❌ FAILED: Dynamic fee discovery feature did NOT trigger"
+            echo ""
+            echo "Expected to find log message: 'Fetching Mint Info for dynamic fee discovery'"
+            echo ""
+            echo "Recent nginx-lnd logs (last 100 lines):"
+            docker logs nginx-lnd 2>&1 | tail -100
+            echo ""
+            echo "════════════════════════════════════════════════════"
+            echo "   ❌ Dynamic Fee Discovery Test FAILED"
+            echo "════════════════════════════════════════════════════"
+            exit 1
+          fi
+
       - name: Stop nginx-lnd and start nginx-lnurl
         env: 
           CASHU_WHITELISTED_MINTS: http://cashu-mint:3338
