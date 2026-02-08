@@ -1,18 +1,18 @@
 use crate::cashu_redemption_logger;
+use crate::REDIS_CLIENT;
 use cdk;
-use redis::Commands;
 use cdk::mint_url::MintUrl;
+use hex;
 use l402_middleware::lnclient;
 use log::{debug, error, info, warn};
+use redis::Commands;
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
-use crate::REDIS_CLIENT;
-use sha2::{Sha256, Digest};
-use hex;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -36,7 +36,8 @@ static P2PK_PUBLIC_KEY: OnceLock<String> = OnceLock::new();
 static CASHU_ECASH_ENABLED: OnceLock<bool> = OnceLock::new();
 
 // LN Client for non-LNURL redemption (single-tenant mode)
-static LN_CLIENT: OnceLock<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>> = OnceLock::new();
+static LN_CLIENT: OnceLock<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>> =
+    OnceLock::new();
 static LN_CLIENT_TYPE: OnceLock<String> = OnceLock::new();
 
 pub fn is_p2pk_mode_enabled() -> bool {
@@ -68,7 +69,10 @@ pub fn initialize_ln_client(
     if is_multi_tenant_enabled() {
         info!("🏢 Multi-tenant LNURL mode enabled for Cashu redemption");
     } else {
-        info!("🔧 Single-tenant {} mode enabled for Cashu redemption", client_type);
+        info!(
+            "🔧 Single-tenant {} mode enabled for Cashu redemption",
+            client_type
+        );
     }
 
     Ok(())
@@ -149,9 +153,12 @@ pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
 }
 
 fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, String> {
-    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+    let client = REDIS_CLIENT
+        .get()
+        .ok_or("Redis client is not initialised")?;
 
-    let mut client_guard = client.lock()
+    let client_guard = client
+        .lock()
         .map_err(|_| "Failed to lock redis client".to_string())?;
 
     let secret = proof.secret.to_string();
@@ -162,30 +169,37 @@ fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, Stri
     let proof_hash = hex::encode(hasher.finalize());
 
     let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
-    let mut conn = client_guard.get_connection()
+    let mut conn = client_guard
+        .get_connection()
         .map_err(|e| format!("Failed to get redis connection: {}", e))?;
 
-    let lnurl: Option<String> = conn.get(&redis_key)
+    let lnurl: Option<String> = conn
+        .get(&redis_key)
         .map_err(|e| format!("Failed to get proof mapping: {}", e))?;
 
     Ok(lnurl)
 }
 
-fn set_proof_to_lnurl(proofs: cdk::nuts::Proofs, lnurl_route: Option<String>) -> Result<(), String> {
-    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+fn set_proof_to_lnurl(
+    proofs: cdk::nuts::Proofs,
+    lnurl_route: Option<String>,
+) -> Result<(), String> {
+    let client = REDIS_CLIENT
+        .get()
+        .ok_or("Redis client is not initialised")?;
 
-    let mut client_guard = client.lock()
+    let client_guard = client
+        .lock()
         .map_err(|_| "Failed to lock redis client".to_string())?;
 
-    let lnurl = lnurl_route.unwrap_or_else(|| {
-        std::env::var("LNURL_ADDRESS").unwrap_or_default()
-    });
+    let lnurl = lnurl_route.unwrap_or_else(|| std::env::var("LNURL_ADDRESS").unwrap_or_default());
 
     if lnurl.is_empty() {
         return Err("No LNURL address available for cashu token".to_string());
     }
 
-    let mut conn = client_guard.get_connection()
+    let mut conn = client_guard
+        .get_connection()
         .map_err(|e| format!("Failed to get redis connection: {}", e))?;
 
     for proof in proofs {
@@ -206,12 +220,16 @@ fn set_proof_to_lnurl(proofs: cdk::nuts::Proofs, lnurl_route: Option<String>) ->
 
 /// Remove proof-to-lnurl mappings from Redis after proofs have been melted
 fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String> {
-    let client = REDIS_CLIENT.get().ok_or("Redis client is not initialised")?;
+    let client = REDIS_CLIENT
+        .get()
+        .ok_or("Redis client is not initialised")?;
 
-    let client_guard = client.lock()
+    let client_guard = client
+        .lock()
         .map_err(|_| "Failed to lock redis client".to_string())?;
 
-    let mut conn = client_guard.get_connection()
+    let mut conn = client_guard
+        .get_connection()
         .map_err(|e| format!("Failed to get redis connection: {}", e))?;
 
     for proof in proofs {
@@ -223,7 +241,8 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
         let proof_hash = hex::encode(hasher.finalize());
 
         let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
-        let _: Result<(), _> = conn.del(&redis_key)
+        let _: Result<(), _> = conn
+            .del(&redis_key)
             .map_err(|e| format!("Failed to delete proof mapping: {}", e));
     }
 
@@ -233,8 +252,8 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
 /// Group proofs by their associated lnurl address for multi-tenant redemption
 fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
-    let default_lnurl = std::env::var("LNURL_ADDRESS")
-        .unwrap_or_else(|_| "admin@getalby.com".to_string());
+    let default_lnurl =
+        std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "admin@getalby.com".to_string());
 
     for proof in proofs {
         let lnurl = get_lnurl_from_proof(&proof)
@@ -352,7 +371,11 @@ pub fn generate_payment_request(
     Ok(nut18_encoded)
 }
 
-pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
+pub async fn verify_cashu_token(
+    token: &str,
+    amount_msat: i64,
+    lnurl_addr: Option<String>,
+) -> Result<bool, String> {
     // Log database status
     debug!("🔍 Verifying Cashu token, checking database connection...");
 
@@ -463,8 +486,10 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
             );
 
             if is_multi_tenant_enabled() {
-                let proofs = wallet.get_unspent_proofs().await
-                .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
+                let proofs = wallet
+                    .get_unspent_proofs()
+                    .await
+                    .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
                 if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
                     warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
                 }
@@ -496,7 +521,11 @@ pub async fn verify_cashu_token(token: &str, amount_msat: i64, lnurl_addr: Optio
 
 /// Verify Cashu token using P2PK optimized mode (NUT-24)
 /// Stores proofs directly in CDK database using cached keysets - no mint swap call
-pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: Option<String>) -> Result<bool, String> {
+pub async fn verify_cashu_token_p2pk(
+    token: &str,
+    amount_msat: i64,
+    lnurl_addr: Option<String>,
+) -> Result<bool, String> {
     info!("🔐 P2PK mode: Optimized token verification");
 
     // Check Redis first for replay attack prevention (persistent, distributed)
@@ -600,7 +629,7 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
         .ok_or("P2PK public key not initialized")?;
 
     // Reconstruct keys from hex strings
-    let private_key = cdk::nuts::SecretKey::from_hex(private_key_hex)
+    let _private_key = cdk::nuts::SecretKey::from_hex(private_key_hex)
         .map_err(|e| format!("Failed to parse private key: {:?}", e))?;
     let public_key = cdk::nuts::PublicKey::from_hex(public_key_str)
         .map_err(|e| format!("Failed to parse public key: {:?}", e))?;
@@ -649,7 +678,6 @@ pub async fn verify_cashu_token_p2pk(token: &str, amount_msat: i64, lnurl_addr: 
         .update_proofs(proof_infos, vec![])
         .await
         .map_err(|e| format!("Failed to store proofs in database: {:?}", e))?;
-
 
     if is_multi_tenant_enabled() {
         if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
@@ -845,6 +873,144 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
             vec![(client_type.to_string(), proofs)]
         };
 
+        // Initialize dynamic variables with defaults
+        let mut current_fee_reserve_percent = fee_reserve_percent;
+        let mut current_min_fee_reserve_msat = min_fee_reserve_msat;
+        let mut current_minimum_for_redemption_msat = minimum_for_redemption_msat;
+
+        // Fetch Mint Info for dynamic parameter discovery
+        info!("Fetching Mint Info for dynamic parameter discovery...");
+        cashu_redemption_logger::log_redemption(
+            "Fetching Mint Info for dynamic parameter discovery...",
+        );
+        match wallet_clone.fetch_mint_info().await {
+            Ok(mint_info) => {
+                debug!("Mint Info fetched");
+                match serde_json::to_value(&mint_info) {
+                    Ok(info_json) => {
+                        let target_unit = match wallet.unit {
+                            cdk::nuts::CurrencyUnit::Sat => "sat",
+                            cdk::nuts::CurrencyUnit::Msat => "msat",
+                            _ => "sat",
+                        };
+
+                        // NUT-05: Melt limits (min_amount, max_amount)
+                        let nut05 = info_json
+                            .get("nuts")
+                            .and_then(|n| n.get("5").or(n.get("nut05")))
+                            .or_else(|| info_json.get("nut05"));
+
+                        if let Some(nut05_obj) = nut05 {
+                            if let Some(methods) =
+                                nut05_obj.get("methods").and_then(|m| m.as_array())
+                            {
+                                for method in methods {
+                                    if method.get("method").and_then(|m| m.as_str())
+                                        == Some("bolt11")
+                                    {
+                                        let unit = method
+                                            .get("unit")
+                                            .and_then(|u| u.as_str())
+                                            .unwrap_or("sat");
+                                        if unit == target_unit {
+                                            if let Some(min_amount) =
+                                                method.get("min_amount").and_then(|m| m.as_u64())
+                                            {
+                                                current_minimum_for_redemption_msat =
+                                                    if unit == "sat" {
+                                                        min_amount * MSAT_PER_SAT
+                                                    } else {
+                                                        min_amount
+                                                    };
+                                                info!(
+                                                    "Found dynamic melt minimum: {} {}",
+                                                    min_amount, unit
+                                                );
+                                                cashu_redemption_logger::log_redemption(&format!(
+                                                    "Found dynamic melt minimum: {} {}",
+                                                    min_amount, unit
+                                                ));
+                                            }
+                                            // Note: max_amount could be used to inform batching, but we'll keep current behavior for now
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            debug!("NUT-05 config not found in Mint Info");
+                        }
+
+                        // NUT-08: Melt quote fees (ppk, min)
+                        let nut08 = info_json
+                            .get("nuts")
+                            .and_then(|n| n.get("8").or(n.get("nut08")))
+                            .or_else(|| info_json.get("nut08"));
+
+                        if let Some(nut08_list) = nut08.and_then(|v| v.as_array()) {
+                            let mut found = false;
+                            for entry in nut08_list {
+                                if entry.get("method").and_then(|m| m.as_str()) == Some("bolt11") {
+                                    let unit =
+                                        entry.get("unit").and_then(|u| u.as_str()).unwrap_or("sat");
+                                    if unit == target_unit {
+                                        if let Some(ppk) = entry.get("ppk").and_then(|p| p.as_u64())
+                                        {
+                                            // ppk is parts per thousand.
+                                            // fee_percent = (ppk / 1000) * 100 = ppk / 10
+                                            current_fee_reserve_percent = ppk as f64 / 10.0;
+                                            info!(
+                                                "Found dynamic fee: {} ppk -> {}%",
+                                                ppk, current_fee_reserve_percent
+                                            );
+                                            cashu_redemption_logger::log_redemption(&format!(
+                                                "Found dynamic fee: {} ppk -> {}%",
+                                                ppk, current_fee_reserve_percent
+                                            ));
+                                            found = true;
+                                        }
+
+                                        if let Some(min_fee) =
+                                            entry.get("min").and_then(|m| m.as_u64())
+                                        {
+                                            current_min_fee_reserve_msat = if unit == "sat" {
+                                                min_fee * MSAT_PER_SAT
+                                            } else {
+                                                min_fee
+                                            };
+                                            info!("Found dynamic min fee: {} {}", min_fee, unit);
+                                            cashu_redemption_logger::log_redemption(&format!(
+                                                "Found dynamic min fee: {} {}",
+                                                min_fee, unit
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                            if !found {
+                                warn!(
+                                    "NUT-08 found but no matching 'bolt11' settings for unit '{}'",
+                                    target_unit
+                                );
+                            }
+                        } else {
+                            debug!("NUT-08 config not found in Mint Info");
+                        }
+                    }
+                    Err(e) => warn!("Failed to serialize Mint Info for inspection: {}", e),
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to fetch Mint Info: {}. Using default parameters.",
+                    e
+                );
+                cashu_redemption_logger::log_redemption(&format!(
+                    "Failed to fetch Mint Info: {}. Using default parameters.",
+                    e
+                ));
+            }
+        }
+
         // Process each proof group
         for (client_id, group_proofs) in proof_groups {
             let msg = format!(
@@ -869,10 +1035,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                 .sum();
 
             // Check minimum balance threshold for this group
-            if group_total_msat < minimum_for_redemption_msat {
+            if group_total_msat < current_minimum_for_redemption_msat {
                 let msg = format!(
                     "⏳ Skipping {} - balance {} msat is below minimum {} msat",
-                    client_id, group_total_msat, minimum_for_redemption_msat
+                    client_id, group_total_msat, current_minimum_for_redemption_msat
                 );
                 info!("{}", msg);
                 cashu_redemption_logger::log_redemption(&msg);
@@ -882,8 +1048,11 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
             // Select proofs to melt based on configured limit
             let (proofs_to_melt, selected_total_msat) =
                 if max_proofs_per_melt > 0 && group_proofs.len() > max_proofs_per_melt {
-                    let selected_proofs: Vec<_> =
-                        group_proofs.iter().take(max_proofs_per_melt).cloned().collect();
+                    let selected_proofs: Vec<_> = group_proofs
+                        .iter()
+                        .take(max_proofs_per_melt)
+                        .cloned()
+                        .collect();
                     let selected_total: u64 = selected_proofs
                         .iter()
                         .map(|p| {
@@ -912,8 +1081,9 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
 
             // Calculate fee reserve
             let percentage_fee_selected =
-                ((selected_total_msat as f64) * (fee_reserve_percent / 100.0)) as u64;
-            let fee_reserve_selected_msat = percentage_fee_selected.max(min_fee_reserve_msat);
+                ((selected_total_msat as f64) * (current_fee_reserve_percent / 100.0)) as u64;
+            let fee_reserve_selected_msat =
+                percentage_fee_selected.max(current_min_fee_reserve_msat);
 
             if selected_total_msat <= fee_reserve_selected_msat {
                 let msg = format!(
@@ -929,8 +1099,11 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
 
             let msg = format!(
                 "💡 Redemption plan for {}: {} proofs → {} msat - {} msat fees = {} msat",
-                client_id, proofs_to_melt.len(), selected_total_msat,
-                fee_reserve_selected_msat, redeemable_amount_msat
+                client_id,
+                proofs_to_melt.len(),
+                selected_total_msat,
+                fee_reserve_selected_msat,
+                redeemable_amount_msat
             );
             info!("{}", msg);
             cashu_redemption_logger::log_redemption(&msg);
@@ -975,10 +1148,7 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                         }
                     }
                     Err(e) => {
-                        let msg = format!(
-                            "❌ Failed to get LNURL client for {}: {}",
-                            client_id, e
-                        );
+                        let msg = format!("❌ Failed to get LNURL client for {}: {}", client_id, e);
                         error!("{}", msg);
                         cashu_redemption_logger::log_redemption(&msg);
                         continue;
@@ -1034,7 +1204,10 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     let amount_sats: u64 = q.amount.into();
                     let (actual_fee_reserve_msat, amount_msat) =
                         if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
-                            (actual_fee_reserve_sats * MSAT_PER_SAT, amount_sats * MSAT_PER_SAT)
+                            (
+                                actual_fee_reserve_sats * MSAT_PER_SAT,
+                                amount_sats * MSAT_PER_SAT,
+                            )
                         } else {
                             (actual_fee_reserve_sats, amount_sats)
                         };
@@ -1060,10 +1233,7 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     q
                 }
                 Err(e) => {
-                    let msg = format!(
-                        "❌ Failed to create melt quote for {}: {}",
-                        client_id, e
-                    );
+                    let msg = format!("❌ Failed to create melt quote for {}: {}", client_id, e);
                     error!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
                     continue;
@@ -1115,7 +1285,9 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
 
                     let msg = format!(
                         "✅ Redeemed {} proofs for {}: {} msat to Lightning",
-                        proofs_to_melt.len(), client_id, redeemable_amount_msat
+                        proofs_to_melt.len(),
+                        client_id,
+                        redeemable_amount_msat
                     );
                     info!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
@@ -1124,14 +1296,14 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
 
                     // Clean up Redis proof-to-lnurl mappings for melted proofs
                     if let Err(e) = remove_proof_lnurl_mappings(&proofs_to_melt) {
-                        warn!("⚠️ Failed to clean up proof mappings for {}: {}", client_id, e);
+                        warn!(
+                            "⚠️ Failed to clean up proof mappings for {}: {}",
+                            client_id, e
+                        );
                     }
                 }
                 Err(e) => {
-                    let msg = format!(
-                        "❌ Failed to melt proofs for {}: {}",
-                        client_id, e
-                    );
+                    let msg = format!("❌ Failed to melt proofs for {}: {}", client_id, e);
                     error!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
                 }
