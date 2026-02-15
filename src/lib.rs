@@ -1,7 +1,7 @@
 use env_logger;
 use hex;
 use l402_middleware::middleware::L402Middleware;
-use l402_middleware::{bolt12, cln, l402, lnclient, lnd, lnurl, macaroon_util, nwc, utils};
+use l402_middleware::{bolt12, cln, eclair, l402, lnclient, lnd, lnurl, macaroon_util, nwc, utils};
 use log::{debug, error, info, warn};
 use macaroon::Verifier;
 use ngx::ffi::{
@@ -68,6 +68,7 @@ pub async fn get_or_create_lnurl_client(
         nwc_config: None,
         cln_config: None,
         bolt12_config: None,
+        eclair_config: None,
         root_key: std::env::var("ROOT_KEY")
             .unwrap_or_else(|_| "root_key".to_string())
             .as_bytes()
@@ -288,6 +289,7 @@ impl L402Module {
                     nwc_config: None,
                     cln_config: None,
                     bolt12_config: None,
+                    eclair_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -355,6 +357,7 @@ impl L402Module {
                     nwc_config: None,
                     cln_config: None,
                     bolt12_config: None,
+                    eclair_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -372,6 +375,7 @@ impl L402Module {
                     cln_config: None,
                     nwc_config: Some(nwc::NWCOptions { uri }),
                     bolt12_config: None,
+                    eclair_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -390,6 +394,7 @@ impl L402Module {
                     nwc_config: None,
                     cln_config: Some(cln::CLNOptions { lightning_dir }),
                     bolt12_config: None,
+                    eclair_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -420,6 +425,28 @@ impl L402Module {
                         offer,
                         lightning_dir,
                     }),
+                    eclair_config: None,
+                    root_key: std::env::var("ROOT_KEY")
+                        .unwrap_or_else(|_| "root_key".to_string())
+                        .as_bytes()
+                        .to_vec(),
+                }
+            }
+            "ECLAIR" => {
+                info!("🔧 Configuring ECLAIR client");
+                let address = std::env::var("ECLAIR_ADDRESS")
+                    .unwrap_or_else(|_| "http://localhost:8080".to_string());
+                let password =
+                    std::env::var("ECLAIR_PASSWORD").unwrap_or_else(|_| "password".to_string());
+                info!("🔗 Using ECLAIR address: {}", address);
+                lnclient::LNClientConfig {
+                    ln_client_type,
+                    lnd_config: None,
+                    lnurl_config: None,
+                    nwc_config: None,
+                    cln_config: None,
+                    bolt12_config: None,
+                    eclair_config: Some(eclair::EclairOptions { address, password }),
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -438,6 +465,7 @@ impl L402Module {
                     nwc_config: None,
                     cln_config: None,
                     bolt12_config: None,
+                    eclair_config: None,
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
