@@ -1646,11 +1646,16 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnc litd
 
+      - name: Start Eclair Node
+        run: |
+          echo "Starting Eclair node..."
+          docker-compose -f docker-compose.yml up -d eclair
+
       - name: Start nginx-eclair
         run: |
           echo "Starting nginx-eclair with Eclair configuration..."
           docker-compose -f docker-compose.yml up -d nginx-eclair
-          sleep 30 # Give Eclair time to start up and generate keys
+          sleep 15 # Give Eclair time to start up and generate keys
 
       - name: Run Integration Tests - Eclair
         run: |
