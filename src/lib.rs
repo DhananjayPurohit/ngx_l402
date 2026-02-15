@@ -446,7 +446,7 @@ impl L402Module {
                     nwc_config: None,
                     cln_config: None,
                     bolt12_config: None,
-                    eclair_config: Some(eclair::EclairOptions { address, password }),
+                    eclair_config: Some(eclair::EclairOptions { api_url: address, password }),
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()

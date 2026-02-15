@@ -489,7 +489,7 @@ docker stop l402-nginx
 
 For specific versions:
 ```bash
-docker pull ghcr.io/dhananjaypurohit/ngx_l402:v1.2.1
+docker pull ghcr.io/dhananjaypurohit/ngx_l402:v1.2.3
 ```
 
 ## ⚡ L402 Protocol Notes
