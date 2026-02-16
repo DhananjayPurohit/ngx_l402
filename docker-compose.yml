@@ -383,7 +383,7 @@ services:
     container_name: eclair
     user: root
     environment:
-      - JAVA_OPTS=-Xmx512m -Declair.chain=regtest -Declair.server.public-ips.0=eclair -Declair.server.port=9945 -Declair.api.enabled=true -Declair.api.binding-ip=0.0.0.0 -Declair.api.port=8282 -Declair.api.password=eclairpass -Declair.bitcoind.host=bitcoind -Declair.bitcoind.rpcport=18443 -Declair.bitcoind.rpcuser=user -Declair.bitcoind.rpcpassword=pass -Declair.bitcoind.zmqblock=tcp://bitcoind:28332 -Declair.bitcoind.zmqtx=tcp://bitcoind:28333 -Declair.bitcoind.wallet=new_wallet -Declair.node-alias=eclair-node -Declair.trampoline-payments-enable=true
+      - JAVA_OPTS=-Xmx512m -Declair.chain=regtest -Declair.server.public-ips.0=eclair -Declair.server.port=9945 -Declair.api.enabled=true -Declair.api.binding-ip=0.0.0.0 -Declair.api.port=8282 -Declair.api.password=eclairpass -Declair.bitcoind.host=bitcoind -Declair.bitcoind.rpcport=18443 -Declair.bitcoind.rpcuser=user -Declair.bitcoind.rpcpassword=pass -Declair.bitcoind.zmqblock=tcp://bitcoind:28332 -Declair.bitcoind.zmqtx=tcp://bitcoind:28333 -Declair.bitcoind.wallet=my_wallet -Declair.node-alias=eclair-node -Declair.trampoline-payments-enable=true
     ports:
       - "9945:9945"
       - "8282:8282"
