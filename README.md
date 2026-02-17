@@ -1,6 +1,6 @@
 # L402 Nginx Module
 
-An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Node Connect (LNC) for LND, Core Lightning (CLN), Lightning Network URL (LNURL), Nostr Wallet Connect (NWC), and BOLT12 Lightning Offers for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
+An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Node Connect (LNC) for LND, Core Lightning (CLN), Eclair, Lightning Network URL (LNURL), Nostr Wallet Connect (NWC), and BOLT12 Lightning Offers for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
 
 ![L402 module demo](https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9)
 
@@ -86,6 +86,11 @@ Environment=ROOT_KEY=your-root-key
 Environment=LN_CLIENT_TYPE=BOLT12
 Environment=BOLT12_OFFER=lno1...
 Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
+Environment=ROOT_KEY=your-root-key
+# if using ECLAIR:
+Environment=LN_CLIENT_TYPE=ECLAIR
+Environment=ECLAIR_ADDRESS=http://127.0.0.1:8282
+Environment=ECLAIR_PASSWORD=eclairpass
 Environment=ROOT_KEY=your-root-key
 
 # To use redis to set price dynamically and enable replay attack prevention
@@ -456,6 +461,18 @@ docker run -d \
   ghcr.io/dhananjaypurohit/ngx_l402:latest
 ```
 
+**7. Eclair Backend**
+```bash
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=ECLAIR \
+  -e ECLAIR_ADDRESS=http://your-eclair-node:8282 \
+  -e ECLAIR_PASSWORD=your-eclair-password \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+```
+
 #### Required Secrets Generation
 
 Before running, generate the required secrets:
@@ -489,7 +506,7 @@ docker stop l402-nginx
 
 For specific versions:
 ```bash
-docker pull ghcr.io/dhananjaypurohit/ngx_l402:v1.2.1
+docker pull ghcr.io/dhananjaypurohit/ngx_l402:v1.2.3
 ```
 
 ## ⚡ L402 Protocol Notes

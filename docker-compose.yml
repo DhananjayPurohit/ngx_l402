@@ -3,7 +3,7 @@ version: '3.8'
 services:
 
   bitcoind:
-    image: lncm/bitcoind:v22.0@sha256:37a1adb29b3abc9f972f0d981f45e41e5fca2e22816a023faa9fdc0084aa4507
+    image: lncm/bitcoind:v25.0
     container_name: bitcoind
     user: root
     command: -regtest -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcauth=user:63cf03615adebaa9356591f95b07ec7b$$920588e53f94798bda636acac1b6a77e10e3ee7fe57e414d62f3ee9e580cd27a -fallbackfee=0.0001 -zmqpubrawblock=tcp://0.0.0.0:28332 -zmqpubrawtx=tcp://0.0.0.0:28333
@@ -377,6 +377,39 @@ services:
       - RUST_LOG=info
     restart: unless-stopped
 
+
+  eclair:
+    image: acinq/eclair:release-0.8.0
+    container_name: eclair
+    user: root
+    environment:
+      - JAVA_OPTS=-Xmx512m -Declair.chain=regtest -Declair.server.public-ips.0=eclair -Declair.server.port=9945 -Declair.api.enabled=true -Declair.api.binding-ip=0.0.0.0 -Declair.api.port=8282 -Declair.api.password=eclairpass -Declair.bitcoind.host=bitcoind -Declair.bitcoind.rpcport=18443 -Declair.bitcoind.rpcuser=user -Declair.bitcoind.rpcpassword=pass -Declair.bitcoind.zmqblock=tcp://bitcoind:28332 -Declair.bitcoind.zmqtx=tcp://bitcoind:28333 -Declair.bitcoind.wallet=my_wallet -Declair.node-alias=eclair-node -Declair.trampoline-payments-enable=true
+    ports:
+      - "9945:9945"
+      - "8282:8282"
+    volumes:
+      - eclair-data:/data
+    restart: unless-stopped
+    depends_on:
+      - bitcoind
+
+  nginx-eclair:
+    container_name: nginx-eclair
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NGX_MODULE=ngx_http_l402_module.so
+    ports:
+      - "8000:8000"
+    environment:
+      - LN_CLIENT_TYPE=ECLAIR
+      - ECLAIR_ADDRESS=http://eclair:8282
+      - ECLAIR_PASSWORD=eclairpass
+    depends_on:
+      - eclair
+      - redis
+
 volumes:
   bitcoin_data:
   lndnode-data:
@@ -386,3 +419,4 @@ volumes:
   cln-data:
   redis_data:
   tor-data:
+  eclair-data:

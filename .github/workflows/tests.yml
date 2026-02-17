@@ -54,7 +54,7 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
-          sudo curl -L "https://github.com/docker/compose/releases/download/v2.5.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo curl -L "https://github.com/docker/compose/releases/download/v2.29.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
           sudo chmod +x /usr/local/bin/docker-compose
           docker-compose -f docker-compose.yml up -d bitcoind
 
@@ -1645,6 +1645,82 @@ jobs:
       - name: Stop nginx-lnc and litd
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnc litd
+
+      - name: Start Eclair Node
+        run: |
+          echo "Starting Eclair node..."
+          docker-compose -f docker-compose.yml up -d eclair
+
+      - name: Start nginx-eclair
+        run: |
+          echo "Starting nginx-eclair with Eclair configuration..."
+          docker-compose -f docker-compose.yml up -d nginx-eclair
+          sleep 15 # Give Eclair time to start up and generate keys
+
+      - name: Run Integration Tests - Eclair
+        run: |
+          echo "Testing with Eclair configuration..."
+          
+          # Test free route
+          echo "Testing free route..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Free route returned status $status_code, expected 200"
+            docker logs nginx-eclair
+            exit 1
+          fi
+          echo "✅ Free route test passed"
+
+          # Test protected route without header - should return 402 with invoice
+          echo "Testing protected route without header (Eclair invoice generation)..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route without header returned status $status_code, expected 402"
+            docker logs nginx-eclair
+            docker logs eclair
+            exit 1
+          fi
+          echo "✅ Protected route returned 402 Payment Required"
+          
+          # Check if WWW-Authenticate header is present
+          if ! echo "$response" | grep -q 'WWW-Authenticate: L402 macaroon='; then
+            echo "Error: WWW-Authenticate header is missing in the 402 response"
+            echo "$response"
+            docker logs nginx-eclair
+            exit 1
+          fi
+          echo "✅ WWW-Authenticate header present"
+
+          # Extract and validate invoice from header
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found in WWW-Authenticate header"
+            echo "$response"
+            docker logs nginx-eclair
+            exit 1
+          fi
+          echo "✅ Invoice extracted: ${invoice:0:50}..."
+
+          # Validate invoice format (should start with lnbc for mainnet or lnbcrt for regtest)
+          if [[ "$invoice" =~ ^lnbc ]]; then
+            echo "✅ Invoice has valid BOLT11 format (lnbc prefix)"
+          elif [[ "$invoice" =~ ^lntb ]]; then
+            echo "✅ Invoice has valid BOLT11 testnet format (lntb prefix)"
+          elif [[ "$invoice" =~ ^lnbcrt ]]; then
+            echo "✅ Invoice has valid BOLT11 regtest format (lnbcrt prefix)"
+          else
+            echo "Error: Invoice does not have valid BOLT11 format"
+            echo "Invoice: $invoice"
+            exit 1
+          fi
+
+          echo "✅ Eclair invoice generation test completed successfully!"
+
+      - name: Stop nginx-eclair
+        run: |
+          docker-compose -f docker-compose.yml stop nginx-eclair eclair
 
       - name: Publish .so file
         if: startsWith(github.ref, 'refs/tags/v')
