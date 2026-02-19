@@ -10,17 +10,17 @@ graph TD;
     B -->|No| C[Return 200 OK]
     B -->|Yes| D{"Any auth header present? (L402 or X-Cashu)"}
     D -->|No| F[Generate L402 Header macaroon & invoice]
-    F --> G{Header Generation Success?}
-    G -->|Yes| H[Add WWW-Authenticate Header]
-    G -->|No| I[Return 500 Internal Server Error]
-    H --> J[Return 402 Payment Required]
     D -->|Yes| K["Parse L402 macaroon/preimage or X-Cashu (if present)"]
+    F --> G{Header Generation Success?}
+    G -->|No| I[Return 500 Internal Server Error]
+    G -->|Yes| H[Add WWW-Authenticate Header]
+    H --> J[Return 402 Payment Required]
     K --> L{Parse Success?}
     L -->|No| M[Return 500 Internal Server Error]
     L -->|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount >= price)"]
     N --> O{Verification Success?}
-    O -->|Yes| P[Return 200 OK]
     O -->|No| Q[Return 401 Unauthorized]
+    O -->|Yes| P[Return 200 OK]
 ```
 
 ## Installation & Usage
@@ -113,12 +113,15 @@ Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.exam
 Environment=CASHU_REDEEM_ON_LIGHTNING=true
 # Optional: Set interval for automatic redemption (defaults to 3600 seconds/1 hour)
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=<seconds>
-# Optional: Configure melt/redemption fee handling (percentage-based with minimum fallback)
+# Optional: Melt/redemption fee handling (fallback defaults — NUT-05/NUT-08 override when available)
 # Minimum balance to attempt melting (default: 10 sats)
+# Overridden by NUT-05 min_amount if available
 Environment=CASHU_MELT_MIN_BALANCE_SATS=10
 # Percentage to reserve for fees (default: 1%)
+# Overridden by NUT-08 ppk if available
 Environment=CASHU_MELT_FEE_RESERVE_PERCENT=1
 # Minimum fee reserve when percentage is small (default: 4 sats)
+# Overridden by NUT-08 min if available
 Environment=CASHU_MELT_MIN_FEE_RESERVE_SATS=4
 # Maximum number of proofs to melt per operation (default: 0 = unlimited)
 # Example: 2000 proofs > 1000 limit → melt first 1000 proofs, rest remain for next cycle
@@ -170,7 +173,7 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 
 > **Note**: The `CASHU_WHITELISTED_MINTS` environment variable allows you to restrict which Cashu mints are accepted. If not configured, all mints will be accepted in standard mode. **In P2PK mode, whitelisted mints are REQUIRED** for security and the payment request (NUT-24).
 
-> **Note on Fee Configuration**: The melt/redemption fee handling uses a **percentage-based approach with a minimum fallback** and **optional proof count limiting**:
+> **Note on Fee Configuration**: The fee handling uses a percentage-based approach with a minimum fallback. These env vars are fallback defaults — if the mint exposes NUT-05 (melt limits) and NUT-08 (melt fees), those values take precedence automatically. They only apply for mints without NUT-05/NUT-08 support, or if you want to manually override:
 > - `CASHU_MELT_MIN_BALANCE_SATS`: Minimum balance (in sats) required before attempting to melt tokens to Lightning. Balances below this are skipped to avoid wasting fees on tiny amounts. Default: 10 sats.
 > - `CASHU_MELT_FEE_RESERVE_PERCENT`: Percentage of total balance to reserve for melt fees. The system calculates `fee_reserve = total_amount × (percent / 100)`. Default: 1%.
 > - `CASHU_MELT_MIN_FEE_RESERVE_SATS`: Minimum fee reserve (in sats) used when the percentage calculation results in a very small amount. Final reserve = `max(percentage_fee, minimum_fee)`. Default: 4 sats.
