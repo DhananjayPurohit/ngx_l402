@@ -5,7 +5,7 @@ use l402_middleware::{bolt12, cln, eclair, l402, lnclient, lnd, lnurl, macaroon_
 use log::{debug, error, info, warn};
 use macaroon::Verifier;
 use ngx::ffi::{
-    ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle_s, ngx_http_core_module,
+    nginx_version, ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle_s, ngx_http_core_module,
     ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
     ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
     NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO, NGX_OK,
@@ -446,7 +446,10 @@ impl L402Module {
                     nwc_config: None,
                     cln_config: None,
                     bolt12_config: None,
-                    eclair_config: Some(eclair::EclairOptions { api_url: address, password }),
+                    eclair_config: Some(eclair::EclairOptions {
+                        api_url: address,
+                        password,
+                    }),
                     root_key: std::env::var("ROOT_KEY")
                         .unwrap_or_else(|_| "root_key".to_string())
                         .as_bytes()
@@ -737,7 +740,7 @@ pub static mut ngx_http_l402_module: ngx_module_t = ngx_module_t {
     name: std::ptr::null_mut(),
     spare0: 0,
     spare1: 0,
-    version: 1028000 as ngx_uint_t,
+    version: nginx_version as ngx_uint_t,
     signature: NGX_RS_MODULE_SIGNATURE.as_ptr() as *const c_char,
 
     ctx: &NGX_HTTP_L402_MODULE_CTX as *const _ as *mut c_void,

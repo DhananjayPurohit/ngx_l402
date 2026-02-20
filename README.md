@@ -2,6 +2,8 @@
 
 An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authentication module/plugin for Nginx that integrates seamlessly into your web server, enabling Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2). It supports Lightning Network Daemon (LND), Lightning Node Connect (LNC) for LND, Core Lightning (CLN), Eclair, Lightning Network URL (LNURL), Nostr Wallet Connect (NWC), and BOLT12 Lightning Offers for invoice generation. The module can be configured to charge per unique API call, allowing you to monetize your endpoints based on specific request paths.
 
+For local contributor setup on macOS, see `docs/macos-setup.md`.
+
 ![L402 module demo](https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9)
 
 ```mermaid
@@ -544,6 +546,8 @@ To build the module from source:
 sudo apt-get install -y build-essential clang libclang-dev libc6-dev zlib1g-dev pkg-config libssl-dev protobuf-compiler nginx
 ```
 
+For macOS-specific setup and contributor workflow, see `docs/macos-setup.md`.
+
 2. Install Rust and Cargo if not already installed:
 
 ```bash
@@ -564,3 +568,4 @@ cargo build --release --features export-modules
 ```
 
 The compiled module will be created at `/target/release/libngx_l402_lib.so`.
+On macOS, the output file is `/target/release/libngx_l402_lib.dylib`.
