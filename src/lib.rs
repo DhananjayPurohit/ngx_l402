@@ -10,6 +10,8 @@ use ngx::ffi::{
     ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
     NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO, NGX_OK,
     NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
+    // Added for HTML response
+    ngx_buf_t, ngx_chain_t, ngx_pcalloc, ngx_palloc, ngx_http_send_header, ngx_http_output_filter,
 };
 use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConfigError, Request};
 use ngx::{ngx_log_error, ngx_null_command, ngx_string};
@@ -29,6 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 
+mod html;
 mod cashu;
 mod cashu_redemption_logger;
 
@@ -780,6 +783,131 @@ impl Merge for ModuleConfig {
     }
 }
 
+/// Parses a `WWW-Authenticate` header value to extract the `macaroon` and `invoice` fields.
+///
+/// # Arguments
+///
+/// * `header` - A string slice representing the value of a `WWW-Authenticate` HTTP header.
+///   The function expects the header to contain fields in the format: `macaroon="..."` and `invoice="..."`.
+///
+/// # Returns
+///
+/// A tuple `(macaroon, invoice)` where each element is a `String` containing the value of the respective field.
+/// If a field is missing or malformed, its value in the tuple will be an empty string.
+///
+/// # Example
+///
+/// ```
+/// let header = r#"L402 macaroon="abc", invoice="lnbc123""#;
+/// let (macaroon, invoice) = parse_www_authenticate(header);
+/// assert_eq!(macaroon, "abc");
+/// assert_eq!(invoice, "lnbc123");
+/// ```
+fn parse_www_authenticate(header: &str) -> (String, String) { // (macaroon, invoice)
+    // Parse macaroon
+    let macaroon = if let Some(mac_start) = header.find("macaroon=\"") {
+        let mac_start = mac_start + 10;
+        if let Some(mac_end_rel) = header[mac_start..].find("\"") {
+            let mac_end = mac_start + mac_end_rel;
+            header[mac_start..mac_end].to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // Parse invoice
+    let invoice = if let Some(inv_start) = header.find("invoice=\"") {
+        let inv_start = inv_start + 9;
+        if let Some(inv_end_rel) = header[inv_start..].find("\"") {
+            let inv_end = inv_start + inv_end_rel;
+            header[inv_start..inv_end].to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    (macaroon, invoice)
+}
+
+/// Sends an HTML response with status 402 to the given nginx HTTP request.
+///
+/// # Safety
+///
+/// This function is unsafe because it directly manipulates raw pointers and nginx FFI structures.
+/// The caller must ensure that:
+/// - `r` is a valid, non-null pointer to an `ngx_http_request_t` structure allocated and managed by nginx.
+/// - The function is called from the correct nginx request handling context.
+/// - The memory pool associated with `r` is valid for the duration of this call.
+/// - No concurrent modifications are made to the request or its memory pool while this function executes.
+///
+/// # Parameters
+/// - `r`: A mutable pointer to an nginx HTTP request (`ngx_http_request_t`). Must be valid and non-null.
+/// - `html`: The HTML content to send as the response body. The function will copy this data into nginx-managed memory.
+///
+/// # Return Value
+/// Returns the result of `ngx_http_output_filter` as an `isize`. Returns `NGX_ERROR` on allocation or send errors, or the result of the output filter otherwise.
+///
+/// # Errors
+/// Returns `NGX_ERROR` if memory allocation fails or if sending headers fails.
+///
+/// # Side Effects
+/// - Modifies the response status, content type, and content length of the nginx request.
+/// - Allocates memory from the nginx request pool.
+/// - Sends the response headers and body to the client.
+unsafe fn send_html_response(r: *mut ngx_http_request_t, html: String) -> isize {
+    // Set Status
+    (*r).headers_out.status = 402;
+    
+    // Set Content-Type
+    let ct = "text/html";
+    let ct_ptr = ngx::ffi::ngx_palloc((*r).pool, ct.len()) as *mut u8;
+    if ct_ptr.is_null() {
+        return NGX_ERROR as isize;
+    }
+    std::ptr::copy_nonoverlapping(ct.as_ptr(), ct_ptr, ct.len());
+    (*r).headers_out.content_type.len = ct.len();
+    (*r).headers_out.content_type.data = ct_ptr;
+    
+    // Set Content-Length
+    (*r).headers_out.content_length_n = html.len() as i64;
+
+    // Send Headers
+    if ngx::ffi::ngx_http_send_header(r) == NGX_ERROR as isize {
+        return NGX_ERROR as isize;
+    }
+
+    // Allocate buffer
+    let pool = (*r).pool;
+    let b = ngx::ffi::ngx_pcalloc(pool, std::mem::size_of::<ngx::ffi::ngx_buf_t>()) as *mut ngx::ffi::ngx_buf_t;
+    if b.is_null() {
+        return NGX_ERROR as isize;
+    }
+
+    // Copy data to buffer (must be alive or allocated in pool)
+    let data_ptr = ngx::ffi::ngx_palloc(pool, html.len()) as *mut u8;
+    if data_ptr.is_null() {
+        return NGX_ERROR as isize;
+    }
+    std::ptr::copy_nonoverlapping(html.as_ptr(), data_ptr, html.len());
+
+    (*b).pos = data_ptr;
+    (*b).last = data_ptr.add(html.len());
+    (*b).memory = 1; 
+    (*b).last_buf = 1; 
+
+    // Create chain
+    let mut out = ngx::ffi::ngx_chain_t {
+        buf: b,
+        next: std::ptr::null_mut(),
+    };
+
+    ngx::ffi::ngx_http_output_filter(r, &mut out)
+}
+
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
@@ -942,15 +1070,47 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 .await
         });
 
-        match header_result {
-            Some(header_value) => unsafe {
+// Helper to parse WWW-Authenticate header value
+                // Fallback: Check User-Agent for Mozilla/Chrome/Safari
+                 if !is_html_request && !(*request).headers_in.user_agent.is_null() {
+                    let ua = CStr::from_ptr((*(*request).headers_in.user_agent).value.data as *const i8)
+                        .to_str().unwrap_or("").to_lowercase();
+                    if ua.contains("mozilla") || ua.contains("chrome") || ua.contains("safari") {
+                        is_html_request = true;
+                    }
+                }
+
                 ngx_log_error!(
                     NGX_LOG_INFO,
                     log_ref,
-                    "Setting L402/WWW-Authenticate header"
+                    "Setting L402/WWW-Authenticate header (is_html={})",
+                    is_html_request
                 );
+                
                 let req = Request::from_ngx_http_request(request);
                 req.add_header_out("WWW-Authenticate", &header_value);
+
+                if is_html_request {
+                    let (macaroon, invoice) = parse_www_authenticate(&header_value);
+                    if !macaroon.is_empty() && !invoice.is_empty() {
+                         let html_body = html::get_payment_html(
+                             &invoice, 
+                             &macaroon, 
+                             cashu_ecash_support, 
+                             final_amount
+                         );
+                         // Since we are creating a response, we should return the result of sending it.
+                         // l402_access_handler_wrapper returns isize. 
+                         // NGX_OK or NGX_DONE stops phase processing.
+                         // But send_html_response calls output_filter which returns ngx_int_t (isize).
+                         let ret = send_html_response(request, html_body);
+                         
+                         // We must ensure Nginx knows we are done.
+                         // Usually return NGX_OK (0) or NGX_DONE (-4).
+                         // If output_filter returns OK, we return OK.
+                         return ret; 
+                    }
+                }
             },
             None => {
                 ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
