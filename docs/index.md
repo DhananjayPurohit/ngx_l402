@@ -28,17 +28,17 @@ graph TD;
     B -->|No| C[Return 200 OK]
     B -->|Yes| D{"Any auth header present? (L402 or X-Cashu)"}
     D -->|No| F[Generate L402 Header macaroon & invoice]
-    F --> G{Header Generation Success?}
-    G -->|Yes| H[Add WWW-Authenticate Header]
-    G -->|No| I[Return 500 Internal Server Error]
-    H --> J[Return 402 Payment Required]
     D -->|Yes| K["Parse L402 macaroon/preimage or X-Cashu (if present)"]
+    F --> G{Header Generation Success?}
+    G -->|No| I[Return 500 Internal Server Error]
+    G -->|Yes| H[Add WWW-Authenticate Header]
+    H --> J[Return 402 Payment Required]
     K --> L{Parse Success?}
     L -->|No| M[Return 500 Internal Server Error]
-    L -->|Yes| N["Verify macaroon/preimage OR Cashu proofs"]
+    L -->|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount >= price)"]
     N --> O{Verification Success?}
-    O -->|Yes| P[Return 200 OK]
     O -->|No| Q[Return 401 Unauthorized]
+    O -->|Yes| P[Return 200 OK]
 ```
 
 ---
@@ -70,3 +70,4 @@ curl -i http://localhost:8000/protected
 ```
 
 See the [Installation](./installation/manual.md) section for full setup options.
+
