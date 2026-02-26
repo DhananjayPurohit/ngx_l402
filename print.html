@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-66b9be82.js";
+            window.path_to_searchindex_js = "searchindex-0956015c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-fd8865b7.js"></script>
@@ -206,17 +206,17 @@
     B --&gt;|No| C[Return 200 OK]
     B --&gt;|Yes| D{"Any auth header present? (L402 or X-Cashu)"}
     D --&gt;|No| F[Generate L402 Header macaroon &amp; invoice]
-    F --&gt; G{Header Generation Success?}
-    G --&gt;|Yes| H[Add WWW-Authenticate Header]
-    G --&gt;|No| I[Return 500 Internal Server Error]
-    H --&gt; J[Return 402 Payment Required]
     D --&gt;|Yes| K["Parse L402 macaroon/preimage or X-Cashu (if present)"]
+    F --&gt; G{Header Generation Success?}
+    G --&gt;|No| I[Return 500 Internal Server Error]
+    G --&gt;|Yes| H[Add WWW-Authenticate Header]
+    H --&gt; J[Return 402 Payment Required]
     K --&gt; L{Parse Success?}
     L --&gt;|No| M[Return 500 Internal Server Error]
-    L --&gt;|Yes| N["Verify macaroon/preimage OR Cashu proofs"]
+    L --&gt;|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount &gt;= price)"]
     N --&gt; O{Verification Success?}
-    O --&gt;|Yes| P[Return 200 OK]
     O --&gt;|No| Q[Return 401 Unauthorized]
+    O --&gt;|Yes| P[Return 200 OK]
 </pre>
 
 <hr>
