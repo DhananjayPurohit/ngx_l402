@@ -1,0 +1,17 @@
+[book]
+title = "ngx_l402 - L402 Nginx Module"
+description = "Lightning Network-based authentication and monetization for Nginx"
+authors = ["Dhananjay Purohit"]
+language = "en"
+src = "docs"
+
+[output.html]
+site-url = "/ngx_l402/"
+git-repository-url = "https://github.com/DhananjayPurohit/ngx_l402"
+edit-url-template = "https://github.com/DhananjayPurohit/ngx_l402/edit/main/src/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor.links]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
