@@ -1,0 +1,918 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>ngx_l402 - L402 Nginx Module</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Lightning Network-based authentication and monetization for Nginx">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-66b9be82.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-fd8865b7.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">ngx_l402 - L402 Nginx Module</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/DhananjayPurohit/ngx_l402" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="ngx_l402--l402-nginx-module"><a class="header" href="#ngx_l402--l402-nginx-module">ngx_l402 — L402 Nginx Module</a></h1>
+<p>An <a href="https://docs.lightning.engineering/the-lightning-network/l402">L402</a> authentication module for Nginx that enables Lightning Network-based monetization for your REST APIs (HTTP/1 and HTTP/2).</p>
+<p>It supports the following Lightning backends:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Backend</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>LND</strong></td><td>Lightning Network Daemon (direct gRPC)</td></tr>
+<tr><td><strong>LNC</strong></td><td>Lightning Node Connect (remote LND via mailbox)</td></tr>
+<tr><td><strong>CLN</strong></td><td>Core Lightning</td></tr>
+<tr><td><strong>Eclair</strong></td><td>Eclair node</td></tr>
+<tr><td><strong>LNURL</strong></td><td>Lightning Network URL</td></tr>
+<tr><td><strong>NWC</strong></td><td>Nostr Wallet Connect</td></tr>
+<tr><td><strong>BOLT12</strong></td><td>Reusable Lightning Offers</td></tr>
+</tbody>
+</table>
+</div>
+<p>The module can be configured to charge per unique API call, enabling per-endpoint monetization based on request paths.</p>
+<p><img src="https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9" alt="L402 module demo"></p>
+<hr>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How It Works</a></h2>
+<pre class="mermaid">graph TD;
+    A[Request Received] --&gt; B{Endpoint L402 Enabled?}
+    B --&gt;|No| C[Return 200 OK]
+    B --&gt;|Yes| D{"Any auth header present? (L402 or X-Cashu)"}
+    D --&gt;|No| F[Generate L402 Header macaroon &amp; invoice]
+    F --&gt; G{Header Generation Success?}
+    G --&gt;|Yes| H[Add WWW-Authenticate Header]
+    G --&gt;|No| I[Return 500 Internal Server Error]
+    H --&gt; J[Return 402 Payment Required]
+    D --&gt;|Yes| K["Parse L402 macaroon/preimage or X-Cashu (if present)"]
+    K --&gt; L{Parse Success?}
+    L --&gt;|No| M[Return 500 Internal Server Error]
+    L --&gt;|Yes| N["Verify macaroon/preimage OR Cashu proofs"]
+    N --&gt; O{Verification Success?}
+    O --&gt;|Yes| P[Return 200 OK]
+    O --&gt;|No| Q[Return 401 Unauthorized]
+</pre>
+
+<hr>
+<h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
+<blockquote>
+<p><strong>Note</strong>: This module requires <strong>NGINX version 1.28.0</strong> or later.</p>
+</blockquote>
+<p>The fastest way to get started is with Docker:</p>
+<pre><code class="language-bash">docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LNURL \
+  -e LNURL_ADDRESS=username@your-lnurl-server.com \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<p>Then test it:</p>
+<pre><code class="language-bash"># Should return 200 OK
+curl http://localhost:8000/
+
+# Should return 402 Payment Required with L402 header
+curl -i http://localhost:8000/protected
+</code></pre>
+<p>See the <a href="installation/manual.html">Installation</a> section for full setup options.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="manual-installation"><a class="header" href="#manual-installation">Manual Installation</a></h1>
+<blockquote>
+<p><strong>Note</strong>: This module requires <strong>NGINX version 1.28.0</strong> or later. Earlier versions will cause module version mismatch errors.</p>
+</blockquote>
+<h2 id="steps"><a class="header" href="#steps">Steps</a></h2>
+<h3 id="1-download-the-module"><a class="header" href="#1-download-the-module">1. Download the Module</a></h3>
+<p>Download <code>libngx_l402_lib.so</code> from the <a href="https://github.com/DhananjayPurohit/ngx_l402/releases/latest">latest release</a> and copy it to your Nginx modules directory:</p>
+<pre><code class="language-bash">sudo cp libngx_l402_lib.so /etc/nginx/modules/
+</code></pre>
+<h3 id="2-load-the-module-in-nginxconf"><a class="header" href="#2-load-the-module-in-nginxconf">2. Load the Module in nginx.conf</a></h3>
+<pre><code class="language-nginx">load_module /etc/nginx/modules/libngx_l402_lib.so;
+</code></pre>
+<h3 id="3-enable-l402-for-specific-locations"><a class="header" href="#3-enable-l402-for-specific-locations">3. Enable L402 for Specific Locations</a></h3>
+<pre><code class="language-nginx">location /protected {
+    root   /usr/share/nginx/html;
+    index  index.html index.htm;
+    
+    # L402 module directives:
+    l402 on;
+    l402_amount_msat_default    10000;
+    # Note: Dynamic pricing is handled via Redis using the request path as key
+    # Example: SET /protected 15000 (sets price to 15000 msats for /protected endpoint)
+    l402_macaroon_timeout 3600;  # Macaroon validity in seconds, set to 0 to disable timeout
+    # Optional: per-location LNURL address for multi-tenant setups
+    # l402_lnurl_addr "tenant@your-lnurl-server.com";
+}
+</code></pre>
+<h3 id="4-set-environment-variables"><a class="header" href="#4-set-environment-variables">4. Set Environment Variables</a></h3>
+<p>Set the following in <code>nginx.service</code> (typically <code>/lib/systemd/system/nginx.service</code>).</p>
+<p>See <a href="#environment-variables">Environment Variables</a> for the complete reference.</p>
+<h3 id="5-set-up-sqlite-database-directory-if-using-cashu"><a class="header" href="#5-set-up-sqlite-database-directory-if-using-cashu">5. Set Up SQLite Database Directory (if using Cashu)</a></h3>
+<pre><code class="language-bash"># One-time setup — persists across restarts
+sudo mkdir -p /var/lib/nginx
+sudo chown nginx:nginx /var/lib/nginx
+sudo chmod 755 /var/lib/nginx
+</code></pre>
+<blockquote>
+<p>The <code>cdk-sqlite</code> crate automatically creates the database file and tables on first run. Database location: <code>/var/lib/nginx/cashu_tokens.db</code></p>
+</blockquote>
+<blockquote>
+<p><strong>Note</strong>: Both <code>restart</code> and <code>reload</code> are needed to ensure the Cashu redemption task starts properly.</p>
+</blockquote>
+<h3 id="6-restart-nginx"><a class="header" href="#6-restart-nginx">6. Restart Nginx</a></h3>
+<pre><code class="language-bash">sudo systemctl restart nginx
+sudo systemctl reload nginx
+</code></pre>
+<blockquote>
+<p><strong>Note</strong>: Both <code>restart</code> and <code>reload</code> are needed to ensure the Cashu redemption task starts properly.</p>
+</blockquote>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="docker-installation"><a class="header" href="#docker-installation">Docker Installation</a></h1>
+<p>The easiest way to deploy the L402 Nginx module is with our official Docker images.</p>
+<pre><code class="language-bash">docker pull ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<hr>
+<h2 id="quick-start-examples"><a class="header" href="#quick-start-examples">Quick Start Examples</a></h2>
+<h3 id="1-lnurl-backend-simplest-setup"><a class="header" href="#1-lnurl-backend-simplest-setup">1. LNURL Backend (Simplest Setup)</a></h3>
+<pre><code class="language-bash">docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LNURL \
+  -e LNURL_ADDRESS=username@your-lnurl-server.com \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<h3 id="2-lnd-backend-with-cashu-support"><a class="header" href="#2-lnd-backend-with-cashu-support">2. LND Backend with Cashu Support</a></h3>
+<pre><code class="language-bash">mkdir -p ~/l402-data
+cp ~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon ~/l402-data/
+cp ~/.lnd/tls.cert ~/l402-data/
+
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LND \
+  -e LND_ADDRESS=your-lnd-ip:10009 \
+  -e MACAROON_FILE_PATH=/app/data/admin.macaroon \
+  -e CERT_FILE_PATH=/app/data/tls.cert \
+  -e CASHU_ECASH_SUPPORT=true \
+  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
+  -e CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com \
+  -e CASHU_REDEEM_ON_LIGHTNING=true \
+  -e REDIS_URL=redis://redis:6379 \
+  -v ~/l402-data:/app/data \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<h3 id="3-lnd-via-lightning-node-connect-lnc"><a class="header" href="#3-lnd-via-lightning-node-connect-lnc">3. LND via Lightning Node Connect (LNC)</a></h3>
+<pre><code class="language-bash"># Generate a pairing phrase from Lightning Terminal first:
+# litcli sessions add --label="nginx-l402" --type=admin
+
+docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LND \
+  -e LNC_PAIRING_PHRASE="word1 word2 word3 word4 word5 word6 word7 word8 word9 word10" \
+  -e LNC_MAILBOX_SERVER=mailbox.terminal.lightning.today:443 \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<h3 id="4-cln-backend-core-lightning"><a class="header" href="#4-cln-backend-core-lightning">4. CLN Backend (Core Lightning)</a></h3>
+<pre><code class="language-bash">docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=CLN \
+  -e CLN_LIGHTNING_RPC_FILE_PATH=/app/data/lightning-rpc \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  -e CASHU_ECASH_SUPPORT=true \
+  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
+  -v ~/.lightning/bitcoin/lightning-rpc:/app/data/lightning-rpc:ro \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<h3 id="5-nwc-backend-nostr-wallet-connect"><a class="header" href="#5-nwc-backend-nostr-wallet-connect">5. NWC Backend (Nostr Wallet Connect)</a></h3>
+<pre><code class="language-bash">docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=NWC \
+  -e NWC_URI=nostr+walletconnect://your-pubkey?relay=wss://relay.damus.io&amp;secret=your-secret \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<h3 id="6-high-performance-p2pk-mode-recommended-for-production"><a class="header" href="#6-high-performance-p2pk-mode-recommended-for-production">6. High-Performance P2PK Mode (Recommended for Production)</a></h3>
+<pre><code class="language-bash">docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=LND \
+  -e LND_ADDRESS=your-lnd-ip:10009 \
+  -e MACAROON_FILE_PATH=/app/data/admin.macaroon \
+  -e CERT_FILE_PATH=/app/data/tls.cert \
+  -e CASHU_ECASH_SUPPORT=true \
+  -e CASHU_P2PK_MODE=true \
+  -e CASHU_P2PK_PRIVATE_KEY=your-32-byte-hex-private-key \
+  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
+  -e CASHU_WHITELISTED_MINTS=https://mint1.example.com \
+  -e CASHU_REDEEM_ON_LIGHTNING=true \
+  -e REDIS_URL=redis://redis:6379 \
+  -v ~/l402-data:/app/data \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<h3 id="7-bolt12-backend-reusable-offers"><a class="header" href="#7-bolt12-backend-reusable-offers">7. BOLT12 Backend (Reusable Offers)</a></h3>
+<pre><code class="language-bash">docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=BOLT12 \
+  -e BOLT12_OFFER=lno1... \
+  -e CLN_LIGHTNING_RPC_FILE_PATH=/app/data/lightning-rpc \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  -v ~/.lightning/bitcoin/lightning-rpc:/app/data/lightning-rpc:ro \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<h3 id="8-eclair-backend"><a class="header" href="#8-eclair-backend">8. Eclair Backend</a></h3>
+<pre><code class="language-bash">docker run -d \
+  --name l402-nginx \
+  -p 8000:8000 \
+  -e LN_CLIENT_TYPE=ECLAIR \
+  -e ECLAIR_ADDRESS=http://your-eclair-node:8282 \
+  -e ECLAIR_PASSWORD=your-eclair-password \
+  -e ROOT_KEY=your-32-byte-hex-key \
+  ghcr.io/dhananjaypurohit/ngx_l402:latest
+</code></pre>
+<hr>
+<h2 id="generating-required-secrets"><a class="header" href="#generating-required-secrets">Generating Required Secrets</a></h2>
+<pre><code class="language-bash"># ROOT_KEY (required for all setups)
+openssl rand -hex 32
+
+# CASHU_WALLET_SECRET (for Cashu support)
+openssl rand -hex 32
+
+# CASHU_P2PK_PRIVATE_KEY (for P2PK mode)
+openssl rand -hex 32
+</code></pre>
+<hr>
+<h2 id="testing-your-setup"><a class="header" href="#testing-your-setup">Testing Your Setup</a></h2>
+<pre><code class="language-bash"># Test free endpoint
+curl http://localhost:8000/
+
+# Test protected endpoint (should return 402 with L402 header)
+curl -i http://localhost:8000/protected
+
+# Check container logs
+docker logs l402-nginx -f
+
+# Stop the container
+docker stop l402-nginx
+</code></pre>
+<hr>
+<h2 id="specific-versions"><a class="header" href="#specific-versions">Specific Versions</a></h2>
+<pre><code class="language-bash">docker pull ghcr.io/dhananjaypurohit/ngx_l402:v1.2.3
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h1>
+<p>All configuration is done via environment variables set in <code>nginx.service</code> (typically at <code>/lib/systemd/system/nginx.service</code>).</p>
+<pre><code class="language-ini">[Service]
+...
+Environment=VAR_NAME=value
+</code></pre>
+<hr>
+<h2 id="lightning-client-type"><a class="header" href="#lightning-client-type">Lightning Client Type</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variable</th><th>Required</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>LN_CLIENT_TYPE</code></td><td>✅</td><td>One of: <code>LND</code>, <code>CLN</code>, <code>LNURL</code>, <code>NWC</code>, <code>BOLT12</code>, <code>ECLAIR</code></td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="lnd-direct-grpc"><a class="header" href="#lnd-direct-grpc">LND (Direct gRPC)</a></h2>
+<pre><code class="language-bash">Environment=LN_CLIENT_TYPE=LND
+Environment=LND_ADDRESS=your-lnd-ip.com
+Environment=MACAROON_FILE_PATH=/path/to/macaroon
+Environment=CERT_FILE_PATH=/path/to/cert
+Environment=ROOT_KEY=your-root-key
+</code></pre>
+<h2 id="lnd-via-lightning-node-connect-lnc"><a class="header" href="#lnd-via-lightning-node-connect-lnc">LND via Lightning Node Connect (LNC)</a></h2>
+<pre><code class="language-bash">Environment=LN_CLIENT_TYPE=LND
+Environment=LNC_PAIRING_PHRASE=&lt;10-word-mnemonic-from-litd&gt;
+Environment=LNC_MAILBOX_SERVER=mailbox.terminal.lightning.today:443
+Environment=ROOT_KEY=your-root-key
+</code></pre>
+<h2 id="cln-core-lightning"><a class="header" href="#cln-core-lightning">CLN (Core Lightning)</a></h2>
+<pre><code class="language-bash">Environment=LN_CLIENT_TYPE=CLN
+Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
+Environment=ROOT_KEY=your-root-key
+</code></pre>
+<h2 id="lnurl"><a class="header" href="#lnurl">LNURL</a></h2>
+<pre><code class="language-bash">Environment=LN_CLIENT_TYPE=LNURL
+Environment=LNURL_ADDRESS=username@your-lnurl-server.com
+Environment=ROOT_KEY=your-root-key
+</code></pre>
+<h2 id="nwc-nostr-wallet-connect"><a class="header" href="#nwc-nostr-wallet-connect">NWC (Nostr Wallet Connect)</a></h2>
+<pre><code class="language-bash">Environment=LN_CLIENT_TYPE=NWC
+Environment=NWC_URI=nostr+walletconnect://&lt;pubkey&gt;?relay=&lt;relay_url&gt;&amp;secret=&lt;secret&gt;
+Environment=ROOT_KEY=your-root-key
+</code></pre>
+<h2 id="bolt12-reusable-offers"><a class="header" href="#bolt12-reusable-offers">BOLT12 (Reusable Offers)</a></h2>
+<pre><code class="language-bash">Environment=LN_CLIENT_TYPE=BOLT12
+Environment=BOLT12_OFFER=lno1...
+Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
+Environment=ROOT_KEY=your-root-key
+</code></pre>
+<h2 id="eclair"><a class="header" href="#eclair">Eclair</a></h2>
+<pre><code class="language-bash">Environment=LN_CLIENT_TYPE=ECLAIR
+Environment=ECLAIR_ADDRESS=http://127.0.0.1:8282
+Environment=ECLAIR_PASSWORD=eclairpass
+Environment=ROOT_KEY=your-root-key
+</code></pre>
+<hr>
+<h2 id="redis-dynamic-pricing--replay-protection"><a class="header" href="#redis-dynamic-pricing--replay-protection">Redis (Dynamic Pricing &amp; Replay Protection)</a></h2>
+<pre><code class="language-bash">Environment=REDIS_URL=redis://127.0.0.1:6379
+
+# TTL for replay attack prevention (default: 86400 = 24 hours)
+Environment=L402_PREIMAGE_TTL_SECONDS=86400
+Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400
+</code></pre>
+<hr>
+<h2 id="cashu-ecash"><a class="header" href="#cashu-ecash">Cashu eCash</a></h2>
+<pre><code class="language-bash">Environment=CASHU_ECASH_SUPPORT=true
+Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
+Environment=CASHU_WALLET_SECRET=&lt;your-secret-random-string&gt;
+
+# Optional: Whitelist specific mints (comma-separated)
+# In standard mode: if not set, all mints are accepted
+# In P2PK mode: REQUIRED for security and NUT-24 payment request
+Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
+
+# Optional: Auto-redeem Cashu tokens to Lightning
+Environment=CASHU_REDEEM_ON_LIGHTNING=true
+Environment=CASHU_REDEMPTION_INTERVAL_SECS=3600  # default: 1 hour
+</code></pre>
+<blockquote>
+<p><strong>⚠️ Security</strong>: <code>CASHU_WALLET_SECRET</code> is used to generate the wallet seed. Anyone with this secret can steal your tokens!</p>
+<ul>
+<li>Generate with: <code>openssl rand -hex 32</code></li>
+<li>Never commit to Git</li>
+<li>Use a different value per deployment/environment</li>
+<li>Keep it in a secure environment variable or secrets manager</li>
+</ul>
+</blockquote>
+<h3 id="redemption-fee-handling"><a class="header" href="#redemption-fee-handling">Redemption Fee Handling</a></h3>
+<pre><code class="language-bash"># Minimum balance to attempt melting (default: 10 sats)
+Environment=CASHU_MELT_MIN_BALANCE_SATS=10
+
+# Percentage to reserve for fees (default: 1%)
+Environment=CASHU_MELT_FEE_RESERVE_PERCENT=1
+
+# Minimum fee reserve when percentage is small (default: 4 sats)
+Environment=CASHU_MELT_MIN_FEE_RESERVE_SATS=4
+
+# Maximum proofs per melt operation (default: 0 = unlimited)
+# Logic: if proof_count &gt; limit, select first N proofs, rest remain for next cycle
+# Use case: prevent hitting mint proof limits (e.g. mint.coinos.io has 1000 proof limit)
+Environment=CASHU_MAX_PROOFS_PER_MELT=1000
+</code></pre>
+<h3 id="p2pk-mode-high-performance"><a class="header" href="#p2pk-mode-high-performance">P2PK Mode (High Performance)</a></h3>
+<pre><code class="language-bash">Environment=CASHU_P2PK_MODE=true
+Environment=CASHU_P2PK_PRIVATE_KEY=&lt;your-private-key-hex&gt;
+# Public key is derived automatically from the private key
+# CASHU_WHITELISTED_MINTS is REQUIRED in P2PK mode
+</code></pre>
+<blockquote>
+<p><strong>⚠️ Security</strong>: <code>CASHU_P2PK_PRIVATE_KEY</code> is equally critical. Anyone with this key can spend tokens locked to your public key!</p>
+<ul>
+<li>Generate with: <code>openssl rand -hex 32</code></li>
+<li>Never commit to Git or share publicly</li>
+<li>Keep it secure alongside <code>CASHU_WALLET_SECRET</code></li>
+</ul>
+</blockquote>
+<p>See <a href="#cashu-ecash-1">Cashu eCash</a> for a full explanation of Standard vs P2PK mode and redemption fee examples.</p>
+<hr>
+<h2 id="logging"><a class="header" href="#logging">Logging</a></h2>
+<pre><code class="language-bash">Environment=RUST_LOG=info
+# For module-specific debug logs:
+Environment=RUST_LOG=ngx_l402_lib=debug,info
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="redis--dynamic-configuration"><a class="header" href="#redis--dynamic-configuration">Redis &amp; Dynamic Configuration</a></h1>
+<p>The module supports real-time configuration updates via Redis <strong>without requiring an Nginx reload</strong>.</p>
+<h2 id="setup"><a class="header" href="#setup">Setup</a></h2>
+<pre><code class="language-bash">Environment=REDIS_URL=redis://127.0.0.1:6379
+</code></pre>
+<hr>
+<h2 id="dynamic-pricing"><a class="header" href="#dynamic-pricing">Dynamic Pricing</a></h2>
+<p>Set the price for a specific path in Redis. Changes are picked up immediately by the next request.</p>
+<pre><code class="language-bash"># Set price to 1000 msats for /api/resource
+SET /api/resource 1000
+
+# Set price to 5000 msats for /api/premium
+SET /api/premium 5000
+</code></pre>
+<blockquote>
+<p><strong>Note</strong>: If no Redis key exists for a path, the module falls back to <code>l402_amount_msat_default</code> in <code>nginx.conf</code>.</p>
+</blockquote>
+<hr>
+<h2 id="dynamic-lnurl-per-tenant-routing"><a class="header" href="#dynamic-lnurl-per-tenant-routing">Dynamic LNURL (Per-Tenant Routing)</a></h2>
+<p>Override the LNURL address for a specific request path. This takes precedence over <code>l402_lnurl_addr</code> in <code>nginx.conf</code>.</p>
+<p><strong>Key format</strong>: <code>lnurl:&lt;request_path&gt;</code></p>
+<pre><code class="language-bash"># Route /api/tenant1 payments to alice
+SET lnurl:/api/tenant1 alice@getalby.com
+
+# Route /api/tenant2 payments to bob
+SET lnurl:/api/tenant2 bob@getalby.com
+</code></pre>
+<hr>
+<h2 id="replay-attack-prevention"><a class="header" href="#replay-attack-prevention">Replay Attack Prevention</a></h2>
+<p>Redis is used to enforce single-use of L402 preimages and Cashu tokens, preventing replay attacks across distributed deployments.</p>
+<pre><code class="language-bash">Environment=REDIS_URL=redis://127.0.0.1:6379
+Environment=L402_PREIMAGE_TTL_SECONDS=86400      # Default: 24 hours
+Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400   # Default: 24 hours
+</code></pre>
+<p><strong>How it works</strong>: After successful verification, SHA256 hashes of preimages/tokens are stored in Redis with a TTL. Subsequent use of the same credential is rejected with <code>401</code>. Protection persists across Nginx restarts and works with multiple Nginx instances.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="multi-tenant-configuration"><a class="header" href="#multi-tenant-configuration">Multi-Tenant Configuration</a></h1>
+<p>The module supports <strong>multi-tenant mode</strong>, allowing different API routes to use different Lightning/LNURL backends. This is useful for platforms hosting multiple merchants or services, where each tenant receives payments to their own wallet.</p>
+<blockquote>
+<p><strong>Current Support</strong>: Multi-tenant is currently supported for <strong>Cashu eCash payments only</strong> when using <code>LN_CLIENT_TYPE=LNURL</code>.</p>
+</blockquote>
+<hr>
+<h2 id="how-it-works-1"><a class="header" href="#how-it-works-1">How It Works</a></h2>
+<ol>
+<li><strong>Per-location LNURL addresses</strong>: Use the <code>l402_lnurl_addr</code> directive to specify a different LNURL address per Nginx location block.</li>
+<li><strong>Proof tracking</strong>: When a Cashu token is received, the proofs are mapped to the tenant’s LNURL address in Redis.</li>
+<li><strong>Grouped redemption</strong>: The automatic redemption task groups proofs by tenant and redeems each group to the correct LNURL address.</li>
+</ol>
+<hr>
+<h2 id="nginx-configuration"><a class="header" href="#nginx-configuration">Nginx Configuration</a></h2>
+<pre><code class="language-nginx"># Tenant 1 — payments go to alice@getalby.com
+location /api/tenant1 {
+    l402 on;
+    l402_amount_msat_default 10000;
+    l402_macaroon_timeout 0;
+    l402_lnurl_addr "alice@getalby.com";
+}
+
+# Tenant 2 — payments go to bob@getalby.com
+location /api/tenant2 {
+    l402 on;
+    l402_amount_msat_default 15000;
+    l402_macaroon_timeout 0;
+    l402_lnurl_addr "bob@getalby.com";
+}
+
+# Tenant 3 — self-hosted LNURL server
+location /api/tenant3 {
+    l402 on;
+    l402_amount_msat_default 5000;
+    l402_macaroon_timeout 0;
+    l402_lnurl_addr "user@your-lnurl-server.com";
+}
+</code></pre>
+<hr>
+<h2 id="required-environment-variables"><a class="header" href="#required-environment-variables">Required Environment Variables</a></h2>
+<pre><code class="language-bash"># Use LNURL client type
+Environment=LN_CLIENT_TYPE=LNURL
+
+# Default LNURL address (fallback when l402_lnurl_addr is not set)
+Environment=LNURL_ADDRESS=default@your-domain.com
+
+# Redis is required for proof-to-tenant mapping
+Environment=REDIS_URL=redis://127.0.0.1:6379
+
+# Enable Cashu eCash support
+Environment=CASHU_ECASH_SUPPORT=true
+Environment=CASHU_WALLET_SECRET=&lt;your-secret&gt;
+Environment=CASHU_WHITELISTED_MINTS=https://mint.example.com
+
+# Enable automatic redemption to Lightning
+Environment=CASHU_REDEEM_ON_LIGHTNING=true
+Environment=CASHU_REDEMPTION_INTERVAL_SECS=60
+</code></pre>
+<hr>
+<h2 id="dynamic-lnurl-override-via-redis"><a class="header" href="#dynamic-lnurl-override-via-redis">Dynamic LNURL Override via Redis</a></h2>
+<p>You can also override the LNURL address per path dynamically without reloading Nginx:</p>
+<pre><code class="language-bash">SET lnurl:/api/tenant1 alice@getalby.com
+SET lnurl:/api/tenant2 bob@getalby.com
+</code></pre>
+<p>See <a href="#redis--dynamic-configuration">Redis &amp; Dynamic Config</a> for more details.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="cashu-ecash-1"><a class="header" href="#cashu-ecash-1">Cashu eCash</a></h1>
+<p>The module supports <a href="https://cashu.space">Cashu</a> eCash tokens as an alternative payment method to Lightning invoices.</p>
+<hr>
+<h2 id="standard-mode-vs-p2pk-mode"><a class="header" href="#standard-mode-vs-p2pk-mode">Standard Mode vs P2PK Mode</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th>Standard Mode</th><th>P2PK Mode</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>How it works</strong></td><td>Calls <code>wallet.receive()</code> → contacts mint to swap tokens</td><td>Verifies token locked to proxy’s public key locally</td></tr>
+<tr><td><strong>Speed</strong></td><td>Slower (blocks on mint API call per request)</td><td>Fast (milliseconds — no mint call!)</td></tr>
+<tr><td><strong>Best for</strong></td><td>Low-traffic or simple setups</td><td>High-traffic production deployments</td></tr>
+<tr><td><strong>Extra requirement</strong></td><td>None</td><td><code>CASHU_WHITELISTED_MINTS</code> is required</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="standard-mode-setup"><a class="header" href="#standard-mode-setup">Standard Mode Setup</a></h2>
+<pre><code class="language-bash">Environment=CASHU_ECASH_SUPPORT=true
+Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
+Environment=CASHU_WALLET_SECRET=&lt;your-secret-random-string&gt;
+
+# Optional: Whitelist specific mints (comma-separated)
+Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
+
+# Optional: Auto-redeem to Lightning
+Environment=CASHU_REDEEM_ON_LIGHTNING=true
+Environment=CASHU_REDEMPTION_INTERVAL_SECS=3600
+</code></pre>
+<blockquote>
+<p><strong>⚠️ Security</strong>: <code>CASHU_WALLET_SECRET</code> is used to generate the wallet seed. Anyone with this secret can steal your tokens! Generate with <code>openssl rand -hex 32</code> and never commit it to Git.</p>
+</blockquote>
+<hr>
+<h2 id="p2pk-mode-setup-high-performance"><a class="header" href="#p2pk-mode-setup-high-performance">P2PK Mode Setup (High Performance)</a></h2>
+<pre><code class="language-bash">Environment=CASHU_P2PK_MODE=true
+Environment=CASHU_P2PK_PRIVATE_KEY=&lt;your-private-key-hex&gt;
+# CASHU_WHITELISTED_MINTS is REQUIRED in P2PK mode
+Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com
+</code></pre>
+<blockquote>
+<p><strong>⚠️ Security</strong>: <code>CASHU_P2PK_PRIVATE_KEY</code> is equally critical. Anyone with this key can spend tokens locked to your public key. Generate with <code>openssl rand -hex 32</code>.</p>
+</blockquote>
+<p><strong>How P2PK mode works per request:</strong></p>
+<ol>
+<li>Proxy derives a public key from <code>CASHU_P2PK_PRIVATE_KEY</code> and sends it to clients via the <code>X-Cashu</code> header (NUT-24)</li>
+<li>Client creates P2PK-locked tokens to that public key</li>
+<li>Proxy verifies tokens are locked to its public key (NUT-11) — local check, no network call</li>
+<li>Proxy unlocks proofs with private key (local cryptographic operation)</li>
+<li>Unlocked proofs are stored directly in CDK database via <code>wallet.receive_proofs()</code></li>
+<li>Background redemption task finds proofs via <code>wallet.get_unspent_proofs()</code> and redeems to Lightning via <code>wallet.melt()</code></li>
+</ol>
+<hr>
+<h2 id="redemption-fee-configuration"><a class="header" href="#redemption-fee-configuration">Redemption Fee Configuration</a></h2>
+<pre><code class="language-bash"># Minimum balance to attempt melting (default: 10 sats)
+Environment=CASHU_MELT_MIN_BALANCE_SATS=10
+
+# Percentage to reserve for fees (default: 1%)
+Environment=CASHU_MELT_FEE_RESERVE_PERCENT=1
+
+# Minimum fee reserve when percentage is small (default: 4 sats)
+Environment=CASHU_MELT_MIN_FEE_RESERVE_SATS=4
+
+# Maximum proofs per melt operation (default: 0 = unlimited)
+# Use this if your mint has a per-melt proof limit (e.g. mint.coinos.io = 1000)
+Environment=CASHU_MAX_PROOFS_PER_MELT=1000
+</code></pre>
+<p><strong>Fee calculation</strong>: <code>fee_reserve = max(total_amount × percent/100, min_fee_sats)</code></p>
+<p><strong>Example 1</strong> — Large balance (500 sats) with 1% fee reserve:</p>
+<ul>
+<li>Percentage fee: <code>500 × 1% = 5 sats</code></li>
+<li>Minimum fee: <code>4 sats</code></li>
+<li>Used reserve: <code>max(5, 4) = 5 sats</code></li>
+<li>Redeemable: <code>500 - 5 = 495 sats</code></li>
+</ul>
+<p><strong>Example 2</strong> — Small balance (50 sats) with 1% fee reserve:</p>
+<ul>
+<li>Percentage fee: <code>50 × 1% = 0.5 sats</code></li>
+<li>Minimum fee: <code>4 sats</code></li>
+<li>Used reserve: <code>max(0.5, 4) = 4 sats</code> ← Minimum kicks in!</li>
+<li>Redeemable: <code>50 - 4 = 46 sats</code></li>
+</ul>
+<p><strong>Example 3</strong> — Proof count limiting when exceeding mint limit (<code>CASHU_MAX_PROOFS_PER_MELT=1000</code>):</p>
+<ul>
+<li><strong>Scenario</strong>: 1282 proofs worth 13,588 sats total</li>
+<li><strong>Check</strong>: <code>1282 proofs &gt; 1000 limit</code> → Limiting triggered</li>
+<li><strong>Action</strong>: Select first 1000 proofs worth ~10,600 sats</li>
+<li><strong>Invoice</strong>: Generate invoice for 10,600 sats</li>
+<li><strong>Remaining</strong>: 282 proofs (~2,988 sats) stay for next cycle</li>
+<li><strong>Next cycle</strong>: <code>282 proofs &lt; 1000 limit</code> → all remaining proofs melted</li>
+</ul>
+<blockquote>
+<p>Actual melt quote fees are verified against the reserve; warnings appear if the reserve was insufficient.</p>
+</blockquote>
+<blockquote>
+<p><strong>Note on <code>CASHU_WHITELISTED_MINTS</code></strong>: If not configured, all mints are accepted in standard mode. <strong>In P2PK mode, whitelisted mints are REQUIRED</strong> for security and the payment request (NUT-24).</p>
+</blockquote>
+<hr>
+<h2 id="sqlite-database-setup"><a class="header" href="#sqlite-database-setup">SQLite Database Setup</a></h2>
+<pre><code class="language-bash"># One-time setup — persists across restarts
+sudo mkdir -p /var/lib/nginx
+sudo chown nginx:nginx /var/lib/nginx
+sudo chmod 755 /var/lib/nginx
+</code></pre>
+<p>The <code>cdk-sqlite</code> crate automatically creates the database file and tables. Database location: <code>/var/lib/nginx/cashu_tokens.db</code></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="building-from-source"><a class="header" href="#building-from-source">Building from Source</a></h1>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<p>Install required system dependencies:</p>
+<pre><code class="language-bash">sudo apt-get install -y \
+  build-essential \
+  clang \
+  libclang-dev \
+  libc6-dev \
+  zlib1g-dev \
+  pkg-config \
+  libssl-dev \
+  protobuf-compiler \
+  nginx
+</code></pre>
+<p>Install Rust and Cargo:</p>
+<pre><code class="language-bash">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+</code></pre>
+<hr>
+<h2 id="build-steps"><a class="header" href="#build-steps">Build Steps</a></h2>
+<ol>
+<li>Clone the repository:</li>
+</ol>
+<pre><code class="language-bash">git clone https://github.com/DhananjayPurohit/ngx_l402.git
+cd ngx_l402
+</code></pre>
+<ol start="2">
+<li>Build the module:</li>
+</ol>
+<pre><code class="language-bash">cargo build --release --features export-modules
+</code></pre>
+<p>The compiled module will be at <code>target/release/libngx_l402_lib.so</code>.</p>
+<ol start="3">
+<li>Copy to your Nginx modules directory:</li>
+</ol>
+<pre><code class="language-bash">sudo cp target/release/libngx_l402_lib.so /etc/nginx/modules/
+</code></pre>
+<ol start="4">
+<li>Follow the remaining <a href="#manual-installation">manual installation steps</a>.</li>
+</ol>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="logging-1"><a class="header" href="#logging-1">Logging</a></h1>
+<h2 id="view-logs"><a class="header" href="#view-logs">View Logs</a></h2>
+<h3 id="systemd--manual-install"><a class="header" href="#systemd--manual-install">systemd / Manual Install</a></h3>
+<pre><code class="language-bash"># Module initialization and system logs
+sudo journalctl -u nginx
+
+# Nginx error logs (real-time)
+sudo tail -f /var/log/nginx/error.log
+
+# Cashu redemption logs
+sudo tail -f /var/log/nginx/cashu_redemption.log
+</code></pre>
+<h3 id="docker"><a class="header" href="#docker">Docker</a></h3>
+<pre><code class="language-bash">docker logs l402-nginx -f
+</code></pre>
+<hr>
+<h2 id="log-levels"><a class="header" href="#log-levels">Log Levels</a></h2>
+<p>Control verbosity via the <code>RUST_LOG</code> environment variable:</p>
+<pre><code class="language-bash"># Standard info logs (recommended for production)
+Environment=RUST_LOG=info
+
+# Detailed debug logs for all modules
+Environment=RUST_LOG=debug
+
+# Module-specific debug logs only (reduces noise)
+Environment=RUST_LOG=ngx_l402_lib=debug,info
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="l402-protocol-notes"><a class="header" href="#l402-protocol-notes">L402 Protocol Notes</a></h1>
+<p>This module implements the <a href="https://docs.lightning.engineering/the-lightning-network/l402">L402 protocol</a> using standard Lightning Network payments.</p>
+<h2 id="preimage-requirements"><a class="header" href="#preimage-requirements">Preimage Requirements</a></h2>
+<ul>
+<li><strong>Only standard 32-byte (256-bit) Lightning preimages</strong> are supported, as specified by the Lightning Network protocol.</li>
+<li>The preimage is verified against the <code>payment_hash</code> using SHA256 hashing.</li>
+<li>When a client provides an L402 authorization header, the preimage must be exactly 32 bytes.</li>
+</ul>
+<blockquote>
+<p><strong>⚠️ Wallet Compatibility</strong>: Some wallets like <a href="https://www.walletofsatoshi.com/">Wallet of Satoshi</a> provide 48-byte preimages (non-standard), which are <strong>not compatible</strong> with this module. Use wallets that provide standard 32-byte Lightning preimages.</p>
+</blockquote>
+<h2 id="authorization-header-format"><a class="header" href="#authorization-header-format">Authorization Header Format</a></h2>
+<p>The L402 authorization header is formatted as:</p>
+<pre><code>L402 &lt;macaroon&gt;:&lt;preimage&gt;
+</code></pre>
+<p>Or for Cashu eCash payments:</p>
+<pre><code>X-Cashu: &lt;cashu-token&gt;
+</code></pre>
+<h2 id="payment-flow"><a class="header" href="#payment-flow">Payment Flow</a></h2>
+<ol>
+<li>Client makes a request to a protected endpoint</li>
+<li>Server responds with <code>402 Payment Required</code> and a <code>WWW-Authenticate: L402</code> header containing a macaroon and a Lightning invoice</li>
+<li>Client pays the invoice and obtains the preimage</li>
+<li>Client retries the request with <code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;</code></li>
+<li>Server verifies the macaroon and preimage, then serves the response</li>
+</ol>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="mermaid-eefea253.min.js"></script>
+        <script src="mermaid-init-ccf746f1.js"></script>
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>
