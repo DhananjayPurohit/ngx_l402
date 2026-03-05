@@ -108,6 +108,14 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     })
 }
 
+/// Normalize a mint URL for consistent comparison:
+/// - trim leading/trailing whitespace
+/// - strip trailing slashes
+/// - lowercase the scheme and host
+fn normalize_mint_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
 pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), String> {
     if whitelisted_mints_str.trim().is_empty() {
         info!("ℹ️ Empty whitelisted mints string provided");
@@ -116,12 +124,12 @@ pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), S
 
     let mut whitelisted_set = HashSet::new();
 
-    // Split by comma and trim each mint URL
+    // Split by comma, trim, and normalize each mint URL
     for mint_url in whitelisted_mints_str.split(',') {
-        let trimmed_mint = mint_url.trim();
-        if !trimmed_mint.is_empty() {
-            whitelisted_set.insert(trimmed_mint.to_string());
-            info!("✅ Added whitelisted mint: {}", trimmed_mint);
+        let normalized = normalize_mint_url(mint_url);
+        if !normalized.is_empty() {
+            info!("✅ Added whitelisted mint: {}", normalized);
+            whitelisted_set.insert(normalized);
         }
     }
 
@@ -141,7 +149,7 @@ pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), S
 pub fn is_mint_whitelisted(mint_url: &str) -> bool {
     // If no whitelisted mints are configured, allow all mints
     if let Some(whitelisted_mints) = WHITELISTED_MINTS.get() {
-        whitelisted_mints.contains(mint_url)
+        whitelisted_mints.contains(&normalize_mint_url(mint_url))
     } else {
         info!("ℹ️ No whitelisted mints configured - allowing all mints");
         true
@@ -442,12 +450,18 @@ pub async fn verify_cashu_token(
     );
 
     // Extract mint URL from the token
-    let mint_url = token_decoded
-        .mint_url()
-        .map_err(|e| format!("Failed to get mint URL: {}", e))?;
+    // Extract and normalize the mint URL from the token immediately so that
+    // any extra trailing slash or whitespace in the token metadata is stripped
+    // before the whitelist check, wallet creation, and logging.
+    let mint_url = normalize_mint_url(
+        &token_decoded
+            .mint_url()
+            .map_err(|e| format!("Failed to get mint URL: {}", e))?
+            .to_string(),
+    );
 
     // Check if the mint is whitelisted
-    if !is_mint_whitelisted(&mint_url.to_string()) {
+    if !is_mint_whitelisted(&mint_url) {
         info!("⚠️ Cashu token from non-whitelisted mint: {}", mint_url);
         return Ok(false);
     }
@@ -472,8 +486,8 @@ pub async fn verify_cashu_token(
     seed[..32].copy_from_slice(seed_hash.as_bytes());
     debug!("🔑 Using seed for receiving token from mint {}", mint_url);
 
-    // Create wallet directly for this specific mint
-    let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), seed, None)
+    // Create wallet directly for this specific mint (using normalized URL)
+    let wallet = cdk::wallet::Wallet::new(&mint_url, unit, db.clone(), seed, None)
         .map_err(|e| format!("Failed to create wallet: {}", e))?;
 
     match wallet
@@ -552,15 +566,24 @@ pub async fn verify_cashu_token_p2pk(
     let token_decoded =
         cdk::nuts::Token::from_str(token).map_err(|e| format!("Failed to decode token: {}", e))?;
 
-    let mint_url = token_decoded
-        .mint_url()
-        .map_err(|e| format!("Failed to get mint URL: {}", e))?;
+    // Extract and normalize the mint URL from the token immediately so that any
+    // extra trailing slash or whitespace in the token metadata is stripped before
+    // the whitelist check, wallet creation, ProofInfo storage, and logging.
+    let mint_url_str = normalize_mint_url(
+        &token_decoded
+            .mint_url()
+            .map_err(|e| format!("Failed to get mint URL: {}", e))?
+            .to_string(),
+    );
+    // Re-parse to a typed MintUrl (needed for ProofInfo and wallet APIs)
+    let mint_url = MintUrl::from_str(&mint_url_str)
+        .map_err(|e| format!("Invalid mint URL after normalization: {:?}", e))?;
 
     // Verify mint is whitelisted
     let whitelisted_mints = get_whitelisted_mints().ok_or("No whitelisted mints configured")?;
 
-    if !whitelisted_mints.contains(&mint_url.to_string()) {
-        return Err(format!("Mint {} not whitelisted", mint_url));
+    if !whitelisted_mints.contains(&mint_url_str) {
+        return Err(format!("Mint {} not whitelisted", mint_url_str));
     }
 
     // Verify amount
@@ -586,9 +609,9 @@ pub async fn verify_cashu_token_p2pk(
         ));
     }
 
-    info!("✅ Validated: {} msat from {}", total_amount_msat, mint_url);
+    info!("✅ Validated: {} msat from {}", total_amount_msat, mint_url_str);
 
-    // Setup wallet
+    // Setup wallet (using normalized URL so it matches whitelisted mint keys)
     let db = CASHU_DB.get().ok_or("Database not initialized")?.clone();
 
     let unit = token_decoded.unit().unwrap();
@@ -598,7 +621,7 @@ pub async fn verify_cashu_token_p2pk(
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
 
-    let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit.clone(), db, seed, None)
+    let wallet = cdk::wallet::Wallet::new(&mint_url_str, unit.clone(), db, seed, None)
         .map_err(|e| format!("Failed to create wallet: {}", e))?;
 
     // Get keysets (use cached if available, fetch once if not)
