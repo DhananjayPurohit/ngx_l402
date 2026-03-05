@@ -12,12 +12,12 @@ Supports **LND**, **LNC**, **CLN**, **Eclair**, **LNURL**, **NWC**, and **BOLT12
 
 **Full documentation is available at: https://dhananjaypurohit.github.io/ngx_l402/**
 
-- [Installation](https://dhananjaypurohit.github.io/ngx_l402/installation/manual.html)
-- [Docker Setup](https://dhananjaypurohit.github.io/ngx_l402/installation/docker.html)
-- [Configuration & Environment Variables](https://dhananjaypurohit.github.io/ngx_l402/configuration/env-vars.html)
+- [Installation](https://dhananjaypurohit.github.io/ngx_l402/install-manual.html)
+- [Docker Setup](https://dhananjaypurohit.github.io/ngx_l402/install-docker.html)
+- [Configuration & Environment Variables](https://dhananjaypurohit.github.io/ngx_l402/config-env-vars.html)
 - [Cashu eCash Support](https://dhananjaypurohit.github.io/ngx_l402/cashu.html)
-- [Multi-Tenant](https://dhananjaypurohit.github.io/ngx_l402/configuration/multi-tenant.html)
-- [Building from Source](https://dhananjaypurohit.github.io/ngx_l402/advanced/building.html)
+- [Multi-Tenant](https://dhananjaypurohit.github.io/ngx_l402/config-multi-tenant.html)
+- [Building from Source](https://dhananjaypurohit.github.io/ngx_l402/building.html)
 
 ---
 
