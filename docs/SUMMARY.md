@@ -17,10 +17,10 @@
 
 # Payment Methods
 
+- [Lightning Network](./lightning.md)
 - [Cashu eCash](./cashu.md)
 
 # Advanced
 
 - [Building from Source](./building.md)
 - [Logging](./logging.md)
-- [L402 Protocol Notes](./protocol.md)

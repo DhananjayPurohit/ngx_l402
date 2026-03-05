@@ -69,5 +69,5 @@ curl http://localhost:8000/
 curl -i http://localhost:8000/protected
 ```
 
-See the [Installation](./installation/manual.md) section for full setup options.
+See the [Installation](./install-manual.md) section for full setup options.
 
