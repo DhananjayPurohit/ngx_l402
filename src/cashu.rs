@@ -35,10 +35,25 @@ static P2PK_PUBLIC_KEY: OnceLock<String> = OnceLock::new();
 // Cashu eCash support flag
 static CASHU_ECASH_ENABLED: OnceLock<bool> = OnceLock::new();
 
-// LN Client for non-LNURL redemption (single-tenant mode)
 static LN_CLIENT: OnceLock<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>> =
     OnceLock::new();
 static LN_CLIENT_TYPE: OnceLock<String> = OnceLock::new();
+
+// Dynamically generated secret for when CASHU_WALLET_SECRET is not provided
+static GENERATED_WALLET_SECRET: OnceLock<String> = OnceLock::new();
+
+fn get_wallet_secret() -> String {
+    std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
+        GENERATED_WALLET_SECRET
+            .get_or_init(|| {
+                warn!("⚠️ CASHU_WALLET_SECRET not set! Generating a random secret for this session. This means your wallet counter will reset on restart. Set CASHU_WALLET_SECRET in production!");
+                let mut bytes = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+                hex::encode(bytes)
+            })
+            .clone()
+    })
+}
 
 pub fn is_p2pk_mode_enabled() -> bool {
     P2PK_MODE_ENABLED.get().copied().unwrap_or(false)
@@ -143,6 +158,48 @@ pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), S
             Ok(())
         }
         Err(_) => Err("Failed to set whitelisted mints - already initialized".to_string()),
+    }
+}
+
+pub async fn restore_wallets_state() {
+    let whitelisted_mints = match get_whitelisted_mints() {
+        Some(mints) => mints,
+        None => {
+            info!("ℹ️ No whitelisted mints to restore state from.");
+            return;
+        }
+    };
+
+    let db = match CASHU_DB.get() {
+        Some(db) => db.clone(),
+        None => {
+            warn!("⚠️ Cashu database not initialized before restore");
+            return;
+        }
+    };
+
+    let wallet_secret = get_wallet_secret();
+    let seed_hash = blake3::hash(wallet_secret.as_bytes());
+    let mut seed = [0u8; 64];
+    seed[..32].copy_from_slice(seed_hash.as_bytes());
+
+    for mint_url in whitelisted_mints {
+        info!("🔄 Restoring wallet state for mint: {}", mint_url);
+        // We restore for the Sat unit primarily (or Msat as well)
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        
+        match cdk::wallet::Wallet::new(mint_url, unit, db.clone(), seed, None) {
+            Ok(wallet) => {
+                match wallet.restore().await {
+                    Ok(amount) => {
+                        let amount_val: u64 = amount.into();
+                        info!("✅ Restored {} sats state from {}", amount_val, mint_url);
+                    }
+                    Err(e) => warn!("⚠️ Failed to restore {}: {}", mint_url, e),
+                }
+            }
+            Err(e) => warn!("⚠️ Failed to create wallet for restore {}: {}", mint_url, e),
+        }
     }
 }
 
@@ -476,11 +533,8 @@ pub async fn verify_cashu_token(
         .ok_or_else(|| "Cashu database not initialized".to_string())?
         .clone();
 
-    // Use seed from environment variable (CASHU_WALLET_SECRET)
-    let wallet_secret = std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
-        warn!("⚠️ CASHU_WALLET_SECRET not set! Using insecure default. Set this in production!");
-        "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string()
-    });
+    // Use seed from environment variable (CASHU_WALLET_SECRET) or generated fallback
+    let wallet_secret = get_wallet_secret();
     let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
@@ -615,8 +669,7 @@ pub async fn verify_cashu_token_p2pk(
     let db = CASHU_DB.get().ok_or("Database not initialized")?.clone();
 
     let unit = token_decoded.unit().unwrap();
-    let wallet_secret = std::env::var("CASHU_WALLET_SECRET")
-        .unwrap_or_else(|_| "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string());
+    let wallet_secret = get_wallet_secret();
     let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
@@ -754,11 +807,8 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
     cashu_redemption_logger::log_redemption(&msg);
     info!("{}", msg);
 
-    // Use seed from environment variable (must match token verification)
-    let wallet_secret = std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
-        warn!("⚠️ CASHU_WALLET_SECRET not set! Using insecure default. Set this in production!");
-        "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string()
-    });
+    // Use seed from environment variable or generated fallback (must match token verification)
+    let wallet_secret = get_wallet_secret();
     let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
