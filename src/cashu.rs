@@ -1,5 +1,5 @@
 use crate::cashu_redemption_logger;
-use crate::REDIS_CLIENT;
+use crate::REDIS_POOL;
 use cdk;
 use cdk::mint_url::MintUrl;
 use hex;
@@ -48,7 +48,7 @@ fn get_wallet_secret() -> String {
             .get_or_init(|| {
                 warn!("⚠️ CASHU_WALLET_SECRET not set! Generating a random secret for this session. This means your wallet counter will reset on restart. Set CASHU_WALLET_SECRET in production!");
                 let mut bytes = [0u8; 32];
-                rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+                rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
                 hex::encode(bytes)
             })
             .clone()
@@ -218,13 +218,13 @@ pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
 }
 
 fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, String> {
-    let client = REDIS_CLIENT
+    let pool = REDIS_POOL
         .get()
-        .ok_or("Redis client is not initialised")?;
+        .ok_or("Redis pool is not initialised")?;
 
-    let client_guard = client
-        .lock()
-        .map_err(|_| "Failed to lock redis client".to_string())?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get redis connection from pool: {}", e))?;
 
     let secret = proof.secret.to_string();
 
@@ -234,9 +234,6 @@ fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, Stri
     let proof_hash = hex::encode(hasher.finalize());
 
     let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
 
     let lnurl: Option<String> = conn
         .get(&redis_key)
@@ -249,13 +246,9 @@ fn set_proof_to_lnurl(
     proofs: cdk::nuts::Proofs,
     lnurl_route: Option<String>,
 ) -> Result<(), String> {
-    let client = REDIS_CLIENT
+    let pool = REDIS_POOL
         .get()
-        .ok_or("Redis client is not initialised")?;
-
-    let client_guard = client
-        .lock()
-        .map_err(|_| "Failed to lock redis client".to_string())?;
+        .ok_or("Redis pool is not initialised")?;
 
     let lnurl = lnurl_route.unwrap_or_else(|| std::env::var("LNURL_ADDRESS").unwrap_or_default());
 
@@ -263,9 +256,9 @@ fn set_proof_to_lnurl(
         return Err("No LNURL address available for cashu token".to_string());
     }
 
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get redis connection from pool: {}", e))?;
 
     for proof in proofs {
         let secret = proof.secret.to_string();
@@ -285,17 +278,13 @@ fn set_proof_to_lnurl(
 
 /// Remove proof-to-lnurl mappings from Redis after proofs have been melted
 fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String> {
-    let client = REDIS_CLIENT
+    let pool = REDIS_POOL
         .get()
-        .ok_or("Redis client is not initialised")?;
+        .ok_or("Redis pool is not initialised")?;
 
-    let client_guard = client
-        .lock()
-        .map_err(|_| "Failed to lock redis client".to_string())?;
-
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get redis connection from pool: {}", e))?;
 
     for proof in proofs {
         let secret = proof.secret.to_string();
