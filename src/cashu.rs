@@ -315,11 +315,10 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
 }
 
 /// Group proofs by their associated lnurl address for multi-tenant redemption
-fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
+fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> Result<HashMap<String, cdk::nuts::Proofs>, String> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
-    // TODO: Return Result instead of panicking for graceful error handling
-    let default_lnurl =
-        std::env::var("LNURL_ADDRESS").expect("LNURL_ADDRESS required for multi-tenant mode");
+    let default_lnurl = std::env::var("LNURL_ADDRESS")
+        .map_err(|_| "LNURL_ADDRESS is required for multi-tenant mode".to_string())?;
 
     for proof in proofs {
         let lnurl = get_lnurl_from_proof(&proof)
@@ -334,7 +333,7 @@ fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts
         grouped.entry(lnurl).or_insert_with(Vec::new).push(proof);
     }
 
-    grouped
+    Ok(grouped)
 }
 
 /// Initialize P2PK mode if enabled
@@ -924,7 +923,15 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
         // Build proof groups based on mode
         let proof_groups: Vec<(String, cdk::nuts::Proofs)> = if is_multi_tenant {
             // Multi-tenant: group proofs by their lnurl address
-            let proofs_by_lnurl = group_proofs_by_lnurl(proofs);
+            let proofs_by_lnurl = match group_proofs_by_lnurl(proofs) {
+                Ok(grouped) => grouped,
+                Err(e) => {
+                    let err_msg = format!("Failed to group proofs by LNURL: {}", e);
+                    error!("{}", err_msg);
+                    cashu_redemption_logger::log_redemption(&err_msg);
+                    continue;
+                }
+            };
             let msg = format!(
                 "Multi-tenant mode: Grouped proofs into {} tenant(s) for mint {}",
                 proofs_by_lnurl.len(),
