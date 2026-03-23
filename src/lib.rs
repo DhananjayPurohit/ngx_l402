@@ -13,6 +13,7 @@ use ngx::ffi::{
 };
 use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConfigError, Request};
 use ngx::{ngx_log_error, ngx_null_command, ngx_string};
+use r2d2::Pool;
 use redis::Client as RedisClient;
 use redis::Commands;
 use sha2::{Digest, Sha256};
@@ -22,7 +23,6 @@ use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::ptr::addr_of;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,7 +34,9 @@ mod cashu_redemption_logger;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
-static REDIS_CLIENT: OnceLock<Mutex<RedisClient>> = OnceLock::new();
+/// Connection pool for Redis. Checked out connections are returned automatically on drop.
+/// Pool size is configurable via REDIS_POOL_SIZE (default: cpu_count * 3, min 5, max 50).
+static REDIS_POOL: OnceLock<Pool<RedisClient>> = OnceLock::new();
 
 // Cache for LNURL clients - lazy initialization on first use per address
 static LNURL_CLIENT_CACHE: OnceLock<
@@ -95,19 +97,17 @@ pub async fn get_or_create_lnurl_client(
 /// Returns true if preimage is already used, false if it's new
 fn is_preimage_used(preimage: &[u8]) -> bool {
     // If Redis is not configured, we can't track preimages (fallback to no protection)
-    let Some(redis_client) = REDIS_CLIENT.get() else {
+    let Some(pool) = REDIS_POOL.get() else {
         warn!("⚠️ Redis not configured - preimage replay protection disabled");
         return false;
     };
 
-    let Ok(mut client_guard) = redis_client.lock() else {
-        error!("❌ Failed to lock Redis client for preimage check");
-        return false;
-    };
-
-    let Ok(mut conn) = client_guard.get_connection() else {
-        error!("❌ Failed to get Redis connection for preimage check");
-        return false;
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("❌ Failed to get Redis connection from pool for preimage check: {}", e);
+            return false;
+        }
     };
 
     // Create a hash of the preimage for the key
@@ -134,15 +134,11 @@ fn is_preimage_used(preimage: &[u8]) -> bool {
 /// Store a preimage as used with TTL (default 24 hours)
 /// This prevents replay attacks by marking preimages as consumed
 fn store_preimage_as_used(preimage: &[u8]) -> Result<(), String> {
-    let redis_client = REDIS_CLIENT.get().ok_or("Redis not configured")?;
+    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
 
-    let mut client_guard = redis_client
-        .lock()
-        .map_err(|_| "Failed to lock Redis client")?;
-
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get Redis connection from pool: {}", e))?;
 
     // Create a hash of the preimage for the key
     let mut hasher = Sha256::new();
@@ -171,19 +167,17 @@ fn store_preimage_as_used(preimage: &[u8]) -> Result<(), String> {
 /// Returns true if token is already used, false if it's new
 pub fn is_cashu_token_used(token: &str) -> bool {
     // If Redis is not configured, we can't track tokens (fallback to thread-local only)
-    let Some(redis_client) = REDIS_CLIENT.get() else {
+    let Some(pool) = REDIS_POOL.get() else {
         warn!("⚠️ Redis not configured - Cashu token replay protection limited to memory");
         return false;
     };
 
-    let Ok(mut client_guard) = redis_client.lock() else {
-        error!("❌ Failed to lock Redis client for Cashu token check");
-        return false;
-    };
-
-    let Ok(mut conn) = client_guard.get_connection() else {
-        error!("❌ Failed to get Redis connection for Cashu token check");
-        return false;
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("❌ Failed to get Redis connection from pool for Cashu token check: {}", e);
+            return false;
+        }
     };
 
     // Create a hash of the token for the key
@@ -213,15 +207,11 @@ pub fn is_cashu_token_used(token: &str) -> bool {
 /// Store a Cashu token as used with TTL (default 24 hours)
 /// This prevents replay attacks by marking tokens as consumed
 pub fn store_cashu_token_as_used(token: &str) -> Result<(), String> {
-    let redis_client = REDIS_CLIENT.get().ok_or("Redis not configured")?;
+    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
 
-    let mut client_guard = redis_client
-        .lock()
-        .map_err(|_| "Failed to lock Redis client")?;
-
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get Redis connection from pool: {}", e))?;
 
     // Create a hash of the token for the key
     let mut hasher = Sha256::new();
@@ -257,18 +247,38 @@ impl L402Module {
 
         // Initialize Redis client if URL is configured
         if let Ok(redis_url) = std::env::var("REDIS_URL") {
+            // Pool size: configurable via REDIS_POOL_SIZE.
+            // Default heuristic: nginx workers are CPU-bound, Redis ops are fast,
+            // so 3 connections per logical CPU is plenty. Clamped to [5, 50].
+            let cpu_count = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4); // Fall back to 4 if detection fails
+            let default_pool_size = (cpu_count * 3).clamp(5, 50) as u32;
+            let pool_size = std::env::var("REDIS_POOL_SIZE")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .unwrap_or(default_pool_size);
+
             match RedisClient::open(redis_url.clone()) {
-                Ok(redis_client) => {
-                    if let Ok(_) = REDIS_CLIENT.set(Mutex::new(redis_client)) {
-                        info!("✅ Connected to Redis at {}", redis_url);
-                    } else {
-                        error!("❌ Failed to set Redis client in OnceLock");
+                Ok(manager) => {
+                    match Pool::builder().max_size(pool_size).build(manager) {
+                        Ok(pool) => {
+                            if REDIS_POOL.set(pool).is_ok() {
+                                info!(
+                                    "✅ Redis connection pool ready (max_size={}) at {}",
+                                    pool_size, redis_url
+                                );
+                            } else {
+                                error!("❌ Failed to register Redis pool in OnceLock");
+                            }
+                        }
+                        Err(e) => error!("❌ Failed to build Redis connection pool: {}", e),
                     }
                 }
                 Err(e) => error!("❌ Failed to create Redis client: {}", e),
             }
         } else {
-            info!("ℹ️ No Redis URL configured, dynamic pricing disabled");
+            info!("ℹ️ No REDIS_URL configured — Redis features disabled");
         }
 
         // Get environment variables
@@ -615,15 +625,11 @@ impl L402Module {
     }
 
     pub fn get_dynamic_price(&self, path: &str) -> i64 {
-        if let Some(redis_client) = REDIS_CLIENT.get() {
-            if let Ok(mut conn) = redis_client
-                .lock()
-                .expect("Failed to lock Redis client")
-                .get_connection()
-            {
+        if let Some(pool) = REDIS_POOL.get() {
+            if let Ok(mut conn) = pool.get() {
                 // Try to get price from Redis using the path as key
                 let price: Option<i64> = conn.get(path).unwrap_or(None);
-                return price.unwrap_or(0); // Return 0 if no price found
+                return price.unwrap_or(0);
             }
         }
 
@@ -631,12 +637,8 @@ impl L402Module {
     }
 
     pub fn get_dynamic_lnurl(&self, path: &str) -> Option<String> {
-        if let Some(redis_client) = REDIS_CLIENT.get() {
-            if let Ok(mut conn) = redis_client
-                .lock()
-                .expect("Failed to lock Redis client")
-                .get_connection()
-            {
+        if let Some(pool) = REDIS_POOL.get() {
+            if let Ok(mut conn) = pool.get() {
                 // Try to get lnurl from Redis using the path as key with "lnurl:" prefix
                 let key = format!("lnurl:{}", path);
                 let lnurl: Option<String> = conn.get(key).unwrap_or(None);
