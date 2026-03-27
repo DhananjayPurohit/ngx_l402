@@ -792,7 +792,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         let r = &mut *request;
         let auth_header = if !r.headers_in.authorization.is_null() {
             Some(
-                CStr::from_ptr((*r.headers_in.authorization).value.data as *const i8)
+                CStr::from_ptr((*r.headers_in.authorization).value.data as *const c_char)
                     .to_str()
                     .unwrap_or("")
                     .to_string(),

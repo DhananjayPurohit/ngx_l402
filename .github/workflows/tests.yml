@@ -45,9 +45,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
 
-      - name: Build module for l402
-        run: cargo build --release --features export-modules
-
       - name: Set up Docker Compose
         env:
           ROOT_KEY: ABDEGHKLMPTC

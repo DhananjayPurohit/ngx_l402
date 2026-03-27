@@ -1,28 +1,24 @@
-# macOS Local Setup Guide
+# macOS Local Setup Guide (Docker NGINX)
 
 This guide is for contributors running `ngx_l402` locally on macOS.
 
 ## 1. Prerequisites
 
-Install Xcode command line tools:
+Install required tools:
 
 ```bash
-xcode-select --install
+brew install rustup-init protobuf docker docker-compose
 ```
 
-Install required dependencies with Homebrew:
-
-```bash
-brew install rustup-init openssl@3 protobuf nginx pkg-config
-```
-
-Install and activate Rust toolchain:
+Install and activate Rust:
 
 ```bash
 rustup-init -y
 source "$HOME/.cargo/env"
 rustup default stable
 ```
+
+Start Docker Desktop before continuing.
 
 ## 2. Clone and enter the repository
 
@@ -31,23 +27,12 @@ git clone https://github.com/DhananjayPurohit/ngx_l402.git
 cd ngx_l402
 ```
 
-## 3. Build locally on macOS
+## 3. Build and test locally (optional, for IDE / linting)
+
+These commands verify that the Rust code compiles on your machine and are useful for IDE integration, but are **not required** for running nginx — Docker handles the Linux build automatically.
 
 ```bash
 cargo build --release --features export-modules
-```
-
-Expected output file:
-
-```bash
-target/release/libngx_l402_lib.dylib
-```
-
-## 4. Run tests locally on macOS
-
-Module crate test command:
-
-```bash
 cargo test
 ```
 
@@ -57,58 +42,53 @@ Optional gRPC example tests:
 cargo test --manifest-path grpc-server/Cargo.toml
 ```
 
-Notes:
-- The first run requires internet access to download crates.
-- `grpc-server` has its own dependency graph and may need an initial online fetch.
+## 4. Start local LND + Docker nginx
 
-## 5. Install module into Homebrew NGINX
+The first `docker compose up` compiles the module inside a Linux container (multi-stage Dockerfile), so it will take a few minutes on the first run. Subsequent runs use the Docker build cache.
 
-Create module directory and copy the built module:
+If Homebrew nginx is using port `8000`, stop it first:
 
 ```bash
-mkdir -p "$(brew --prefix)/lib/nginx/modules"
-cp target/release/libngx_l402_lib.dylib "$(brew --prefix)/lib/nginx/modules/libngx_l402_lib.so"
+brew services stop nginx
 ```
 
-Find your Homebrew prefix:
+Start the stack (LND backend + nginx):
 
 ```bash
-brew --prefix
+ROOT_KEY=$(openssl rand -hex 32) \
+CASHU_WALLET_SECRET=$(openssl rand -hex 32) \
+docker compose up -d bitcoind lndnode-receiver redis nginx-lnd
 ```
 
-Then add this line near the top of your NGINX config (`<brew-prefix>/etc/nginx/nginx.conf`):
-
-```nginx
-load_module /opt/homebrew/lib/nginx/modules/libngx_l402_lib.so;
-```
-
-Then validate and restart:
+Check container status:
 
 ```bash
-nginx -t
-brew services restart nginx
+docker compose ps nginx-lnd lndnode-receiver bitcoind redis
 ```
 
-## 6. Minimal local runtime env
-
-Set at least these environment variables before starting NGINX with this module:
-
-```bash
-export LN_CLIENT_TYPE=LNURL
-export LNURL_ADDRESS="user@your-lnurl-domain"
-export ROOT_KEY="$(openssl rand -hex 32)"
-```
-
-Optional, but recommended for dynamic pricing and replay protection:
-
-```bash
-export REDIS_URL=redis://127.0.0.1:6379
-```
-
-## 7. Quick local checks
+## 5. Verify L402 challenge
 
 ```bash
 curl -i http://localhost:8000/protected
 ```
 
-A protected route should return `402 Payment Required` with an `WWW-Authenticate` L402 header when payment is not yet provided.
+Expected result: `402 Payment Required` and a `WWW-Authenticate: L402 ...` header.
+
+## 6. Useful commands
+
+Logs:
+
+```bash
+docker logs nginx-lnd -f
+docker logs lndnode-receiver -f
+```
+
+Stop stack:
+
+```bash
+docker compose down
+```
+
+## 7. Optional Homebrew nginx path
+
+If you specifically want to run the module in Homebrew nginx, use the manual path in `README.md`. For regular contributor setup and local testing on macOS, use Docker nginx.
