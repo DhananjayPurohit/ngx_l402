@@ -20,17 +20,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
-
-      - name: Build module
-        run: cargo build --release --features export-modules
-
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:

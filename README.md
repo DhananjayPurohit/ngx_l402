@@ -4,6 +4,8 @@ An [L402](https://docs.lightning.engineering/the-lightning-network/l402) authent
 
 Supports **LND**, **LNC**, **CLN**, **Eclair**, **LNURL**, **NWC**, and **BOLT12** backends.
 
+For local contributor setup on macOS (Docker nginx recommended), see `docs/macos-setup.md`.
+
 ![L402 module demo](https://github.com/user-attachments/assets/3db23ab0-6025-426e-86f8-3505fa0840b9)
 
 ---
