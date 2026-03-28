@@ -1151,6 +1151,36 @@ jobs:
           
           echo "✅ Non-whitelisted mint token (https://nofees.testnut.cashu.space) correctly rejected!"
           
+          # Test database regeneration and fallback seed state restoration
+          echo "Testing database regeneration and wallet state restoration..."
+
+          # Delete Cashu database while container is still running
+          echo "Deleting Cashu database..."
+          docker exec nginx-lnd rm -f /app/data/cashu_tokens.db /app/data/cashu_tokens.db-shm /app/data/cashu_tokens.db-wal
+
+          # Restart the container to trigger initialization and restore_wallets_state
+          docker-compose -f docker-compose.yml restart nginx-lnd
+
+          # Wait for container and database initialization
+          sleep 10
+          docker exec nginx-lnd chmod 660 /app/data/cashu_tokens.db || echo 'Warning: could not set permissions'
+
+          echo "Minting external token for DB regeneration test..."
+          NEW_CASHU_TOKEN=$(docker exec cashu-mint poetry run cashu send 15)
+
+          echo "Testing protected route with new Cashu token after DB deletion..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $NEW_CASHU_TOKEN" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Protected route with Cashu token after DB deletion returned status $status_code, expected 200"
+            echo "$response"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          echo "✅ Database regeneration and wallet state restoration test passed!"
+
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
 

@@ -2,3 +2,6 @@
 .env
 /grpc-server/target
 /grpc-server/.env
+/book
+docs/mermaid.min.js
+docs/mermaid-init.js

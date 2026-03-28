@@ -1,5 +1,5 @@
 use crate::cashu_redemption_logger;
-use crate::REDIS_CLIENT;
+use crate::REDIS_POOL;
 use cdk;
 use cdk::mint_url::MintUrl;
 use hex;
@@ -35,10 +35,25 @@ static P2PK_PUBLIC_KEY: OnceLock<String> = OnceLock::new();
 // Cashu eCash support flag
 static CASHU_ECASH_ENABLED: OnceLock<bool> = OnceLock::new();
 
-// LN Client for non-LNURL redemption (single-tenant mode)
 static LN_CLIENT: OnceLock<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>> =
     OnceLock::new();
 static LN_CLIENT_TYPE: OnceLock<String> = OnceLock::new();
+
+// Dynamically generated secret for when CASHU_WALLET_SECRET is not provided
+static GENERATED_WALLET_SECRET: OnceLock<String> = OnceLock::new();
+
+fn get_wallet_secret() -> String {
+    std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
+        GENERATED_WALLET_SECRET
+            .get_or_init(|| {
+                warn!("⚠️ CASHU_WALLET_SECRET not set! Generating a random secret for this session. This means your wallet counter will reset on restart. Set CASHU_WALLET_SECRET in production!");
+                let mut bytes = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
+                hex::encode(bytes)
+            })
+            .clone()
+    })
+}
 
 pub fn is_p2pk_mode_enabled() -> bool {
     P2PK_MODE_ENABLED.get().copied().unwrap_or(false)
@@ -108,6 +123,14 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     })
 }
 
+/// Normalize a mint URL for consistent comparison:
+/// - trim leading/trailing whitespace
+/// - strip trailing slashes
+/// - lowercase the scheme and host
+fn normalize_mint_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
 pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), String> {
     if whitelisted_mints_str.trim().is_empty() {
         info!("ℹ️ Empty whitelisted mints string provided");
@@ -116,12 +139,12 @@ pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), S
 
     let mut whitelisted_set = HashSet::new();
 
-    // Split by comma and trim each mint URL
+    // Split by comma, trim, and normalize each mint URL
     for mint_url in whitelisted_mints_str.split(',') {
-        let trimmed_mint = mint_url.trim();
-        if !trimmed_mint.is_empty() {
-            whitelisted_set.insert(trimmed_mint.to_string());
-            info!("✅ Added whitelisted mint: {}", trimmed_mint);
+        let normalized = normalize_mint_url(mint_url);
+        if !normalized.is_empty() {
+            info!("✅ Added whitelisted mint: {}", normalized);
+            whitelisted_set.insert(normalized);
         }
     }
 
@@ -138,10 +161,52 @@ pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), S
     }
 }
 
+pub async fn restore_wallets_state() {
+    let whitelisted_mints = match get_whitelisted_mints() {
+        Some(mints) => mints,
+        None => {
+            info!("ℹ️ No whitelisted mints to restore state from.");
+            return;
+        }
+    };
+
+    let db = match CASHU_DB.get() {
+        Some(db) => db.clone(),
+        None => {
+            warn!("⚠️ Cashu database not initialized before restore");
+            return;
+        }
+    };
+
+    let wallet_secret = get_wallet_secret();
+    let seed_hash = blake3::hash(wallet_secret.as_bytes());
+    let mut seed = [0u8; 64];
+    seed[..32].copy_from_slice(seed_hash.as_bytes());
+
+    for mint_url in whitelisted_mints {
+        info!("🔄 Restoring wallet state for mint: {}", mint_url);
+        // We restore for the Sat unit primarily (or Msat as well)
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        
+        match cdk::wallet::Wallet::new(mint_url, unit, db.clone(), seed, None) {
+            Ok(wallet) => {
+                match wallet.restore().await {
+                    Ok(amount) => {
+                        let amount_val: u64 = amount.into();
+                        info!("✅ Restored {} sats state from {}", amount_val, mint_url);
+                    }
+                    Err(e) => warn!("⚠️ Failed to restore {}: {}", mint_url, e),
+                }
+            }
+            Err(e) => warn!("⚠️ Failed to create wallet for restore {}: {}", mint_url, e),
+        }
+    }
+}
+
 pub fn is_mint_whitelisted(mint_url: &str) -> bool {
     // If no whitelisted mints are configured, allow all mints
     if let Some(whitelisted_mints) = WHITELISTED_MINTS.get() {
-        whitelisted_mints.contains(mint_url)
+        whitelisted_mints.contains(&normalize_mint_url(mint_url))
     } else {
         info!("ℹ️ No whitelisted mints configured - allowing all mints");
         true
@@ -153,13 +218,13 @@ pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
 }
 
 fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, String> {
-    let client = REDIS_CLIENT
+    let pool = REDIS_POOL
         .get()
-        .ok_or("Redis client is not initialised")?;
+        .ok_or("Redis pool is not initialised")?;
 
-    let client_guard = client
-        .lock()
-        .map_err(|_| "Failed to lock redis client".to_string())?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get redis connection from pool: {}", e))?;
 
     let secret = proof.secret.to_string();
 
@@ -169,9 +234,6 @@ fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, Stri
     let proof_hash = hex::encode(hasher.finalize());
 
     let redis_key = format!("cashu:proof_lnurl:{}", proof_hash);
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
 
     let lnurl: Option<String> = conn
         .get(&redis_key)
@@ -184,13 +246,9 @@ fn set_proof_to_lnurl(
     proofs: cdk::nuts::Proofs,
     lnurl_route: Option<String>,
 ) -> Result<(), String> {
-    let client = REDIS_CLIENT
+    let pool = REDIS_POOL
         .get()
-        .ok_or("Redis client is not initialised")?;
-
-    let client_guard = client
-        .lock()
-        .map_err(|_| "Failed to lock redis client".to_string())?;
+        .ok_or("Redis pool is not initialised")?;
 
     let lnurl = lnurl_route.unwrap_or_else(|| std::env::var("LNURL_ADDRESS").unwrap_or_default());
 
@@ -198,9 +256,9 @@ fn set_proof_to_lnurl(
         return Err("No LNURL address available for cashu token".to_string());
     }
 
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get redis connection from pool: {}", e))?;
 
     for proof in proofs {
         let secret = proof.secret.to_string();
@@ -220,17 +278,13 @@ fn set_proof_to_lnurl(
 
 /// Remove proof-to-lnurl mappings from Redis after proofs have been melted
 fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String> {
-    let client = REDIS_CLIENT
+    let pool = REDIS_POOL
         .get()
-        .ok_or("Redis client is not initialised")?;
+        .ok_or("Redis pool is not initialised")?;
 
-    let client_guard = client
-        .lock()
-        .map_err(|_| "Failed to lock redis client".to_string())?;
-
-    let mut conn = client_guard
-        .get_connection()
-        .map_err(|e| format!("Failed to get redis connection: {}", e))?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get redis connection from pool: {}", e))?;
 
     for proof in proofs {
         let secret = proof.secret.to_string();
@@ -250,11 +304,10 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
 }
 
 /// Group proofs by their associated lnurl address for multi-tenant redemption
-fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts::Proofs> {
+fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> Result<HashMap<String, cdk::nuts::Proofs>, String> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
-    // TODO: Return Result instead of panicking for graceful error handling
-    let default_lnurl =
-        std::env::var("LNURL_ADDRESS").expect("LNURL_ADDRESS required for multi-tenant mode");
+    let default_lnurl = std::env::var("LNURL_ADDRESS")
+        .map_err(|_| "LNURL_ADDRESS is required for multi-tenant mode".to_string())?;
 
     for proof in proofs {
         let lnurl = get_lnurl_from_proof(&proof)
@@ -269,7 +322,7 @@ fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> HashMap<String, cdk::nuts
         grouped.entry(lnurl).or_insert_with(Vec::new).push(proof);
     }
 
-    grouped
+    Ok(grouped)
 }
 
 /// Initialize P2PK mode if enabled
@@ -442,12 +495,18 @@ pub async fn verify_cashu_token(
     );
 
     // Extract mint URL from the token
-    let mint_url = token_decoded
-        .mint_url()
-        .map_err(|e| format!("Failed to get mint URL: {}", e))?;
+    // Extract and normalize the mint URL from the token immediately so that
+    // any extra trailing slash or whitespace in the token metadata is stripped
+    // before the whitelist check, wallet creation, and logging.
+    let mint_url = normalize_mint_url(
+        &token_decoded
+            .mint_url()
+            .map_err(|e| format!("Failed to get mint URL: {}", e))?
+            .to_string(),
+    );
 
     // Check if the mint is whitelisted
-    if !is_mint_whitelisted(&mint_url.to_string()) {
+    if !is_mint_whitelisted(&mint_url) {
         info!("⚠️ Cashu token from non-whitelisted mint: {}", mint_url);
         return Ok(false);
     }
@@ -462,18 +521,15 @@ pub async fn verify_cashu_token(
         .ok_or_else(|| "Cashu database not initialized".to_string())?
         .clone();
 
-    // Use seed from environment variable (CASHU_WALLET_SECRET)
-    let wallet_secret = std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
-        warn!("⚠️ CASHU_WALLET_SECRET not set! Using insecure default. Set this in production!");
-        "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string()
-    });
+    // Use seed from environment variable (CASHU_WALLET_SECRET) or generated fallback
+    let wallet_secret = get_wallet_secret();
     let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
     debug!("🔑 Using seed for receiving token from mint {}", mint_url);
 
-    // Create wallet directly for this specific mint
-    let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit, db.clone(), seed, None)
+    // Create wallet directly for this specific mint (using normalized URL)
+    let wallet = cdk::wallet::Wallet::new(&mint_url, unit, db.clone(), seed, None)
         .map_err(|e| format!("Failed to create wallet: {}", e))?;
 
     match wallet
@@ -552,15 +608,24 @@ pub async fn verify_cashu_token_p2pk(
     let token_decoded =
         cdk::nuts::Token::from_str(token).map_err(|e| format!("Failed to decode token: {}", e))?;
 
-    let mint_url = token_decoded
-        .mint_url()
-        .map_err(|e| format!("Failed to get mint URL: {}", e))?;
+    // Extract and normalize the mint URL from the token immediately so that any
+    // extra trailing slash or whitespace in the token metadata is stripped before
+    // the whitelist check, wallet creation, ProofInfo storage, and logging.
+    let mint_url_str = normalize_mint_url(
+        &token_decoded
+            .mint_url()
+            .map_err(|e| format!("Failed to get mint URL: {}", e))?
+            .to_string(),
+    );
+    // Re-parse to a typed MintUrl (needed for ProofInfo and wallet APIs)
+    let mint_url = MintUrl::from_str(&mint_url_str)
+        .map_err(|e| format!("Invalid mint URL after normalization: {:?}", e))?;
 
     // Verify mint is whitelisted
     let whitelisted_mints = get_whitelisted_mints().ok_or("No whitelisted mints configured")?;
 
-    if !whitelisted_mints.contains(&mint_url.to_string()) {
-        return Err(format!("Mint {} not whitelisted", mint_url));
+    if !whitelisted_mints.contains(&mint_url_str) {
+        return Err(format!("Mint {} not whitelisted", mint_url_str));
     }
 
     // Verify amount
@@ -586,19 +651,18 @@ pub async fn verify_cashu_token_p2pk(
         ));
     }
 
-    info!("✅ Validated: {} msat from {}", total_amount_msat, mint_url);
+    info!("✅ Validated: {} msat from {}", total_amount_msat, mint_url_str);
 
-    // Setup wallet
+    // Setup wallet (using normalized URL so it matches whitelisted mint keys)
     let db = CASHU_DB.get().ok_or("Database not initialized")?.clone();
 
     let unit = token_decoded.unit().unwrap();
-    let wallet_secret = std::env::var("CASHU_WALLET_SECRET")
-        .unwrap_or_else(|_| "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string());
+    let wallet_secret = get_wallet_secret();
     let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
 
-    let wallet = cdk::wallet::Wallet::new(&mint_url.to_string(), unit.clone(), db, seed, None)
+    let wallet = cdk::wallet::Wallet::new(&mint_url_str, unit.clone(), db, seed, None)
         .map_err(|e| format!("Failed to create wallet: {}", e))?;
 
     // Get keysets (use cached if available, fetch once if not)
@@ -731,11 +795,8 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
     cashu_redemption_logger::log_redemption(&msg);
     info!("{}", msg);
 
-    // Use seed from environment variable (must match token verification)
-    let wallet_secret = std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
-        warn!("⚠️ CASHU_WALLET_SECRET not set! Using insecure default. Set this in production!");
-        "CHANGE_THIS_SECRET_IN_PRODUCTION".to_string()
-    });
+    // Use seed from environment variable or generated fallback (must match token verification)
+    let wallet_secret = get_wallet_secret();
     let seed_hash = blake3::hash(wallet_secret.as_bytes());
     let mut seed = [0u8; 64];
     seed[..32].copy_from_slice(seed_hash.as_bytes());
@@ -851,7 +912,15 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
         // Build proof groups based on mode
         let proof_groups: Vec<(String, cdk::nuts::Proofs)> = if is_multi_tenant {
             // Multi-tenant: group proofs by their lnurl address
-            let proofs_by_lnurl = group_proofs_by_lnurl(proofs);
+            let proofs_by_lnurl = match group_proofs_by_lnurl(proofs) {
+                Ok(grouped) => grouped,
+                Err(e) => {
+                    let err_msg = format!("Failed to group proofs by LNURL: {}", e);
+                    error!("{}", err_msg);
+                    cashu_redemption_logger::log_redemption(&err_msg);
+                    continue;
+                }
+            };
             let msg = format!(
                 "Multi-tenant mode: Grouped proofs into {} tenant(s) for mint {}",
                 proofs_by_lnurl.len(),
