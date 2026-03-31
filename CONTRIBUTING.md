@@ -27,9 +27,10 @@ Thank you for your interest in contributing to ngx_l402! This guide will help yo
 
 1. **Fork and clone** the repository
 2. **Review the [README.md](README.md)** for installation and configuration
-3. **Create a feature branch**: `git checkout -b feature/your-feature-name`
-4. **Make your changes** following our coding standards
-5. **Test thoroughly** before submitting
+3. **If you are on macOS, follow [docs/macos-setup.md](docs/macos-setup.md)**
+4. **Create a feature branch**: `git checkout -b feature/your-feature-name`
+5. **Make your changes** following our coding standards
+6. **Test thoroughly** before submitting
 
 ---
 
@@ -366,6 +367,7 @@ By contributing, you agree that your contributions will be licensed under the [M
 ```bash
 # Development
 cargo fmt                                    # Format
+cargo test                                   # Local test pass
 cargo build --release --features export-modules  # Build
 
 # Installation
@@ -376,6 +378,8 @@ sudo systemctl restart nginx && sudo systemctl reload nginx
 sudo journalctl -u nginx -f                  # View logs
 sudo tail -f /var/log/nginx/error.log        # Error logs
 ```
+
+macOS contributors should use `docs/macos-setup.md` for Homebrew NGINX paths and commands.
 
 ---
 

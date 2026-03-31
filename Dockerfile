@@ -1,7 +1,25 @@
+# Build stage
+FROM rust:1.85 AS builder
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    pkg-config libssl-dev libclang-dev protobuf-compiler make \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/bin/gpg /usr/bin/gpg2
+
+COPY . .
+ENV NGX_VERSION=1.28.0
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --features export-modules \
+    && cp target/release/libngx_l402_lib.so /tmp/libngx_l402_lib.so
+
+# Runtime stage
 FROM nginx:1.28.0
 EXPOSE 8000
 
-COPY target/release/libngx_l402_lib.so /etc/nginx/modules/libngx_l402_lib.so
+COPY --from=builder /tmp/libngx_l402_lib.so /etc/nginx/modules/libngx_l402_lib.so
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY index.html /usr/share/nginx/html/protected/index.html
 COPY index.html /usr/share/nginx/html/protected-timeout/index.html
