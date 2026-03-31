@@ -555,7 +555,7 @@ impl L402Module {
         if timeout_secs > 0 {
             let expiry = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs() as i64
                 + timeout_secs;
             caveats.push(format!("ExpiresAt = {}", expiry));
@@ -810,7 +810,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         if !conf.enable {
             ngx_log_error!(NGX_LOG_INFO, log_ref, "L402 is disabled for this location");
-            return NGX_DECLINED.try_into().unwrap();
+            return NGX_DECLINED as isize;
         }
 
         let amount_msat = conf.amount_msat;
@@ -850,7 +850,13 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let caveats = vec![format!("RequestPath = {}", request_path)];
 
     // Get dynamic price from Redis
-    let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+    let module = match unsafe { MODULE.as_ref() } {
+        Some(m) => m,
+        None => {
+            error!("Module not initialized — returning 500");
+            return 500;
+        }
+    };
     let dynamic_amount = module.get_dynamic_price(&request_path);
     let final_amount = if dynamic_amount > 0 {
         dynamic_amount
@@ -876,10 +882,16 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         // Use a lazily initialized static runtime
         static RUNTIME: OnceLock<Runtime> = OnceLock::new();
         let rt = RUNTIME.get_or_init(|| {
-            tokio::runtime::Builder::new_current_thread() // Use single-threaded runtime for less overhead
+            match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("tokio runtime init")
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("FATAL: failed to create tokio runtime: {}", e);
+                    std::process::abort();
+                }
+            }
         });
 
         // Check if Cashu is enabled and P2PK mode is active
@@ -972,7 +984,13 @@ pub fn l402_access_handler(
     caveats: Vec<String>,
     lnurl_addr: Option<String>,
 ) -> isize {
-    let module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+    let module = match unsafe { MODULE.as_ref() } {
+        Some(m) => m,
+        None => {
+            error!("Module not initialized — returning 500");
+            return 500;
+        }
+    };
 
     debug!(
         "🔍 Processing request - Method: {:?}, URI: {:?}",
@@ -989,10 +1007,16 @@ pub fn l402_access_handler(
             // Use a lazily initialized static runtime
             static RUNTIME: OnceLock<Runtime> = OnceLock::new();
             let rt = RUNTIME.get_or_init(|| {
-                tokio::runtime::Builder::new_current_thread()
+                match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("tokio runtime init")
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        eprintln!("FATAL: failed to create tokio runtime: {}", e);
+                        std::process::abort();
+                    }
+                }
             });
 
             let verify_result = rt.block_on(async {
@@ -1003,7 +1027,7 @@ pub fn l402_access_handler(
 
             match verify_result {
                 Ok(true) => {
-                    return NGX_DECLINED.try_into().unwrap();
+                    return NGX_DECLINED as isize;
                 }
                 Ok(false) => {
                     info!("⚠️ Cashu token verification failed");
@@ -1067,7 +1091,7 @@ pub fn l402_access_handler(
                                 // Continue anyway - verification was successful
                             }
 
-                            return NGX_DECLINED.try_into().unwrap();
+                            return NGX_DECLINED as isize;
                         }
                         Err(e) => {
                             warn!("⚠️ L402 verification failed: {:?}", e);
