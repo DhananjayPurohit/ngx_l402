@@ -67,6 +67,7 @@ struct BenchmarkResult {
     latency_max_us: u64,
     latency_mean_us: f64,
     error_count: usize,
+    error_samples: Vec<String>,
     status_codes: std::collections::HashMap<u16, usize>,
     memory: MemoryResult,
 }
@@ -118,6 +119,11 @@ async fn run_benchmark(
     let error_count = Arc::new(AtomicUsize::new(0));
     let warmup_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
+    // Capture first N distinct error messages for debugging
+    let error_samples: Arc<tokio::sync::Mutex<Vec<String>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    const MAX_ERROR_SAMPLES: usize = 10;
+
     // Status code tracking
     let status_200 = Arc::new(AtomicUsize::new(0));
     let status_401 = Arc::new(AtomicUsize::new(0));
@@ -157,11 +163,8 @@ async fn run_benchmark(
             let rss = collect_rss(&mut sys, &proc_name);
             let elapsed = start.elapsed().as_secs_f64();
 
-            // Update peak
-            let current_peak = peak_rss_clone.load(Ordering::Relaxed);
-            if rss > current_peak {
-                peak_rss_clone.store(rss, Ordering::Relaxed);
-            }
+            // Update peak atomically
+            peak_rss_clone.fetch_max(rss, Ordering::Relaxed);
 
             let mut samples = mem_samples_clone.lock().await;
             samples.push(MemorySample {
@@ -220,6 +223,7 @@ async fn run_benchmark(
         let s401 = status_401.clone();
         let s402 = status_402.clone();
         let s500 = status_500.clone();
+        let error_samples = error_samples.clone();
         let s_other = status_other.clone();
         let latency_tx = latency_tx.clone();
 
@@ -253,8 +257,15 @@ async fn run_benchmark(
                     }
                     success_count.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(_) => {
+                Err(e) => {
                     error_count.fetch_add(1, Ordering::Relaxed);
+                    // Capture first N distinct error messages
+                    let err_msg = e.to_string();
+                    let samples = error_samples.clone();
+                    let mut guard = samples.lock().await;
+                    if guard.len() < MAX_ERROR_SAMPLES && !guard.contains(&err_msg) {
+                        guard.push(err_msg);
+                    }
                 }
             }
 
@@ -333,6 +344,10 @@ async fn run_benchmark(
         latency_max_us: histogram.max(),
         latency_mean_us: histogram.mean(),
         error_count: error_count.load(Ordering::Relaxed),
+        error_samples: {
+            let guard = error_samples.lock().await;
+            guard.clone()
+        },
         status_codes,
         memory: MemoryResult {
             initial_rss_kb: init_rss,
@@ -367,6 +382,10 @@ fn print_result(result: &BenchmarkResult) {
         println!("║   {}: {:<42}║", code, count);
     }
     println!("║ Errors: {:<41}║", result.error_count);
+    for (i, sample) in result.error_samples.iter().enumerate() {
+        let truncated = if sample.len() > 45 { &sample[..45] } else { sample };
+        println!("║   #{}: {:<44}║", i + 1, truncated);
+    }
     println!("╠══════════════════════════════════════════════════╣");
     println!("║ MEMORY (NGINX workers RSS)                      ║");
     println!("║   Initial: {:<38}║", format!("{} KB", result.memory.initial_rss_kb));

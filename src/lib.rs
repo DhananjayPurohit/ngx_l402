@@ -132,8 +132,11 @@ pub async fn get_or_create_lnurl_client(
     match lnurl::LnAddressUrlResJson::new_client(&ln_client_config).await {
         Ok(ln_client) => {
             let client_arc = ln_client;
-            // Cache the new client (write lock only for new entries)
+            // Re-check under write lock to avoid duplicate creation from concurrent requests
             let mut cache_guard = cache.write().await;
+            if let Some(existing) = cache_guard.get(addr) {
+                return Ok(existing.clone());
+            }
             cache_guard.insert(addr.to_string(), client_arc.clone());
             info!("✅ Cached LNURL client for: {}", addr);
             Ok(client_arc)
@@ -145,12 +148,10 @@ pub async fn get_or_create_lnurl_client(
     }
 }
 
-/// Atomically check if a preimage has been used and mark it as used if not.
-/// Uses Redis SET NX EX for atomic check-and-store in a single round-trip.
-/// This fixes a TOCTOU race in the previous separate check+store approach.
-/// Returns true if preimage was ALREADY used (replay detected), false if first use.
+/// Check if a preimage has been used before (replay attack prevention).
+/// Returns true if preimage is already used, false if it's new.
 /// Fails open (returns false) if Redis is unavailable.
-fn check_and_store_preimage(preimage: &[u8]) -> bool {
+fn is_preimage_used(preimage: &[u8]) -> bool {
     let Some(pool) = REDIS_POOL.get() else {
         warn!("⚠️ Redis not configured - preimage replay protection disabled");
         return false;
@@ -164,14 +165,36 @@ fn check_and_store_preimage(preimage: &[u8]) -> bool {
         }
     };
 
-    let mut hasher = Sha256::new();
-    hasher.update(preimage);
-    let preimage_hash = hex::encode(hasher.finalize());
-    let redis_key = format!("l402:preimage:{}", preimage_hash);
+    let redis_key = preimage_redis_key(preimage);
+
+    match conn.exists::<_, bool>(&redis_key) {
+        Ok(exists) => {
+            if exists {
+                warn!("⚠️ Preimage replay attack detected");
+            }
+            exists
+        }
+        Err(e) => {
+            error!("❌ Failed to check preimage in Redis: {}", e);
+            false // fail-open
+        }
+    }
+}
+
+/// Atomically store a preimage as used via SET NX EX (single round-trip).
+/// Returns Ok(true) if stored successfully (first use), Ok(false) if already existed (race with another worker).
+/// Called ONLY after successful verification to avoid burning preimages on transient failures.
+fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, String> {
+    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
+
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+
+    let redis_key = preimage_redis_key(preimage);
     let ttl = get_preimage_ttl();
 
-    // SET key value NX EX ttl — returns Ok(true) if key was SET (first use),
-    // Ok(false) if key already exists (replay).
+    // SET NX EX — atomic store-if-absent with TTL
     match redis::cmd("SET")
         .arg(&redis_key)
         .arg("used")
@@ -181,27 +204,28 @@ fn check_and_store_preimage(preimage: &[u8]) -> bool {
         .query::<Option<String>>(&mut *conn)
     {
         Ok(Some(_)) => {
-            // "OK" returned — key was set, this is the first use
-            info!("✅ Preimage stored as used: {} (TTL: {}s)", preimage_hash, ttl);
-            false
+            info!("✅ Preimage stored as used (TTL: {}s)", ttl);
+            Ok(true)
         }
         Ok(None) => {
-            // nil returned — key already existed, replay detected
-            warn!("⚠️ Preimage replay attack detected: {}", preimage_hash);
-            true
+            // Another worker stored it between our EXISTS check and this SET NX — that's fine
+            Ok(false)
         }
-        Err(e) => {
-            error!("❌ Redis SET NX failed for preimage: {}", e);
-            false // fail-open
-        }
+        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
     }
 }
 
-/// Atomically check if a Cashu token has been used and mark it as used if not.
-/// Uses Redis SET NX EX for atomic check-and-store in a single round-trip.
-/// Returns true if token was ALREADY used (replay detected), false if first use.
+/// Helper: compute the Redis key for a preimage (single SHA256 hash, reusable).
+fn preimage_redis_key(preimage: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(preimage);
+    format!("l402:preimage:{}", hex::encode(hasher.finalize()))
+}
+
+/// Check if a Cashu token has been used before (replay attack prevention).
+/// Returns true if token is already used, false if it's new.
 /// Fails open (returns false) if Redis is unavailable.
-pub fn check_and_store_cashu_token(token: &str) -> bool {
+pub fn is_cashu_token_used(token: &str) -> bool {
     let Some(pool) = REDIS_POOL.get() else {
         warn!("⚠️ Redis not configured - Cashu token replay protection limited to memory");
         return false;
@@ -215,10 +239,32 @@ pub fn check_and_store_cashu_token(token: &str) -> bool {
         }
     };
 
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    let token_hash = hex::encode(hasher.finalize());
-    let redis_key = format!("l402:cashu_token:{}", token_hash);
+    let redis_key = cashu_token_redis_key(token);
+
+    match conn.exists::<_, bool>(&redis_key) {
+        Ok(exists) => {
+            if exists {
+                warn!("⚠️ Cashu token replay attack detected");
+            }
+            exists
+        }
+        Err(e) => {
+            error!("❌ Failed to check Cashu token in Redis: {}", e);
+            false // fail-open
+        }
+    }
+}
+
+/// Atomically store a Cashu token as used via SET NX EX (single round-trip).
+/// Called ONLY after successful verification to avoid burning tokens on transient failures.
+pub fn store_cashu_token_as_used(token: &str) -> Result<bool, String> {
+    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
+
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+
+    let redis_key = cashu_token_redis_key(token);
     let ttl = get_cashu_token_ttl();
 
     match redis::cmd("SET")
@@ -230,18 +276,19 @@ pub fn check_and_store_cashu_token(token: &str) -> bool {
         .query::<Option<String>>(&mut *conn)
     {
         Ok(Some(_)) => {
-            info!("✅ Cashu token stored as used: {} (TTL: {}s)", &token_hash[..16], ttl);
-            false
+            info!("✅ Cashu token stored as used (TTL: {}s)", ttl);
+            Ok(true)
         }
-        Ok(None) => {
-            warn!("⚠️ Cashu token replay attack detected: {}", &token_hash[..16]);
-            true
-        }
-        Err(e) => {
-            error!("❌ Redis SET NX failed for Cashu token: {}", e);
-            false // fail-open
-        }
+        Ok(None) => Ok(false),
+        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
     }
+}
+
+/// Helper: compute the Redis key for a Cashu token.
+fn cashu_token_redis_key(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    format!("l402:cashu_token:{}", hex::encode(hasher.finalize()))
 }
 
 pub struct L402Module {
@@ -868,14 +915,30 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         }
     };
 
-    // For authenticated requests, try verification FIRST with nginx.conf amount.
-    // Dynamic Redis lookups are deferred until we know we need a 402 challenge.
+    // Fetch dynamic price from Redis — needed for correct Cashu amount verification.
+    // This is a fast Redis GET (~0.3ms) and ensures dynamic pricing works for all auth types.
+    let redis_start = Instant::now();
+    let dynamic_amount = module.get_dynamic_price(&request_path);
+    let final_amount = if dynamic_amount > 0 {
+        dynamic_amount
+    } else {
+        amount_msat
+    };
+
+    if perf_log_enabled() {
+        debug!(
+            "perf: stage=redis_dynamic_price duration_us={} path={}",
+            redis_start.elapsed().as_micros(),
+            request_path
+        );
+    }
+
     let auth_start = Instant::now();
     let result = l402_access_handler(
         auth_header,
         uri,
         method,
-        amount_msat, // use static config amount for auth verification
+        final_amount,
         caveats.clone(),
         lnurl_addr.clone(),
     );
@@ -891,25 +954,10 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
     // Only set L402 header if result is 402
     if result == 402 {
-        // Now fetch dynamic config from Redis — only needed for the 402 challenge path.
-        // This saves 2 Redis round-trips for every authenticated request.
-        let redis_start = Instant::now();
-        let dynamic_amount = module.get_dynamic_price(&request_path);
-        let final_amount = if dynamic_amount > 0 {
-            dynamic_amount
-        } else {
-            amount_msat
-        };
+        // Fetch dynamic LNURL from Redis — only needed for the 402 challenge path.
+        // This saves 1 Redis round-trip for every authenticated request.
         let dynamic_lnurl = module.get_dynamic_lnurl(&request_path);
         let final_lnurl_addr = dynamic_lnurl.or(lnurl_addr);
-
-        if perf_log_enabled() {
-            debug!(
-                "perf: stage=redis_dynamic_config duration_us={} path={}",
-                redis_start.elapsed().as_micros(),
-                request_path
-            );
-        }
 
         let rt = get_handler_runtime();
 
@@ -1065,8 +1113,8 @@ pub fn l402_access_handler(
         } else {
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
-                    // Atomic replay check+store — single Redis round-trip via SET NX EX
-                    if check_and_store_preimage(&preimage.0) {
+                    // Check for replay attack — has this preimage been used before?
+                    if is_preimage_used(&preimage.0) {
                         error!("🚨 Replay attack detected: preimage already used");
                         return 401;
                     }
@@ -1108,7 +1156,11 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
-                            // Preimage already stored atomically by check_and_store_preimage above
+                            // Store preimage AFTER successful verification via atomic SET NX EX
+                            if let Err(e) = store_preimage_as_used(&preimage.0) {
+                                error!("⚠️ Failed to store preimage in Redis: {}", e);
+                                // Continue — verification was successful
+                            }
                             return NGX_DECLINED as isize;
                         }
                         Err(e) => {

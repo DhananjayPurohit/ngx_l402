@@ -475,8 +475,8 @@ pub async fn verify_cashu_token(
         return Ok(true);
     }
 
-    // Atomic Redis check+store — single round-trip via SET NX EX
-    if crate::check_and_store_cashu_token(token) {
+    // Check Redis for replay (read-only check — store happens after successful verification)
+    if crate::is_cashu_token_used(token) {
         error!("🚨 Replay attack detected: Cashu token already used (Redis)");
         return Err("Cashu token already used".to_string());
     }
@@ -577,7 +577,10 @@ pub async fn verify_cashu_token(
                 }
             }
 
-            // Token already stored atomically in Redis by check_and_store_cashu_token above.
+            // Store token AFTER successful receive via atomic SET NX EX
+            if let Err(e) = crate::store_cashu_token_as_used(token) {
+                warn!("⚠️ Failed to store Cashu token in Redis: {}", e);
+            }
             // Add to thread-local memory cache for fast-path on repeat lookups.
             cache_processed_token(token);
             Ok(true)
@@ -614,8 +617,8 @@ pub async fn verify_cashu_token_p2pk(
         return Ok(true);
     }
 
-    // Atomic Redis check+store — single round-trip via SET NX EX
-    if crate::check_and_store_cashu_token(token) {
+    // Check Redis for replay (read-only — store happens after successful verification)
+    if crate::is_cashu_token_used(token) {
         error!("🚨 Replay attack detected: Cashu token already used (Redis)");
         return Err("Cashu token already used".to_string());
     }
@@ -763,7 +766,10 @@ pub async fn verify_cashu_token_p2pk(
         }
     }
 
-    // Token already stored atomically in Redis by check_and_store_cashu_token above.
+    // Store token AFTER successful P2PK verification via atomic SET NX EX
+    if let Err(e) = crate::store_cashu_token_as_used(token) {
+        warn!("⚠️ Failed to store Cashu token in Redis: {}", e);
+    }
     // Add to thread-local memory cache for fast-path on repeat lookups.
     cache_processed_token(token);
 
