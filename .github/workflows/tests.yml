@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feat/redis-rate-limit-invoice-issuance
     tags:
       - 'v*'
   pull_request:
@@ -1278,6 +1279,79 @@ jobs:
         env:
           CASHU_WHITELISTED_MINTS: http://cashu-mint:3338
           CASHU_WALLET_SECRET: test_wallet_secret_for_ci
+
+      - name: Run Integration Tests - Invoice Rate Limiting
+        run: |
+          echo "Testing Redis-based invoice rate limiting (l402_invoice_rate_limit)..."
+
+          # Start with a clean Redis state
+          docker exec redis redis-cli flushall
+
+          # Request 1: within limit - must return 402
+          echo "Request 1 (expect 402 - within limit)..."
+          r1=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/rate-limited)
+          sc1=$(echo "$r1" | tail -n1)
+          if [ "$sc1" -ne 402 ]; then
+            echo "FAIL: Request 1 returned $sc1, expected 402"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "PASS: Request 1 returned 402 (invoice issued, counter = 1)"
+
+          # Request 2: still within limit - must return 402
+          echo "Request 2 (expect 402 - at limit)..."
+          r2=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/rate-limited)
+          sc2=$(echo "$r2" | tail -n1)
+          if [ "$sc2" -ne 402 ]; then
+            echo "FAIL: Request 2 returned $sc2, expected 402"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "PASS: Request 2 returned 402 (invoice issued, counter = 2)"
+
+          # Request 3: over the limit - must return 429
+          echo "Request 3 (expect 429 - limit exceeded)..."
+          r3=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/rate-limited)
+          sc3=$(echo "$r3" | tail -n1)
+          if [ "$sc3" -ne 429 ]; then
+            echo "FAIL: Request 3 returned $sc3, expected 429"
+            echo "$r3"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "PASS: Request 3 returned 429 Too Many Requests"
+
+          # Retry-After header must be present in the 429 response
+          if ! echo "$r3" | grep -qi "Retry-After:"; then
+            echo "FAIL: Retry-After header missing from 429 response"
+            echo "$r3"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "PASS: Retry-After header present in 429 response"
+
+          # Rate limit counter must be persisted in Redis
+          RATE_KEYS=$(docker exec redis redis-cli keys "l402:invoice_rate:*" | wc -l)
+          echo "Found $RATE_KEYS rate limit key(s) in Redis"
+          if [ "$RATE_KEYS" -lt 1 ]; then
+            echo "FAIL: No rate limit counter found in Redis"
+            exit 1
+          fi
+          echo "PASS: Rate limit counter persisted in Redis"
+
+          echo "Verifying authenticated requests bypass the rate limiter..."
+          r_auth=$(curl -s -w "\n%{http_code}" --max-time 30 \
+            -H "Authorization: L402 invalid_token:deadbeef" \
+            http://0.0.0.0:8000/rate-limited)
+          sc_auth=$(echo "$r_auth" | tail -n1)
+          if [ "$sc_auth" -eq 429 ]; then
+            echo "FAIL: Authenticated request was incorrectly rate-limited (got 429)"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "PASS: Authenticated request returned $sc_auth (not 429) - rate limiter correctly bypassed"
+
+          echo "All invoice rate limiting integration tests passed."
 
       - name: Run Integration test - Cashu redemption on Lightning
         run: |

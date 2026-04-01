@@ -26,6 +26,7 @@ COPY --from=builder /tmp/libngx_l402_lib.so /etc/nginx/modules/libngx_l402_lib.s
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY index.html /usr/share/nginx/html/protected/index.html
 COPY index.html /usr/share/nginx/html/protected-timeout/index.html
+COPY index.html /usr/share/nginx/html/rate-limited/index.html
 COPY index.html /usr/share/nginx/html/tenant1/index.html
 COPY index.html /usr/share/nginx/html/tenant2/index.html
 
