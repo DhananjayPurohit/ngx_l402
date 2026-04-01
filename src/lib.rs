@@ -915,8 +915,8 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         }
     };
 
-    // Fetch dynamic price from Redis — needed for correct Cashu amount verification.
-    // This is a fast Redis GET (~0.3ms) and ensures dynamic pricing works for all auth types.
+    // Fetch dynamic config from Redis — needed for correct Cashu amount verification
+    // and multi-tenant LNURL proof mapping. These are fast Redis GETs (~0.3ms each).
     let redis_start = Instant::now();
     let dynamic_amount = module.get_dynamic_price(&request_path);
     let final_amount = if dynamic_amount > 0 {
@@ -924,10 +924,12 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     } else {
         amount_msat
     };
+    let dynamic_lnurl = module.get_dynamic_lnurl(&request_path);
+    let final_lnurl_addr = dynamic_lnurl.or(lnurl_addr);
 
     if perf_log_enabled() {
         debug!(
-            "perf: stage=redis_dynamic_price duration_us={} path={}",
+            "perf: stage=redis_dynamic_config duration_us={} path={}",
             redis_start.elapsed().as_micros(),
             request_path
         );
@@ -940,7 +942,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         method,
         final_amount,
         caveats.clone(),
-        lnurl_addr.clone(),
+        final_lnurl_addr.clone(),
     );
     let auth_duration = auth_start.elapsed();
 
@@ -954,10 +956,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
     // Only set L402 header if result is 402
     if result == 402 {
-        // Fetch dynamic LNURL from Redis — only needed for the 402 challenge path.
-        // This saves 1 Redis round-trip for every authenticated request.
-        let dynamic_lnurl = module.get_dynamic_lnurl(&request_path);
-        let final_lnurl_addr = dynamic_lnurl.or(lnurl_addr);
 
         let rt = get_handler_runtime();
 

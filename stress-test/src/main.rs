@@ -115,9 +115,8 @@ async fn run_benchmark(
         .expect("Failed to build HTTP client");
 
     let semaphore = Arc::new(Semaphore::new(concurrency));
-    let success_count = Arc::new(AtomicUsize::new(0));
+    let response_count = Arc::new(AtomicUsize::new(0));
     let error_count = Arc::new(AtomicUsize::new(0));
-    let warmup_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Capture first N distinct error messages for debugging
     let error_samples: Arc<tokio::sync::Mutex<Vec<String>>> =
@@ -205,7 +204,6 @@ async fn run_benchmark(
     for h in warmup_handles {
         let _ = h.await;
     }
-    warmup_done.store(true, Ordering::Release);
     println!("  Warmup complete. Starting measured run...");
 
     // Measured phase
@@ -217,7 +215,7 @@ async fn run_benchmark(
         let client = client.clone();
         let url = url.to_string();
         let auth = auth.map(|s| s.to_string());
-        let success_count = success_count.clone();
+        let response_count = response_count.clone();
         let error_count = error_count.clone();
         let s200 = status_200.clone();
         let s401 = status_401.clone();
@@ -255,7 +253,7 @@ async fn run_benchmark(
                             s_other.fetch_add(1, Ordering::Relaxed);
                         }
                     }
-                    success_count.fetch_add(1, Ordering::Relaxed);
+                    response_count.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(e) => {
                     error_count.fetch_add(1, Ordering::Relaxed);
@@ -383,7 +381,7 @@ fn print_result(result: &BenchmarkResult) {
     }
     println!("║ Errors: {:<41}║", result.error_count);
     for (i, sample) in result.error_samples.iter().enumerate() {
-        let truncated = if sample.len() > 45 { &sample[..45] } else { sample };
+        let truncated: String = sample.chars().take(45).collect();
         println!("║   #{}: {:<44}║", i + 1, truncated);
     }
     println!("╠══════════════════════════════════════════════════╣");
