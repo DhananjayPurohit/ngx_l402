@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - feat/redis-rate-limit-invoice-issuance
     tags:
       - 'v*'
   pull_request:
