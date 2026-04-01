@@ -25,7 +25,7 @@ use std::ptr::addr_of;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 
@@ -38,9 +38,61 @@ static mut MODULE: Option<L402Module> = None;
 /// Pool size is configurable via REDIS_POOL_SIZE (default: cpu_count * 3, min 5, max 50).
 static REDIS_POOL: OnceLock<Pool<RedisClient>> = OnceLock::new();
 
+// Cached environment variables — read once at startup, fixed for process lifetime.
+// Changing these requires a full restart (SIGHUP will not reload them).
+static PREIMAGE_TTL_SECONDS: OnceLock<u64> = OnceLock::new();
+static CASHU_TOKEN_TTL_SECONDS: OnceLock<u64> = OnceLock::new();
+static PERF_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Single shared tokio runtime for the request handler path.
+/// Used by both the 402 challenge generation and Cashu verification code paths.
+static HANDLER_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+fn get_handler_runtime() -> &'static Runtime {
+    HANDLER_RUNTIME.get_or_init(|| {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("FATAL: failed to create tokio runtime: {}", e);
+                std::process::abort();
+            }
+        }
+    })
+}
+
+fn perf_log_enabled() -> bool {
+    *PERF_LOG_ENABLED.get_or_init(|| {
+        std::env::var("L402_PERF_LOG")
+            .map(|v| v.trim().to_lowercase() == "true")
+            .unwrap_or(false)
+    })
+}
+
+fn get_preimage_ttl() -> u64 {
+    *PREIMAGE_TTL_SECONDS.get_or_init(|| {
+        std::env::var("L402_PREIMAGE_TTL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(86400)
+    })
+}
+
+fn get_cashu_token_ttl() -> u64 {
+    *CASHU_TOKEN_TTL_SECONDS.get_or_init(|| {
+        std::env::var("L402_CASHU_TOKEN_TTL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(86400)
+    })
+}
+
 // Cache for LNURL clients - lazy initialization on first use per address
+// Uses RwLock instead of Mutex since reads (cache hits) vastly outnumber writes (new client creation)
 static LNURL_CLIENT_CACHE: OnceLock<
-    tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>>>,
+    tokio::sync::RwLock<HashMap<String, Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>>>,
 > = OnceLock::new();
 
 /// Get or create a cached LNURL client for the given address
@@ -48,11 +100,11 @@ static LNURL_CLIENT_CACHE: OnceLock<
 pub async fn get_or_create_lnurl_client(
     addr: &str,
 ) -> Result<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>, String> {
-    let cache = LNURL_CLIENT_CACHE.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+    let cache = LNURL_CLIENT_CACHE.get_or_init(|| tokio::sync::RwLock::new(HashMap::new()));
 
-    // Check if we already have a cached client
+    // Fast path: read lock for cache hit (no write contention)
     {
-        let cache_guard = cache.lock().await;
+        let cache_guard = cache.read().await;
         if let Some(client) = cache_guard.get(addr) {
             debug!("Using cached LNURL client for: {}", addr);
             return Ok(client.clone());
@@ -80,8 +132,11 @@ pub async fn get_or_create_lnurl_client(
     match lnurl::LnAddressUrlResJson::new_client(&ln_client_config).await {
         Ok(ln_client) => {
             let client_arc = ln_client;
-            // Cache the new client
-            let mut cache_guard = cache.lock().await;
+            // Re-check under write lock to avoid duplicate creation from concurrent requests
+            let mut cache_guard = cache.write().await;
+            if let Some(existing) = cache_guard.get(addr) {
+                return Ok(existing.clone());
+            }
             cache_guard.insert(addr.to_string(), client_arc.clone());
             info!("✅ Cached LNURL client for: {}", addr);
             Ok(client_arc)
@@ -93,10 +148,10 @@ pub async fn get_or_create_lnurl_client(
     }
 }
 
-/// Check if a preimage has been used before (replay attack prevention)
-/// Returns true if preimage is already used, false if it's new
+/// Check if a preimage has been used before (replay attack prevention).
+/// Returns true if preimage is already used, false if it's new.
+/// Fails open (returns false) if Redis is unavailable.
 fn is_preimage_used(preimage: &[u8]) -> bool {
-    // If Redis is not configured, we can't track preimages (fallback to no protection)
     let Some(pool) = REDIS_POOL.get() else {
         warn!("⚠️ Redis not configured - preimage replay protection disabled");
         return false;
@@ -105,68 +160,72 @@ fn is_preimage_used(preimage: &[u8]) -> bool {
     let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            error!("❌ Failed to get Redis connection from pool for preimage check: {}", e);
-            return false;
+            error!("❌ Failed to get Redis connection for preimage check: {}", e);
+            return false; // fail-open
         }
     };
 
-    // Create a hash of the preimage for the key
-    let mut hasher = Sha256::new();
-    hasher.update(preimage);
-    let preimage_hash = hex::encode(hasher.finalize());
-    let redis_key = format!("l402:preimage:{}", preimage_hash);
+    let redis_key = preimage_redis_key(preimage);
 
-    // Check if key exists
     match conn.exists::<_, bool>(&redis_key) {
         Ok(exists) => {
             if exists {
-                warn!("⚠️ Preimage replay attack detected: {}", preimage_hash);
+                warn!("⚠️ Preimage replay attack detected");
             }
             exists
         }
         Err(e) => {
             error!("❌ Failed to check preimage in Redis: {}", e);
-            false
+            false // fail-open
         }
     }
 }
 
-/// Store a preimage as used with TTL (default 24 hours)
-/// This prevents replay attacks by marking preimages as consumed
-fn store_preimage_as_used(preimage: &[u8]) -> Result<(), String> {
+/// Atomically store a preimage as used via SET NX EX (single round-trip).
+/// Returns Ok(true) if stored successfully (first use), Ok(false) if already existed (race with another worker).
+/// Called ONLY after successful verification to avoid burning preimages on transient failures.
+fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, String> {
     let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
 
     let mut conn = pool
         .get()
-        .map_err(|e| format!("Failed to get Redis connection from pool: {}", e))?;
+        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
 
-    // Create a hash of the preimage for the key
-    let mut hasher = Sha256::new();
-    hasher.update(preimage);
-    let preimage_hash = hex::encode(hasher.finalize());
-    let redis_key = format!("l402:preimage:{}", preimage_hash);
+    let redis_key = preimage_redis_key(preimage);
+    let ttl = get_preimage_ttl();
 
-    // Get TTL from environment or default to 24 hours
-    let ttl_seconds = std::env::var("L402_PREIMAGE_TTL_SECONDS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(86400); // 24 hours default
-
-    // Store with TTL (SETEX: SET with EXpire)
-    conn.set_ex::<_, _, ()>(&redis_key, "used", ttl_seconds)
-        .map_err(|e| format!("Failed to store preimage in Redis: {}", e))?;
-
-    info!(
-        "✅ Stored preimage as used: {} (TTL: {}s)",
-        preimage_hash, ttl_seconds
-    );
-    Ok(())
+    // SET NX EX — atomic store-if-absent with TTL
+    match redis::cmd("SET")
+        .arg(&redis_key)
+        .arg("used")
+        .arg("NX")
+        .arg("EX")
+        .arg(ttl)
+        .query::<Option<String>>(&mut *conn)
+    {
+        Ok(Some(_)) => {
+            info!("✅ Preimage stored as used (TTL: {}s)", ttl);
+            Ok(true)
+        }
+        Ok(None) => {
+            // Another worker stored it between our EXISTS check and this SET NX — that's fine
+            Ok(false)
+        }
+        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
+    }
 }
 
-/// Check if a Cashu token has been used before (replay attack prevention)
-/// Returns true if token is already used, false if it's new
+/// Helper: compute the Redis key for a preimage (single SHA256 hash, reusable).
+fn preimage_redis_key(preimage: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(preimage);
+    format!("l402:preimage:{}", hex::encode(hasher.finalize()))
+}
+
+/// Check if a Cashu token has been used before (replay attack prevention).
+/// Returns true if token is already used, false if it's new.
+/// Fails open (returns false) if Redis is unavailable.
 pub fn is_cashu_token_used(token: &str) -> bool {
-    // If Redis is not configured, we can't track tokens (fallback to thread-local only)
     let Some(pool) = REDIS_POOL.get() else {
         warn!("⚠️ Redis not configured - Cashu token replay protection limited to memory");
         return false;
@@ -175,66 +234,61 @@ pub fn is_cashu_token_used(token: &str) -> bool {
     let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            error!("❌ Failed to get Redis connection from pool for Cashu token check: {}", e);
-            return false;
+            error!("❌ Failed to get Redis connection for Cashu token check: {}", e);
+            return false; // fail-open
         }
     };
 
-    // Create a hash of the token for the key
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    let token_hash = hex::encode(hasher.finalize());
-    let redis_key = format!("l402:cashu_token:{}", token_hash);
+    let redis_key = cashu_token_redis_key(token);
 
-    // Check if key exists
     match conn.exists::<_, bool>(&redis_key) {
         Ok(exists) => {
             if exists {
-                warn!(
-                    "⚠️ Cashu token replay attack detected: {}",
-                    &token_hash[..16]
-                );
+                warn!("⚠️ Cashu token replay attack detected");
             }
             exists
         }
         Err(e) => {
             error!("❌ Failed to check Cashu token in Redis: {}", e);
-            false
+            false // fail-open
         }
     }
 }
 
-/// Store a Cashu token as used with TTL (default 24 hours)
-/// This prevents replay attacks by marking tokens as consumed
-pub fn store_cashu_token_as_used(token: &str) -> Result<(), String> {
+/// Atomically store a Cashu token as used via SET NX EX (single round-trip).
+/// Called ONLY after successful verification to avoid burning tokens on transient failures.
+pub fn store_cashu_token_as_used(token: &str) -> Result<bool, String> {
     let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
 
     let mut conn = pool
         .get()
-        .map_err(|e| format!("Failed to get Redis connection from pool: {}", e))?;
+        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
 
-    // Create a hash of the token for the key
+    let redis_key = cashu_token_redis_key(token);
+    let ttl = get_cashu_token_ttl();
+
+    match redis::cmd("SET")
+        .arg(&redis_key)
+        .arg("used")
+        .arg("NX")
+        .arg("EX")
+        .arg(ttl)
+        .query::<Option<String>>(&mut *conn)
+    {
+        Ok(Some(_)) => {
+            info!("✅ Cashu token stored as used (TTL: {}s)", ttl);
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
+    }
+}
+
+/// Helper: compute the Redis key for a Cashu token.
+fn cashu_token_redis_key(token: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
-    let token_hash = hex::encode(hasher.finalize());
-    let redis_key = format!("l402:cashu_token:{}", token_hash);
-
-    // Get TTL from environment or default to 24 hours
-    let ttl_seconds = std::env::var("L402_CASHU_TOKEN_TTL_SECONDS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(86400); // 24 hours default
-
-    // Store with TTL (SETEX: SET with EXpire)
-    conn.set_ex::<_, _, ()>(&redis_key, "used", ttl_seconds)
-        .map_err(|e| format!("Failed to store Cashu token in Redis: {}", e))?;
-
-    info!(
-        "✅ Stored Cashu token as used: {} (TTL: {}s)",
-        &token_hash[..16],
-        ttl_seconds
-    );
-    Ok(())
+    format!("l402:cashu_token:{}", hex::encode(hasher.finalize()))
 }
 
 pub struct L402Module {
@@ -786,6 +840,7 @@ impl Merge for ModuleConfig {
 }
 
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
+    let handler_start = Instant::now();
     let log = unsafe { &mut *(*(*request).connection).log };
     let log_ref = log as *mut ngx_log_s;
 
@@ -852,7 +907,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
     let caveats = vec![format!("RequestPath = {}", request_path)];
 
-    // Get dynamic price from Redis
     let module = match unsafe { MODULE.as_ref() } {
         Some(m) => m,
         None => {
@@ -860,17 +914,28 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             return 500;
         }
     };
+
+    // Fetch dynamic config from Redis — needed for correct Cashu amount verification
+    // and multi-tenant LNURL proof mapping. These are fast Redis GETs (~0.3ms each).
+    let redis_start = Instant::now();
     let dynamic_amount = module.get_dynamic_price(&request_path);
     let final_amount = if dynamic_amount > 0 {
         dynamic_amount
     } else {
         amount_msat
     };
-
-    // Get dynamic LNURL from Redis (takes precedence over nginx config)
     let dynamic_lnurl = module.get_dynamic_lnurl(&request_path);
     let final_lnurl_addr = dynamic_lnurl.or(lnurl_addr);
 
+    if perf_log_enabled() {
+        debug!(
+            "perf: stage=redis_dynamic_config duration_us={} path={}",
+            redis_start.elapsed().as_micros(),
+            request_path
+        );
+    }
+
+    let auth_start = Instant::now();
     let result = l402_access_handler(
         auth_header,
         uri,
@@ -879,23 +944,20 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         caveats.clone(),
         final_lnurl_addr.clone(),
     );
+    let auth_duration = auth_start.elapsed();
+
+    if perf_log_enabled() {
+        debug!(
+            "perf: stage=auth_check duration_us={} path={}",
+            auth_duration.as_micros(),
+            request_path
+        );
+    }
 
     // Only set L402 header if result is 402
     if result == 402 {
-        // Use a lazily initialized static runtime
-        static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-        let rt = RUNTIME.get_or_init(|| {
-            match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    eprintln!("FATAL: failed to create tokio runtime: {}", e);
-                    std::process::abort();
-                }
-            }
-        });
+
+        let rt = get_handler_runtime();
 
         // Check if Cashu is enabled and P2PK mode is active
         // Use initialized state instead of reading env vars (workers don't have access to env)
@@ -948,6 +1010,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         // Always send L402 header as well (for Lightning payments)
         // Pass lnurl_addr for per-location LNURL-based invoice generation
+        let invoice_start = Instant::now();
         let header_result = rt.block_on(async {
             module
                 .get_l402_header(
@@ -958,6 +1021,14 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 )
                 .await
         });
+
+        if perf_log_enabled() {
+            debug!(
+                "perf: stage=invoice_generation duration_us={} path={}",
+                invoice_start.elapsed().as_micros(),
+                request_path
+            );
+        }
 
         match header_result {
             Some(header_value) => unsafe {
@@ -974,6 +1045,15 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 return 500; // Return server error if we couldn't get the header
             }
         }
+    }
+
+    if perf_log_enabled() {
+        debug!(
+            "perf: stage=total duration_us={} path={} result={}",
+            handler_start.elapsed().as_micros(),
+            request_path,
+            result
+        );
     }
 
     result
@@ -1007,20 +1087,7 @@ pub fn l402_access_handler(
         if auth_str.starts_with("Cashu ") {
             let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
 
-            // Use a lazily initialized static runtime
-            static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-            let rt = RUNTIME.get_or_init(|| {
-                match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        eprintln!("FATAL: failed to create tokio runtime: {}", e);
-                        std::process::abort();
-                    }
-                }
-            });
+            let rt = get_handler_runtime();
 
             let verify_result = rt.block_on(async {
                 module
@@ -1044,7 +1111,7 @@ pub fn l402_access_handler(
         } else {
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
-                    // Check for replay attack - has this preimage been used before?
+                    // Check for replay attack — has this preimage been used before?
                     if is_preimage_used(&preimage.0) {
                         error!("🚨 Replay attack detected: preimage already used");
                         return 401;
@@ -1087,13 +1154,11 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
-
-                            // Store preimage as used to prevent replay attacks
+                            // Store preimage AFTER successful verification via atomic SET NX EX
                             if let Err(e) = store_preimage_as_used(&preimage.0) {
                                 error!("⚠️ Failed to store preimage in Redis: {}", e);
-                                // Continue anyway - verification was successful
+                                // Continue — verification was successful
                             }
-
                             return NGX_DECLINED as isize;
                         }
                         Err(e) => {
