@@ -1133,6 +1133,8 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         return -1;
     }
 
+    // SAFETY: `cycle->log` is guaranteed valid by Nginx before invoking
+    // module init callbacks; it points to the global error log.
     let log = (*cycle).log;
 
     // Initialize logger - this is critical for RUST_LOG to work
@@ -1257,7 +1259,10 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             .parse::<u64>()
             .unwrap_or(3600);
 
-        let _module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+        let Some(_module) = (unsafe { MODULE.as_ref() }) else {
+            error!("Module not initialized — skipping Cashu redemption");
+            return 0;
+        };
 
         // Spawn redemption task in a separate thread to avoid blocking nginx
         let _ = std::thread::Builder::new()
@@ -1337,6 +1342,9 @@ pub unsafe extern "C" fn ngx_http_l402_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1361,6 +1369,9 @@ pub unsafe extern "C" fn ngx_http_l402_amount_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1387,6 +1398,9 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1418,6 +1432,9 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
