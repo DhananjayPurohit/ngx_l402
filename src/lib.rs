@@ -785,14 +785,25 @@ impl Merge for ModuleConfig {
     }
 }
 
+// SAFETY: This function is an Nginx access-phase handler registered via
+// `postconfiguration`. Nginx guarantees that `request`, `request->connection`,
+// `request->connection->log`, and `request->loc_conf` are valid, non-null
+// pointers for the handler's lifetime.
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
-    let log = unsafe { &mut *(*(*request).connection).log };
+    // SAFETY: `request` is guaranteed non-null by Nginx for access-phase handlers.
+    let r = unsafe { &mut *request };
+
+    // SAFETY: `connection` and `log` are guaranteed valid by Nginx for the
+    // lifetime of the request.
+    let log = unsafe { &mut *(*r.connection).log };
     let log_ref = log as *mut ngx_log_s;
 
     // Check if L402 is enabled for this location
     let (auth_header, uri, method, amount_msat, macaroon_timeout, lnurl_addr) = unsafe {
-        let r = &mut *request;
+        // NOTE: `authorization` can be null — not every request carries the header.
         let auth_header = if !r.headers_in.authorization.is_null() {
+            // SAFETY: `authorization` checked non-null; Nginx guarantees
+            // `value.data` is a valid C string for the header lifetime.
             Some(
                 CStr::from_ptr((*r.headers_in.authorization).value.data as *const c_char)
                     .to_str()
@@ -806,8 +817,11 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         let uri = r.uri.to_string();
         let method = r.method as u32;
 
-        // Get module config to check if L402 is enabled
-        let loc_conf = (*r).loc_conf;
+        // SAFETY: `loc_conf` is guaranteed valid by Nginx; `ctx_index` is set
+        // during module registration and is within bounds.
+        let loc_conf = r.loc_conf;
+        // SAFETY: The config slot is allocated by `create_loc_conf` and merged
+        // by Nginx before the access phase runs.
         let conf =
             &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
 
@@ -1119,6 +1133,8 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         return -1;
     }
 
+    // SAFETY: `cycle->log` is guaranteed valid by Nginx before invoking
+    // module init callbacks; it points to the global error log.
     let log = (*cycle).log;
 
     // Initialize logger - this is critical for RUST_LOG to work
@@ -1243,7 +1259,10 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             .parse::<u64>()
             .unwrap_or(3600);
 
-        let _module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+        let Some(_module) = (unsafe { MODULE.as_ref() }) else {
+            error!("Module not initialized — skipping Cashu redemption");
+            return 0;
+        };
 
         // Spawn redemption task in a separate thread to avoid blocking nginx
         let _ = std::thread::Builder::new()
@@ -1323,6 +1342,9 @@ pub unsafe extern "C" fn ngx_http_l402_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1347,6 +1369,9 @@ pub unsafe extern "C" fn ngx_http_l402_amount_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1373,6 +1398,9 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1404,6 +1432,9 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
