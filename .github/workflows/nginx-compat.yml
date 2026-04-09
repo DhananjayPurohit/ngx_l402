@@ -33,6 +33,7 @@ jobs:
         run: |
           echo "Testing nginx -t (config validation with module loaded)..."
           docker run --rm \
+            --add-host=grpc-content-server:127.0.0.1 \
             -e LN_CLIENT_TYPE=LNURL \
             -e LNURL_ADDRESS=hello@getalby.com \
             ngx_l402:nginx-${{ matrix.nginx_version }} \
@@ -51,6 +52,7 @@ jobs:
         run: |
           echo "Starting container for smoke test..."
           docker run -d --name smoke-test-${{ matrix.nginx_version }} \
+            --add-host=grpc-content-server:127.0.0.1 \
             -p 8000:8000 \
             -e LN_CLIENT_TYPE=LNURL \
             -e LNURL_ADDRESS=hello@getalby.com \
