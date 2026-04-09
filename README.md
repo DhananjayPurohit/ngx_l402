@@ -26,6 +26,11 @@ For local contributor setup on macOS (Docker nginx recommended), see `docs/macos
 ## ⚡ Quick Start
 
 > Requires **NGINX 1.28.0** or later.
+>
+> Pre-built binaries are provided for **NGINX 1.28.0** only. For other versions, build from source:
+> ```
+> docker build --build-arg NGX_VERSION=<your-version> -t ngx_l402 .
+> ```
 
 ```bash
 docker run -d \
