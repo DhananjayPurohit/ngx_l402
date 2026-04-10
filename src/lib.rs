@@ -8,7 +8,8 @@ use ngx::ffi::{
     nginx_version, ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle_s, ngx_http_core_module,
     ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
     ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
-    NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO, NGX_OK,
+    NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO,
+    NGX_LOG_WARN, NGX_OK,
     NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
 };
 use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConfigError, Request};
@@ -924,7 +925,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             let client_ip = get_client_ip(request);
             if !check_invoice_rate_limit(&client_ip, &request_path, max_requests, window_secs) {
                 ngx_log_error!(
-                    NGX_LOG_ERR,
+                    NGX_LOG_WARN,
                     log_ref,
                     "Invoice rate limit exceeded for IP={} path={}",
                     client_ip,
@@ -1569,20 +1570,25 @@ fn check_invoice_rate_limit(ip: &str, path: &str, max_requests: u32, window_secs
 
     let key = format!("l402:invoice_rate:{}:{}", ip, path);
 
-    let count: u64 = match conn.incr::<_, _, u64>(&key, 1i64) {
+    let count: u64 = match redis::Script::new(
+        r#"
+        local current = redis.call("INCR", KEYS[1])
+        if current == 1 then
+            redis.call("EXPIRE", KEYS[1], ARGV[1])
+        end
+        return current
+        "#,
+    )
+    .key(&key)
+    .arg(window_secs)
+    .invoke(&mut conn)
+    {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to increment invoice rate limit counter: {}", e);
+            error!("Failed to update invoice rate limit counter: {}", e);
             return true;
         }
     };
-
-    // only set TTL on first hit to avoid extending the window
-    if count == 1 {
-        if let Err(e) = conn.expire::<_, bool>(&key, window_secs as i64) {
-            error!("Failed to set invoice rate limit TTL: {}", e);
-        }
-    }
 
     let allowed = count <= max_requests as u64;
     if !allowed {
