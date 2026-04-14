@@ -15,7 +15,7 @@ struct Args {
     #[arg(short, long)]
     url: String,
 
-    /// Number of concurrent connections
+    /// Number of concurrent connections (must be >= 1)
     #[arg(short, long, default_value = "50")]
     concurrency: usize,
 
@@ -47,7 +47,7 @@ struct Args {
     #[arg(long, default_value = "nginx")]
     process_name: String,
 
-    /// Memory sampling interval in milliseconds
+    /// Memory sampling interval in milliseconds (must be >= 1)
     #[arg(long, default_value = "1000")]
     memory_interval_ms: u64,
 }
@@ -115,20 +115,17 @@ async fn run_benchmark(
         .expect("Failed to build HTTP client");
 
     let semaphore = Arc::new(Semaphore::new(concurrency));
-    let response_count = Arc::new(AtomicUsize::new(0));
     let error_count = Arc::new(AtomicUsize::new(0));
+    let join_error_count = Arc::new(AtomicUsize::new(0));
 
     // Capture first N distinct error messages for debugging
     let error_samples: Arc<tokio::sync::Mutex<Vec<String>>> =
         Arc::new(tokio::sync::Mutex::new(Vec::new()));
     const MAX_ERROR_SAMPLES: usize = 10;
 
-    // Status code tracking
-    let status_200 = Arc::new(AtomicUsize::new(0));
-    let status_401 = Arc::new(AtomicUsize::new(0));
-    let status_402 = Arc::new(AtomicUsize::new(0));
-    let status_500 = Arc::new(AtomicUsize::new(0));
-    let status_other = Arc::new(AtomicUsize::new(0));
+    // Status code tracking with actual status codes
+    let status_codes_map: Arc<tokio::sync::Mutex<std::collections::HashMap<u16, usize>>> =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     // Latency tracking - use atomic u64 array approach for thread safety
     // We'll collect latencies in a channel
@@ -175,21 +172,26 @@ async fn run_benchmark(
         }
     });
 
-    // Warmup phase
+    // Warmup phase using JoinSet for bounded concurrency
     println!(
         "  Warming up for {}s ({} concurrent)...",
         warmup_secs, concurrency
     );
     let warmup_start = Instant::now();
-    let mut warmup_handles = Vec::new();
+    let mut warmup_set = tokio::task::JoinSet::new();
 
     while warmup_start.elapsed() < Duration::from_secs(warmup_secs) {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
+        // Re-check elapsed time after acquiring permit to avoid overshooting warmup
+        if warmup_start.elapsed() >= Duration::from_secs(warmup_secs) {
+            drop(permit);
+            break;
+        }
         let client = client.clone();
         let url = url.to_string();
         let auth = auth.map(|s| s.to_string());
 
-        let handle = tokio::spawn(async move {
+        warmup_set.spawn(async move {
             let mut req = client.get(&url);
             if let Some(ref auth_val) = auth {
                 req = req.header("Authorization", auth_val.as_str());
@@ -197,35 +199,27 @@ async fn run_benchmark(
             let _ = req.send().await;
             drop(permit);
         });
-        warmup_handles.push(handle);
     }
 
     // Wait for warmup to complete
-    for h in warmup_handles {
-        let _ = h.await;
-    }
+    while warmup_set.join_next().await.is_some() {}
     println!("  Warmup complete. Starting measured run...");
 
-    // Measured phase
+    // Measured phase using JoinSet for efficient task management
     let bench_start = Instant::now();
-    let mut handles = Vec::with_capacity(total_requests);
+    let mut bench_set = tokio::task::JoinSet::new();
 
     for i in 0..total_requests {
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         let client = client.clone();
         let url = url.to_string();
         let auth = auth.map(|s| s.to_string());
-        let response_count = response_count.clone();
         let error_count = error_count.clone();
-        let s200 = status_200.clone();
-        let s401 = status_401.clone();
-        let s402 = status_402.clone();
-        let s500 = status_500.clone();
+        let status_codes_map = status_codes_map.clone();
         let error_samples = error_samples.clone();
-        let s_other = status_other.clone();
         let latency_tx = latency_tx.clone();
 
-        let handle = tokio::spawn(async move {
+        bench_set.spawn(async move {
             let start = Instant::now();
 
             let mut req = client.get(&url);
@@ -236,31 +230,13 @@ async fn run_benchmark(
             match req.send().await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
-                    match status {
-                        200 | 204 => {
-                            s200.fetch_add(1, Ordering::Relaxed);
-                        }
-                        401 => {
-                            s401.fetch_add(1, Ordering::Relaxed);
-                        }
-                        402 => {
-                            s402.fetch_add(1, Ordering::Relaxed);
-                        }
-                        500..=599 => {
-                            s500.fetch_add(1, Ordering::Relaxed);
-                        }
-                        _ => {
-                            s_other.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    response_count.fetch_add(1, Ordering::Relaxed);
+                    let mut codes = status_codes_map.lock().await;
+                    *codes.entry(status).or_insert(0) += 1;
                 }
                 Err(e) => {
                     error_count.fetch_add(1, Ordering::Relaxed);
-                    // Capture first N distinct error messages
                     let err_msg = e.to_string();
-                    let samples = error_samples.clone();
-                    let mut guard = samples.lock().await;
+                    let mut guard = error_samples.lock().await;
                     if guard.len() < MAX_ERROR_SAMPLES && !guard.contains(&err_msg) {
                         guard.push(err_msg);
                     }
@@ -271,7 +247,6 @@ async fn run_benchmark(
             let _ = latency_tx.send(elapsed_us);
             drop(permit);
         });
-        handles.push(handle);
 
         // Progress reporting
         if (i + 1) % 1000 == 0 {
@@ -279,9 +254,18 @@ async fn run_benchmark(
         }
     }
 
-    // Wait for all requests
-    for h in handles {
-        let _ = h.await;
+    // Wait for all requests, counting join failures
+    let join_err = join_error_count.clone();
+    let err_samples_join = error_samples.clone();
+    while let Some(result) = bench_set.join_next().await {
+        if let Err(e) = result {
+            join_err.fetch_add(1, Ordering::Relaxed);
+            let err_msg = format!("task join error: {}", e);
+            let mut guard = err_samples_join.lock().await;
+            if guard.len() < MAX_ERROR_SAMPLES && !guard.contains(&err_msg) {
+                guard.push(err_msg);
+            }
+        }
     }
     let bench_duration = bench_start.elapsed();
     println!("\r  Progress: {}/{}  ", total_requests, total_requests);
@@ -301,28 +285,9 @@ async fn run_benchmark(
     let mut sys = System::new();
     let final_rss = collect_rss(&mut sys, process_name);
 
-    // Build status codes map
-    let mut status_codes = std::collections::HashMap::new();
-    let s200_val = status_200.load(Ordering::Relaxed);
-    let s401_val = status_401.load(Ordering::Relaxed);
-    let s402_val = status_402.load(Ordering::Relaxed);
-    let s500_val = status_500.load(Ordering::Relaxed);
-    let s_other_val = status_other.load(Ordering::Relaxed);
-    if s200_val > 0 {
-        status_codes.insert(200, s200_val);
-    }
-    if s401_val > 0 {
-        status_codes.insert(401, s401_val);
-    }
-    if s402_val > 0 {
-        status_codes.insert(402, s402_val);
-    }
-    if s500_val > 0 {
-        status_codes.insert(500, s500_val);
-    }
-    if s_other_val > 0 {
-        status_codes.insert(0, s_other_val);
-    }
+    // Collect status codes
+    let status_codes = status_codes_map.lock().await.clone();
+    let join_errors = join_error_count.load(Ordering::Relaxed);
 
     let memory_samples_vec = memory_samples.lock().await.clone();
     let init_rss = initial_rss.load(Ordering::Relaxed);
@@ -341,7 +306,7 @@ async fn run_benchmark(
         latency_p99_us: histogram.value_at_quantile(0.99),
         latency_max_us: histogram.max(),
         latency_mean_us: histogram.mean(),
-        error_count: error_count.load(Ordering::Relaxed),
+        error_count: error_count.load(Ordering::Relaxed) + join_errors,
         error_samples: {
             let guard = error_samples.lock().await;
             guard.clone()
@@ -489,6 +454,15 @@ fn print_comparison_row_us(label: &str, baseline_us: u64, current_us: u64) {
 async fn main() {
     let args = Args::parse();
 
+    if args.concurrency == 0 {
+        eprintln!("Error: --concurrency must be >= 1");
+        std::process::exit(1);
+    }
+    if args.memory_interval_ms == 0 {
+        eprintln!("Error: --memory-interval-ms must be >= 1");
+        std::process::exit(1);
+    }
+
     println!("ngx_l402 Stress Test");
     println!("====================");
 
@@ -562,17 +536,37 @@ async fn main() {
             println!("\nResults saved to: {}", path);
         }
 
-        // Compare with baseline
+        // Compare with baseline (supports both single and sweep JSON files)
         if let Some(ref baseline_path) = args.compare {
             match std::fs::read_to_string(baseline_path) {
-                Ok(json) => match serde_json::from_str::<BenchmarkResult>(&json) {
-                    Ok(baseline) => {
+                Ok(json) => {
+                    // Try parsing as single result first, then as sweep results
+                    if let Ok(baseline) = serde_json::from_str::<BenchmarkResult>(&json) {
                         print_comparison(&baseline, &result);
+                    } else if let Ok(sweep_results) =
+                        serde_json::from_str::<Vec<BenchmarkResult>>(&json)
+                    {
+                        // Find matching concurrency level in sweep results
+                        if let Some(baseline) = sweep_results
+                            .iter()
+                            .find(|r| r.concurrency == result.concurrency)
+                        {
+                            println!(
+                                "\n  (matched baseline concurrency={})",
+                                result.concurrency
+                            );
+                            print_comparison(baseline, &result);
+                        } else {
+                            eprintln!(
+                                "No baseline found for concurrency={} in sweep file. Available: {:?}",
+                                result.concurrency,
+                                sweep_results.iter().map(|r| r.concurrency).collect::<Vec<_>>()
+                            );
+                        }
+                    } else {
+                        eprintln!("Failed to parse baseline JSON as single or sweep result");
                     }
-                    Err(e) => {
-                        eprintln!("Failed to parse baseline JSON: {}", e);
-                    }
-                },
+                }
                 Err(e) => {
                     eprintln!("Failed to read baseline file: {}", e);
                 }

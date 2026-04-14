@@ -220,6 +220,36 @@ Test the full module with Nginx:
 | Cashu P2PK mode | < 10ms | With local verification |
 | Redis lookup | < 1ms | Dynamic pricing |
 
+### Running the Stress Test
+
+A dedicated Rust stress testing tool is available under `stress-test/` to benchmark the module:
+
+```bash
+# Build the stress test tool
+cd stress-test && cargo build --release
+
+# Single benchmark run
+./target/release/stress-test --url http://localhost:8000/protected -c 50 -n 10000
+
+# With authentication
+./target/release/stress-test --url http://localhost:8000/protected \
+    --auth "L402 macaroon:preimage" -c 50 -n 10000
+
+# Save baseline results for later comparison
+./target/release/stress-test --url http://localhost:8000/protected \
+    -c 50 -n 10000 --save baseline.json
+
+# Compare current run against a saved baseline
+./target/release/stress-test --url http://localhost:8000/protected \
+    -c 50 -n 10000 --compare baseline.json
+
+# Run a concurrency sweep (1, 10, 25, 50, 100 concurrent connections)
+./target/release/stress-test --url http://localhost:8000/protected \
+    -n 10000 --sweep --save sweep_results.json
+```
+
+The tool reports latency percentiles (p50/p90/p95/p99/max), throughput (req/s), NGINX worker RSS memory usage, and error samples. When submitting performance-related PRs, include benchmark results from `--compare` in your PR description.
+
 ### Optimization Guidelines
 
 **Hot Path Rules**:
