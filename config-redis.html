@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4850b193.js";
+            window.path_to_searchindex_js = "searchindex-4f181041.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-a0b648fa.js"></script>
@@ -215,6 +215,32 @@ Environment=L402_PREIMAGE_TTL_SECONDS=86400      # Default: 24 hours
 Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400   # Default: 24 hours
 </code></pre>
 <p><strong>How it works</strong>: After successful verification, SHA256 hashes of preimages/tokens are stored in Redis with a TTL. Subsequent use of the same credential is rejected with <code>401</code>. Protection persists across Nginx restarts and works with multiple Nginx instances.</p>
+<hr>
+<h2 id="invoice-rate-limiting"><a class="header" href="#invoice-rate-limiting">Invoice Rate Limiting</a></h2>
+<p>Limits how many invoices (402 responses) a single IP can request per route within a time window. This protects your Lightning node from invoice-spam without affecting clients that hold a valid token.</p>
+<pre><code class="language-nginx">location /api/resource {
+    l402 on;
+    l402_amount_msat_default 1000;
+    l402_invoice_rate_limit 5r/m;   # 5 invoices per minute per IP
+}
+</code></pre>
+<p><strong>Supported formats</strong>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Value</th><th>Limit</th></tr>
+</thead>
+<tbody>
+<tr><td><code>5r/m</code></td><td>5 per minute</td></tr>
+<tr><td><code>10r/h</code></td><td>10 per hour</td></tr>
+<tr><td><code>2r/s</code></td><td>2 per second</td></tr>
+<tr><td><code>5</code></td><td>5 per minute (shorthand)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Requests that exceed the limit receive <code>429 Too Many Requests</code> with a <code>Retry-After</code> header set to the window duration.</p>
+<p>The rate limit only applies to unauthenticated requests (those that would result in a 402). Requests presenting a valid L402 token bypass it entirely.</p>
+<p><strong>How it works</strong>: Uses a fixed-window Redis counter (<code>INCR</code> + <code>EXPIRE</code> on first hit) keyed by IP and path. Fails open — if Redis is unavailable, rate limiting is disabled and traffic passes through normally.</p>
 
                     </main>
 
