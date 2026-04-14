@@ -1,0 +1,87 @@
+name: Nginx Version Compatibility
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx_version: ["1.28.1", "1.28.2", "1.28.3"]
+
+    name: Nginx ${{ matrix.nginx_version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build module for Nginx ${{ matrix.nginx_version }}
+        run: |
+          docker build \
+            --build-arg NGX_VERSION=${{ matrix.nginx_version }} \
+            -t ngx_l402:nginx-${{ matrix.nginx_version }} \
+            .
+
+      - name: Verify module loads
+        run: |
+          echo "Testing nginx -t (config validation with module loaded)..."
+          docker run --rm \
+            --add-host=grpc-content-server:127.0.0.1 \
+            -e LN_CLIENT_TYPE=LNURL \
+            -e LNURL_ADDRESS=hello@getalby.com \
+            ngx_l402:nginx-${{ matrix.nginx_version }} \
+            nginx -t
+          echo "✅ Module loaded successfully on Nginx ${{ matrix.nginx_version }}"
+
+      - name: Verify module file exists
+        run: |
+          echo "Checking .so file in image..."
+          docker run --rm \
+            ngx_l402:nginx-${{ matrix.nginx_version }} \
+            ls -lh /etc/nginx/modules/libngx_l402_lib.so
+          echo "✅ .so file present"
+
+      - name: Smoke test - module serves requests
+        run: |
+          echo "Starting container for smoke test..."
+          docker run -d --name smoke-test-${{ matrix.nginx_version }} \
+            --add-host=grpc-content-server:127.0.0.1 \
+            -p 8000:8000 \
+            -e LN_CLIENT_TYPE=LNURL \
+            -e LNURL_ADDRESS=hello@getalby.com \
+            ngx_l402:nginx-${{ matrix.nginx_version }}
+
+          echo "Waiting for nginx to start..."
+          sleep 5
+
+          # Test free route returns 200
+          echo "Testing free route..."
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8000/)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Free route returned status $status_code, expected 200"
+            docker logs smoke-test-${{ matrix.nginx_version }}
+            exit 1
+          fi
+          echo "✅ Free route returned 200"
+
+          # Test protected route returns 402
+          echo "Testing protected route..."
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:8000/protected)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Protected route returned status $status_code, expected 402"
+            docker logs smoke-test-${{ matrix.nginx_version }}
+            exit 1
+          fi
+          echo "✅ Protected route returned 402"
+
+          docker stop smoke-test-${{ matrix.nginx_version }}
+          docker rm smoke-test-${{ matrix.nginx_version }}
+
+          echo "✅ Smoke test passed for Nginx ${{ matrix.nginx_version }}"

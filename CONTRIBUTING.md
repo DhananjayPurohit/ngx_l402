@@ -168,27 +168,48 @@ docs: clarify unsafe code guidelines
 
 This module uses FFI with Nginx C API. When writing `unsafe` code:
 
+- **Nginx-guaranteed pointers** (e.g. `request`, `connection`, `loc_conf`): No null check needed, but add a `// SAFETY:` comment explaining why.
+- **Optional/allocated pointers** (e.g. optional headers, `ngx_array_push` results): **Must** null-check before dereferencing.
+
 ```rust
-// ✅ GOOD: Document safety invariants
-// SAFETY: `request` pointer is non-null and valid for this handler's lifetime,
-// as guaranteed by Nginx before invoking the handler.
-pub unsafe extern "C" fn handler(request: *mut ngx_http_request_t) -> isize {
-    if request.is_null() {
-        return NGX_ERROR as isize;
-    }
-    // ...
+// ✅ GOOD: Null-check where genuinely needed, SAFETY docs everywhere
+
+// SAFETY: `request` and `connection->log` are guaranteed valid by Nginx
+// for all access-phase handlers.
+let r = &mut *request;
+let log = &mut *(*r.connection).log;
+
+// `authorization` CAN be null — not every request has the header.
+// This check is genuinely needed.
+let auth_header = if !r.headers_in.authorization.is_null() {
+    // SAFETY: checked non-null above; Nginx guarantees `value.data`
+    // is a valid C string for the header's lifetime.
+    Some(CStr::from_ptr((*r.headers_in.authorization).value.data as *const c_char)
+        .to_str()
+        .unwrap_or("")
+        .to_string())
+} else {
+    None
+};
+
+// `ngx_array_push` returns null if the allocation fails.
+// This check is genuinely needed.
+let h = ngx_array_push(&mut (*cmcf).phases[phase].handlers)
+    as *mut ngx_http_handler_pt;
+if h.is_null() {
+    return NGX_ERROR as ngx_int_t;
 }
 
-// ❌ BAD: No safety documentation
-pub unsafe extern "C" fn handler(request: *mut ngx_http_request_t) -> isize {
-    let r = &mut *request;  // Could segfault if null!
-    // ...
-}
+// ❌ BAD: Missing check on optional pointer, no SAFETY comments
+let val = (*r.headers_in.authorization).value;   // Segfault if no auth header!
+let h = ngx_array_push(&mut handlers);           // Could be null!
+*h = Some(my_handler);                           // Segfault if alloc failed!
 ```
 
 **Rules**:
-- Always check pointers for null before dereferencing
-- Document why the unsafe operation is safe
+- Add a `// SAFETY:` comment above each `unsafe` dereference explaining why it is valid
+- Null-check pointers that are **not** guaranteed by Nginx (optional headers, allocations, your own data)
+- For Nginx-guaranteed pointers, document the guarantee instead of adding a redundant check
 - Prefer safe abstractions when possible
 - Test with Valgrind or AddressSanitizer
 
