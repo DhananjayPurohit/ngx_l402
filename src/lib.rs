@@ -4,15 +4,20 @@ use l402_middleware::middleware::L402Middleware;
 use l402_middleware::{bolt12, cln, eclair, l402, lnclient, lnd, lnurl, macaroon_util, nwc, utils};
 use log::{debug, error, info, warn};
 use macaroon::Verifier;
+use ngx::core::Buffer;
 use ngx::ffi::{
-    nginx_version, ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle_s, ngx_http_core_module,
-    ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
-    ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
-    NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO,
-    NGX_LOG_WARN, NGX_OK,
+    nginx_version, ngx_array_push, ngx_chain_t, ngx_command_t, ngx_conf_t, ngx_cycle_s,
+    ngx_http_core_module, ngx_http_discard_request_body, ngx_http_handler_pt, ngx_http_module_t,
+    ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t,
+    ngx_str_t, ngx_uint_t, NGX_CONF_NOARGS, NGX_CONF_TAKE1, NGX_DECLINED, NGX_ERROR, NGX_HTTP_GET,
+    NGX_HTTP_HEAD, NGX_HTTP_INTERNAL_SERVER_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE,
+    NGX_HTTP_NOT_ALLOWED, NGX_LOG_ERR, NGX_LOG_INFO, NGX_LOG_WARN, NGX_OK,
     NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
 };
-use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConfigError, Request};
+use ngx::http::{
+    ngx_http_conf_get_module_loc_conf, ngx_http_conf_get_module_main_conf, HTTPModule, HTTPStatus,
+    Merge, MergeConfigError, Request,
+};
 use ngx::{ngx_log_error, ngx_null_command, ngx_string};
 use r2d2::Pool;
 use redis::Client as RedisClient;
@@ -32,6 +37,7 @@ use tonic_openssl_lnd::lnrpc;
 
 mod cashu;
 mod cashu_redemption_logger;
+mod metrics;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
@@ -43,6 +49,10 @@ static REDIS_POOL: OnceLock<Pool<RedisClient>> = OnceLock::new();
 static LNURL_CLIENT_CACHE: OnceLock<
     tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>>>,
 > = OnceLock::new();
+
+/// Configured LN backend type (`LNURL`, `LND`, `NWC`, ...) captured once at
+/// init for use in structured dry-run log lines.
+static LN_BACKEND_LABEL: OnceLock<String> = OnceLock::new();
 
 /// Get or create a cached LNURL client for the given address
 /// This function is also used by cashu.rs for multi-tenant redemption
@@ -106,7 +116,10 @@ fn is_preimage_used(preimage: &[u8]) -> bool {
     let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            error!("❌ Failed to get Redis connection from pool for preimage check: {}", e);
+            error!(
+                "❌ Failed to get Redis connection from pool for preimage check: {}",
+                e
+            );
             return false;
         }
     };
@@ -176,7 +189,10 @@ pub fn is_cashu_token_used(token: &str) -> bool {
     let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            error!("❌ Failed to get Redis connection from pool for Cashu token check: {}", e);
+            error!(
+                "❌ Failed to get Redis connection from pool for Cashu token check: {}",
+                e
+            );
             return false;
         }
     };
@@ -261,21 +277,19 @@ impl L402Module {
                 .unwrap_or(default_pool_size);
 
             match RedisClient::open(redis_url.clone()) {
-                Ok(manager) => {
-                    match Pool::builder().max_size(pool_size).build(manager) {
-                        Ok(pool) => {
-                            if REDIS_POOL.set(pool).is_ok() {
-                                info!(
-                                    "✅ Redis connection pool ready (max_size={}) at {}",
-                                    pool_size, redis_url
-                                );
-                            } else {
-                                error!("❌ Failed to register Redis pool in OnceLock");
-                            }
+                Ok(manager) => match Pool::builder().max_size(pool_size).build(manager) {
+                    Ok(pool) => {
+                        if REDIS_POOL.set(pool).is_ok() {
+                            info!(
+                                "✅ Redis connection pool ready (max_size={}) at {}",
+                                pool_size, redis_url
+                            );
+                        } else {
+                            error!("❌ Failed to register Redis pool in OnceLock");
                         }
-                        Err(e) => error!("❌ Failed to build Redis connection pool: {}", e),
                     }
-                }
+                    Err(e) => error!("❌ Failed to build Redis connection pool: {}", e),
+                },
                 Err(e) => error!("❌ Failed to create Redis client: {}", e),
             }
         } else {
@@ -683,9 +697,12 @@ pub struct ModuleConfig {
     // (max_requests, window_secs): e.g. (5, 60) means 5 invoices per minute per IP per route.
     // None means rate limiting is disabled for this location.
     invoice_rate_limit: Option<(u32, u64)>,
+    // Shadow mode: evaluate pricing and generate challenges but never block
+    // the request. Used for safe production rollouts.
+    dry_run: bool,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 6] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 8] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -722,6 +739,22 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 6] = [
         name: ngx_string!("l402_invoice_rate_limit"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_invoice_rate_limit_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_dry_run"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_l402_dry_run_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_metrics"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
+        set: Some(ngx_http_l402_metrics_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -796,6 +829,9 @@ impl Merge for ModuleConfig {
         if self.invoice_rate_limit.is_none() {
             self.invoice_rate_limit = prev.invoice_rate_limit;
         }
+        if prev.dry_run && !self.dry_run {
+            self.dry_run = true;
+        }
         Ok(())
     }
 }
@@ -822,6 +858,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         macaroon_timeout,
         lnurl_addr,
         invoice_rate_limit,
+        dry_run,
     ) = unsafe {
         // NOTE: `authorization` can be null — not every request carries the header.
         let auth_header = if !r.headers_in.authorization.is_null() {
@@ -871,6 +908,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         let lnurl_addr = conf.lnurl_addr.clone();
         let invoice_rate_limit = conf.invoice_rate_limit;
+        let dry_run = conf.dry_run;
 
         (
             auth_header,
@@ -880,6 +918,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             macaroon_timeout,
             lnurl_addr,
             invoice_rate_limit,
+            dry_run,
         )
     };
 
@@ -905,11 +944,18 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     } else {
         amount_msat
     };
+    let price_source = if dynamic_amount > 0 {
+        "dynamic"
+    } else {
+        "static"
+    };
 
     // Get dynamic LNURL from Redis (takes precedence over nginx config)
     let dynamic_lnurl = module.get_dynamic_lnurl(&request_path);
     let final_lnurl_addr = dynamic_lnurl.or(lnurl_addr);
 
+    metrics::inc(&metrics::L402_REQUESTS_TOTAL);
+    let auth_present = auth_header.is_some();
     let result = l402_access_handler(
         auth_header,
         uri,
@@ -919,8 +965,32 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         final_lnurl_addr.clone(),
     );
 
+    match result {
+        r if r == NGX_DECLINED as isize => metrics::inc(&metrics::L402_PAYMENTS_VALID_TOTAL),
+        401 => metrics::inc(&metrics::L402_PAYMENTS_INVALID_TOTAL),
+        402 => metrics::inc(&metrics::L402_PAYMENTS_MISSING_TOTAL),
+        _ => {}
+    }
+
+    if dry_run {
+        return handle_dry_run_passthrough(
+            request,
+            log_ref,
+            module,
+            &request_path,
+            final_amount,
+            price_source,
+            final_lnurl_addr,
+            macaroon_timeout,
+            caveats,
+            result,
+            auth_present,
+        );
+    }
+
     // Only set L402 header if result is 402
     if result == 402 {
+        metrics::inc(&metrics::L402_CHALLENGES_ISSUED_TOTAL);
         if let Some((max_requests, window_secs)) = invoice_rate_limit {
             let client_ip = get_client_ip(request);
             if !check_invoice_rate_limit(&client_ip, &request_path, max_requests, window_secs) {
@@ -1188,6 +1258,11 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     info!("🚀 Starting L402 module initialization");
     ngx_log_error!(NGX_LOG_INFO, log, "Starting module initialization");
 
+    // Cache the LN backend type string for structured log lines. We can't
+    // read env vars from worker threads, so snapshot it here.
+    let _ = LN_BACKEND_LABEL
+        .set(std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string()));
+
     // Check if Cashu eCash support is enabled
     let cashu_ecash_support_var =
         std::env::var("CASHU_ECASH_SUPPORT").unwrap_or_else(|_| "false".to_string());
@@ -1380,6 +1455,255 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             });
     }
     0
+}
+
+/// Handle dry-run (shadow) mode: evaluate everything, log + increment metrics,
+/// but never block the request. Always returns [`NGX_DECLINED`] so nginx
+/// continues to the next phase and the upstream response is served as 200.
+///
+/// A synthesised L402 challenge is attached via the `WWW-Authenticate` *and*
+/// `X-L402-Dry-Run-Challenge` response headers so operators can inspect the
+/// challenge that *would* have been issued without parsing logs. Failure to
+/// generate the challenge (e.g. LN backend unreachable) is counted but does
+/// not fail the request.
+#[allow(clippy::too_many_arguments)]
+fn handle_dry_run_passthrough(
+    request: *mut ngx_http_request_t,
+    log_ref: *mut ngx_log_s,
+    module: &L402Module,
+    request_path: &str,
+    final_amount: i64,
+    price_source: &'static str,
+    final_lnurl_addr: Option<String>,
+    macaroon_timeout: i64,
+    caveats: Vec<String>,
+    result: isize,
+    auth_present: bool,
+) -> isize {
+    metrics::inc(&metrics::L402_DRY_RUN_REQUESTS_TOTAL);
+    if final_amount > 0 {
+        metrics::add(&metrics::L402_DRY_RUN_PRICE_MSAT_SUM, final_amount as u64);
+    }
+
+    let would_return: u16 = match result {
+        r if r == NGX_DECLINED as isize => 200,
+        401 => 401,
+        402 => 402,
+        other if (100..600).contains(&other) => other as u16,
+        _ => 0,
+    };
+    match would_return {
+        200 => metrics::inc(&metrics::L402_DRY_RUN_WOULD_ALLOW_TOTAL),
+        401 | 402 => metrics::inc(&metrics::L402_DRY_RUN_WOULD_BLOCK_TOTAL),
+        _ => {}
+    }
+
+    let auth_state = match (auth_present, result) {
+        (false, _) => "missing",
+        (true, r) if r == NGX_DECLINED as isize => "valid",
+        (true, _) => "invalid",
+    };
+
+    let client_ip = get_client_ip(request);
+    let backend = LN_BACKEND_LABEL
+        .get()
+        .map(String::as_str)
+        .unwrap_or("unknown");
+
+    // Structured JSON line — easy to pick out of nginx error_log with jq/grep
+    // and forward to Loki / Splunk / Datadog.
+    info!(
+        "{{\"event\":\"l402_dry_run\",\"route\":\"{route}\",\"price_msat\":{price},\"price_source\":\"{src}\",\"backend\":\"{backend}\",\"client_ip\":\"{ip}\",\"auth_state\":\"{state}\",\"would_return\":{status}}}",
+        route = escape_json(request_path),
+        price = final_amount,
+        src = price_source,
+        backend = backend,
+        ip = escape_json(&client_ip),
+        state = auth_state,
+        status = would_return,
+    );
+
+    if would_return == 402 {
+        let rt = dry_run_runtime();
+        let header_result = rt.block_on(async {
+            module
+                .get_l402_header(caveats, final_amount, macaroon_timeout, final_lnurl_addr)
+                .await
+        });
+
+        match header_result {
+            Some(header_value) => {
+                // SAFETY: `request` is non-null and valid for this handler's
+                // lifetime, as guaranteed by nginx before invoking the handler.
+                unsafe {
+                    let req = Request::from_ngx_http_request(request);
+                    req.add_header_out("WWW-Authenticate", &header_value);
+                    req.add_header_out("X-L402-Dry-Run-Challenge", &header_value);
+                    req.add_header_out("X-L402-Dry-Run", "1");
+                    req.add_header_out("X-L402-Dry-Run-Price-Msat", &final_amount.to_string());
+                }
+            }
+            None => {
+                metrics::inc(&metrics::L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL);
+                ngx_log_error!(
+                    NGX_LOG_WARN,
+                    log_ref,
+                    "[l402_dry_run] failed to synthesise challenge for {}",
+                    request_path
+                );
+            }
+        }
+    } else {
+        // Still advertise the mode via a cheap header so clients know
+        // this route would normally be paid.
+        unsafe {
+            let req = Request::from_ngx_http_request(request);
+            req.add_header_out("X-L402-Dry-Run", "1");
+            req.add_header_out("X-L402-Dry-Run-Price-Msat", &final_amount.to_string());
+        }
+    }
+
+    NGX_DECLINED as isize
+}
+
+fn dry_run_runtime() -> &'static Runtime {
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                eprintln!("FATAL: failed to create tokio runtime: {}", e);
+                std::process::abort();
+            }
+        }
+    })
+}
+
+/// Minimal JSON-string escaper. Handles the bytes mandated by RFC 8259.
+/// Good enough for a single log line; avoids pulling in a JSON crate on
+/// the hot path.
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use core::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Content-phase handler for `l402_metrics`. Serves the Prometheus text
+/// exposition format at the configured location (e.g. `/metrics`).
+///
+/// Only `GET` and `HEAD` are accepted; anything else returns `405`.
+pub unsafe extern "C" fn l402_metrics_content_handler(r: *mut ngx_http_request_t) -> ngx_int_t {
+    // SAFETY: nginx passes a non-null, valid request pointer to content
+    // phase handlers for the lifetime of the call.
+    let r_ref = unsafe { &mut *r };
+
+    let method = r_ref.method as u32;
+    if method & (NGX_HTTP_GET | NGX_HTTP_HEAD) == 0 {
+        return NGX_HTTP_NOT_ALLOWED as ngx_int_t;
+    }
+
+    let rc = unsafe { ngx_http_discard_request_body(r) };
+    if rc != NGX_OK as ngx_int_t {
+        return rc;
+    }
+
+    let body = metrics::render();
+    let body_len = body.len();
+
+    // SAFETY: `r` is valid; `Request::from_ngx_http_request` just wraps the
+    // pointer, `pool()` returns a Pool tied to the request lifetime.
+    let req = unsafe { Request::from_ngx_http_request(r) };
+    let mut pool = req.pool();
+
+    let Some(mut buf) = pool.create_buffer_from_str(&body) else {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t;
+    };
+    buf.set_last_buf(true);
+    buf.set_last_in_chain(true);
+
+    let chain = pool.alloc_type::<ngx_chain_t>();
+    if chain.is_null() {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t;
+    }
+    // SAFETY: `chain` was allocated above from the request pool.
+    unsafe {
+        (*chain).buf = buf.as_ngx_buf_mut();
+        (*chain).next = std::ptr::null_mut();
+    }
+
+    req.set_status(HTTPStatus::OK);
+    req.set_content_length_n(body_len);
+    let _ = req.add_header_out("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+
+    let status = req.send_header();
+    if status.0 == NGX_ERROR as ngx_int_t || status.0 > NGX_OK as ngx_int_t || req.header_only() {
+        return status.0;
+    }
+
+    // SAFETY: `chain` is non-null, was just initialised, and lives for the
+    // request via the request pool.
+    unsafe { req.output_filter(&mut *chain).0 }
+}
+
+pub unsafe extern "C" fn ngx_http_l402_dry_run_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args = (*(*cf).args).elts as *mut ngx_str_t;
+        let val = (*args.add(1)).to_str();
+
+        if val.eq_ignore_ascii_case("on") {
+            conf.dry_run = true;
+            info!("⚙️ l402_dry_run enabled (shadow mode — requests will pass through)");
+        } else if val.eq_ignore_ascii_case("off") {
+            conf.dry_run = false;
+        } else {
+            error!("Invalid l402_dry_run value: '{}' (expected on/off)", val);
+            return b"l402_dry_run: expected 'on' or 'off'\0".as_ptr() as *mut c_char;
+        }
+    }
+    std::ptr::null_mut()
+}
+
+pub unsafe extern "C" fn ngx_http_l402_metrics_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    _conf: *mut c_void,
+) -> *mut c_char {
+    // SAFETY: `cf` is guaranteed valid by Nginx during config parsing.
+    // `ngx_http_conf_get_module_loc_conf` requires a valid module reference.
+    // `ngx_http_core_module` is a static global defined by nginx core.
+    unsafe {
+        let clcf = ngx_http_conf_get_module_loc_conf(cf, &*addr_of!(ngx_http_core_module));
+        if clcf.is_null() {
+            return b"l402_metrics: missing core loc conf\0".as_ptr() as *mut c_char;
+        }
+        (*clcf).handler = Some(l402_metrics_content_handler);
+    }
+    info!("⚙️ l402_metrics endpoint registered");
+    std::ptr::null_mut()
 }
 
 pub unsafe extern "C" fn ngx_http_l402_set(
