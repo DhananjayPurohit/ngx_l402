@@ -19,6 +19,7 @@ For local contributor setup on macOS (Docker nginx recommended), see `docs/macos
 - [Configuration & Environment Variables](https://dhananjaypurohit.github.io/ngx_l402/config-env-vars.html)
 - [Cashu eCash Support](https://dhananjaypurohit.github.io/ngx_l402/cashu.html)
 - [Multi-Tenant](https://dhananjaypurohit.github.io/ngx_l402/config-multi-tenant.html)
+- [Dry-Run (Shadow) Mode](https://dhananjaypurohit.github.io/ngx_l402/dry-run.html)
 - [Building from Source](https://dhananjaypurohit.github.io/ngx_l402/building.html)
 
 ---
@@ -48,39 +49,6 @@ Test it:
 curl http://localhost:8000/           # 200 OK
 curl -i http://localhost:8000/protected  # 402 Payment Required
 ```
-
----
-
-## Shadow mode (safe rollouts)
-
-Before switching a route to enforced L402 in production, you can run it in
-**shadow mode** to validate pricing, LN backend reachability, and traffic
-patterns *without* blocking any requests:
-
-```nginx
-location /api/ {
-    l402                        on;
-    l402_amount_msat_default    10000;
-    l402_dry_run                on;      # evaluate, log, never block
-    proxy_pass                  http://upstream;
-}
-
-location = /metrics {
-    l402_metrics;                         # Prometheus scrape endpoint
-}
-```
-
-In shadow mode the module:
-
-- Evaluates the full pricing pipeline (static config + Redis overrides).
-- Attempts to synthesise a valid L402 challenge and exposes it via the
-  `X-L402-Dry-Run-Challenge` response header.
-- Emits one structured JSON log line per request (route, price, backend,
-  client IP, auth state, would-be status).
-- Updates `l402_dry_run_*` Prometheus counters.
-- **Always returns 200 OK to the client.**
-
-See [`nginx.conf`](nginx.conf) for a worked example.
 
 ---
 

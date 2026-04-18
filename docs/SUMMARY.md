@@ -24,3 +24,4 @@
 
 - [Building from Source](./building.md)
 - [Logging](./logging.md)
+- [Dry-Run (Shadow) Mode](./dry-run.md)
