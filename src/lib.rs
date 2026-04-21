@@ -116,10 +116,7 @@ fn is_preimage_used(preimage: &[u8]) -> bool {
     let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            error!(
-                "❌ Failed to get Redis connection from pool for preimage check: {}",
-                e
-            );
+            error!("❌ Failed to get Redis connection from pool for preimage check: {}", e);
             return false;
         }
     };
@@ -189,10 +186,7 @@ pub fn is_cashu_token_used(token: &str) -> bool {
     let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            error!(
-                "❌ Failed to get Redis connection from pool for Cashu token check: {}",
-                e
-            );
+            error!("❌ Failed to get Redis connection from pool for Cashu token check: {}", e);
             return false;
         }
     };
@@ -277,19 +271,21 @@ impl L402Module {
                 .unwrap_or(default_pool_size);
 
             match RedisClient::open(redis_url.clone()) {
-                Ok(manager) => match Pool::builder().max_size(pool_size).build(manager) {
-                    Ok(pool) => {
-                        if REDIS_POOL.set(pool).is_ok() {
-                            info!(
-                                "✅ Redis connection pool ready (max_size={}) at {}",
-                                pool_size, redis_url
-                            );
-                        } else {
-                            error!("❌ Failed to register Redis pool in OnceLock");
+                Ok(manager) => {
+                    match Pool::builder().max_size(pool_size).build(manager) {
+                        Ok(pool) => {
+                            if REDIS_POOL.set(pool).is_ok() {
+                                info!(
+                                    "✅ Redis connection pool ready (max_size={}) at {}",
+                                    pool_size, redis_url
+                                );
+                            } else {
+                                error!("❌ Failed to register Redis pool in OnceLock");
+                            }
                         }
+                        Err(e) => error!("❌ Failed to build Redis connection pool: {}", e),
                     }
-                    Err(e) => error!("❌ Failed to build Redis connection pool: {}", e),
-                },
+                }
                 Err(e) => error!("❌ Failed to create Redis client: {}", e),
             }
         } else {
@@ -698,8 +694,10 @@ pub struct ModuleConfig {
     // None means rate limiting is disabled for this location.
     invoice_rate_limit: Option<(u32, u64)>,
     // Shadow mode: evaluate pricing and generate challenges but never block
-    // the request. Used for safe production rollouts.
-    dry_run: bool,
+    // the request. Used for safe production rollouts. `None` means unset
+    // (inherit from parent scope); `Some(false)` explicitly turns it off and
+    // stops inheritance.
+    dry_run: Option<bool>,
 }
 
 pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 8] = [
@@ -829,8 +827,10 @@ impl Merge for ModuleConfig {
         if self.invoice_rate_limit.is_none() {
             self.invoice_rate_limit = prev.invoice_rate_limit;
         }
-        if prev.dry_run && !self.dry_run {
-            self.dry_run = true;
+        // Standard "child wins if set" merge — `l402_dry_run off;` in an inner
+        // location overrides `l402_dry_run on;` on the outer scope.
+        if self.dry_run.is_none() {
+            self.dry_run = prev.dry_run;
         }
         Ok(())
     }
@@ -908,7 +908,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         let lnurl_addr = conf.lnurl_addr.clone();
         let invoice_rate_limit = conf.invoice_rate_limit;
-        let dry_run = conf.dry_run;
+        let dry_run = conf.dry_run.unwrap_or(false);
 
         (
             auth_header,
@@ -965,13 +965,6 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         final_lnurl_addr.clone(),
     );
 
-    match result {
-        r if r == NGX_DECLINED as isize => metrics::inc(&metrics::L402_PAYMENTS_VALID_TOTAL),
-        401 => metrics::inc(&metrics::L402_PAYMENTS_INVALID_TOTAL),
-        402 => metrics::inc(&metrics::L402_PAYMENTS_MISSING_TOTAL),
-        _ => {}
-    }
-
     if dry_run {
         return handle_dry_run_passthrough(
             request,
@@ -985,15 +978,25 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             caveats,
             result,
             auth_present,
+            invoice_rate_limit,
         );
+    }
+
+    // Enforce-mode outcome counters. Deliberately skipped above for dry-run
+    // so shadow traffic doesn't pollute enforce-mode SLO dashboards.
+    match result {
+        r if r == NGX_DECLINED as isize => metrics::inc(&metrics::L402_PAYMENTS_VALID_TOTAL),
+        401 => metrics::inc(&metrics::L402_PAYMENTS_INVALID_TOTAL),
+        402 => metrics::inc(&metrics::L402_PAYMENTS_MISSING_TOTAL),
+        _ => {}
     }
 
     // Only set L402 header if result is 402
     if result == 402 {
-        metrics::inc(&metrics::L402_CHALLENGES_ISSUED_TOTAL);
         if let Some((max_requests, window_secs)) = invoice_rate_limit {
             let client_ip = get_client_ip(request);
             if !check_invoice_rate_limit(&client_ip, &request_path, max_requests, window_secs) {
+                metrics::inc(&metrics::L402_RATE_LIMITED_TOTAL);
                 ngx_log_error!(
                     NGX_LOG_WARN,
                     log_ref,
@@ -1010,6 +1013,8 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 return 429;
             }
         }
+        // Only count as "issued" once we're past the rate-limit gate.
+        metrics::inc(&metrics::L402_CHALLENGES_ISSUED_TOTAL);
 
         // Use a lazily initialized static runtime
         static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -1479,6 +1484,7 @@ fn handle_dry_run_passthrough(
     caveats: Vec<String>,
     result: isize,
     auth_present: bool,
+    invoice_rate_limit: Option<(u32, u64)>,
 ) -> isize {
     metrics::inc(&metrics::L402_DRY_RUN_REQUESTS_TOTAL);
     if final_amount > 0 {
@@ -1492,10 +1498,29 @@ fn handle_dry_run_passthrough(
         other if (100..600).contains(&other) => other as u16,
         _ => 0,
     };
+
+    // Check the invoice rate limiter when an invoice *would* be issued.
+    // Without this, dry-run mode can hit the LN backend harder than enforce
+    // mode — the opposite of what "safe rollout" should mean.
+    let client_ip = get_client_ip(request);
+    let rate_limited = if would_return == 402 {
+        match invoice_rate_limit {
+            Some((max_requests, window_secs)) => {
+                !check_invoice_rate_limit(&client_ip, request_path, max_requests, window_secs)
+            }
+            None => false,
+        }
+    } else {
+        false
+    };
+
     match would_return {
         200 => metrics::inc(&metrics::L402_DRY_RUN_WOULD_ALLOW_TOTAL),
         401 | 402 => metrics::inc(&metrics::L402_DRY_RUN_WOULD_BLOCK_TOTAL),
         _ => {}
+    }
+    if rate_limited {
+        metrics::inc(&metrics::L402_DRY_RUN_RATE_LIMITED_TOTAL);
     }
 
     let auth_state = match (auth_present, result) {
@@ -1504,7 +1529,6 @@ fn handle_dry_run_passthrough(
         (true, _) => "invalid",
     };
 
-    let client_ip = get_client_ip(request);
     let backend = LN_BACKEND_LABEL
         .get()
         .map(String::as_str)
@@ -1513,7 +1537,7 @@ fn handle_dry_run_passthrough(
     // Structured JSON line — easy to pick out of nginx error_log with jq/grep
     // and forward to Loki / Splunk / Datadog.
     info!(
-        "{{\"event\":\"l402_dry_run\",\"route\":\"{route}\",\"price_msat\":{price},\"price_source\":\"{src}\",\"backend\":\"{backend}\",\"client_ip\":\"{ip}\",\"auth_state\":\"{state}\",\"would_return\":{status}}}",
+        "{{\"event\":\"l402_dry_run\",\"route\":\"{route}\",\"price_msat\":{price},\"price_source\":\"{src}\",\"backend\":\"{backend}\",\"client_ip\":\"{ip}\",\"auth_state\":\"{state}\",\"would_return\":{status},\"rate_limited\":{rl}}}",
         route = escape_json(request_path),
         price = final_amount,
         src = price_source,
@@ -1521,9 +1545,17 @@ fn handle_dry_run_passthrough(
         ip = escape_json(&client_ip),
         state = auth_state,
         status = would_return,
+        rl = rate_limited,
     );
 
-    if would_return == 402 {
+    // SAFETY: `request` is non-null and valid for this handler's lifetime,
+    // as guaranteed by nginx before invoking the access handler.
+    let req = unsafe { Request::from_ngx_http_request(request) };
+    req.add_header_out("X-L402-Dry-Run", "1");
+
+    if would_return == 402 && !rate_limited {
+        req.add_header_out("X-L402-Dry-Run-Price-Msat", &final_amount.to_string());
+
         let rt = dry_run_runtime();
         let header_result = rt.block_on(async {
             module
@@ -1533,15 +1565,8 @@ fn handle_dry_run_passthrough(
 
         match header_result {
             Some(header_value) => {
-                // SAFETY: `request` is non-null and valid for this handler's
-                // lifetime, as guaranteed by nginx before invoking the handler.
-                unsafe {
-                    let req = Request::from_ngx_http_request(request);
-                    req.add_header_out("WWW-Authenticate", &header_value);
-                    req.add_header_out("X-L402-Dry-Run-Challenge", &header_value);
-                    req.add_header_out("X-L402-Dry-Run", "1");
-                    req.add_header_out("X-L402-Dry-Run-Price-Msat", &final_amount.to_string());
-                }
+                req.add_header_out("WWW-Authenticate", &header_value);
+                req.add_header_out("X-L402-Dry-Run-Challenge", &header_value);
             }
             None => {
                 metrics::inc(&metrics::L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL);
@@ -1553,15 +1578,23 @@ fn handle_dry_run_passthrough(
                 );
             }
         }
-    } else {
-        // Still advertise the mode via a cheap header so clients know
-        // this route would normally be paid.
-        unsafe {
-            let req = Request::from_ngx_http_request(request);
-            req.add_header_out("X-L402-Dry-Run", "1");
-            req.add_header_out("X-L402-Dry-Run-Price-Msat", &final_amount.to_string());
+    } else if would_return == 402 && rate_limited {
+        // Rate-limited: surface the signal without hitting the LN backend.
+        req.add_header_out("X-L402-Dry-Run-Price-Msat", &final_amount.to_string());
+        req.add_header_out("X-L402-Dry-Run-Rate-Limited", "1");
+        if let Some((_, window_secs)) = invoice_rate_limit {
+            req.add_header_out("X-L402-Dry-Run-Retry-After", &window_secs.to_string());
         }
+        ngx_log_error!(
+            NGX_LOG_WARN,
+            log_ref,
+            "[l402_dry_run] invoice rate limit exceeded for IP={} path={}",
+            client_ip,
+            request_path
+        );
     }
+    // `would_return` 200/401 fall through with just `X-L402-Dry-Run: 1`:
+    // no price leak on paid-valid, no challenge replay on bad token.
 
     NGX_DECLINED as isize
 }
@@ -1675,10 +1708,10 @@ pub unsafe extern "C" fn ngx_http_l402_dry_run_set(
         let val = (*args.add(1)).to_str();
 
         if val.eq_ignore_ascii_case("on") {
-            conf.dry_run = true;
+            conf.dry_run = Some(true);
             info!("⚙️ l402_dry_run enabled (shadow mode — requests will pass through)");
         } else if val.eq_ignore_ascii_case("off") {
-            conf.dry_run = false;
+            conf.dry_run = Some(false);
         } else {
             error!("Invalid l402_dry_run value: '{}' (expected on/off)", val);
             return b"l402_dry_run: expected 'on' or 'off'\0".as_ptr() as *mut c_char;
@@ -1699,6 +1732,14 @@ pub unsafe extern "C" fn ngx_http_l402_metrics_set(
         let clcf = ngx_http_conf_get_module_loc_conf(cf, &*addr_of!(ngx_http_core_module));
         if clcf.is_null() {
             return b"l402_metrics: missing core loc conf\0".as_ptr() as *mut c_char;
+        }
+        // Refuse to silently clobber a content handler registered by another
+        // directive (e.g. `proxy_pass`, `return`, `alias` + `try_files`, etc.).
+        // Fail fast at `nginx -t` rather than surprise operators at runtime.
+        if (*clcf).handler.is_some() {
+            error!("l402_metrics: another content handler is already registered for this location");
+            return b"l402_metrics: conflicts with another content handler in this location\0"
+                .as_ptr() as *mut c_char;
         }
         (*clcf).handler = Some(l402_metrics_content_handler);
     }
