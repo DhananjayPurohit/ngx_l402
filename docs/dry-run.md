@@ -63,10 +63,11 @@ can inspect what would have happened without scraping logs:
 
 | Header | Meaning |
 |---|---|
-| `X-L402-Dry-Run: 1` | Marks the response as produced by shadow mode. |
-| `X-L402-Dry-Run-Price-Msat: <n>` | Effective price for this route. |
-| `X-L402-Dry-Run-Challenge: L402 macaroon="...", invoice="..."` | The exact `WWW-Authenticate` value enforce mode would have returned. Only present when the request would have been challenged (`402`). |
-| `WWW-Authenticate: L402 macaroon="...", invoice="..."` | Also set, so real L402 clients can follow the payment flow in a staging environment. |
+| `X-L402-Dry-Run: 1` | Marks the response as produced by shadow mode. Always present. |
+| `X-L402-Dry-Run-Price-Msat: <n>` | Effective price for this route. Only emitted when the request *would* have been challenged (`402`) — not on paid-valid or rejected-invalid responses, to avoid leaking pricing against decided traffic. |
+| `X-L402-Dry-Run-Challenge: L402 macaroon="...", invoice="..."` | The exact `WWW-Authenticate` value enforce mode would have returned. Only present when the request would have been challenged (`402`) and the LN backend produced an invoice. |
+| `WWW-Authenticate: L402 macaroon="...", invoice="..."` | Also set alongside the challenge header, so real L402 clients can follow the payment flow in a staging environment. |
+| `X-L402-Dry-Run-Rate-Limited: 1` + `X-L402-Dry-Run-Retry-After: <sec>` | Set when the request would have been challenged but hit `l402_invoice_rate_limit`. No invoice is generated and no challenge header is attached, mirroring what enforce mode would have done (429 + `Retry-After`). |
 
 ---
 
@@ -99,6 +100,7 @@ Fields:
 | `client_ip` | From `X-Real-IP` → `X-Forwarded-For` → socket address. |
 | `auth_state` | `missing`, `valid`, or `invalid`. |
 | `would_return` | HTTP status enforce mode *would* have used (`200`, `401`, `402`). |
+| `rate_limited` | `true` when `l402_invoice_rate_limit` would have produced a `429` — challenge synthesis was skipped to protect the LN backend. |
 
 Pipe into `jq` to see a live firehose:
 
@@ -139,14 +141,16 @@ scrape_configs:
 
 | Metric | Meaning |
 |---|---|
-| `l402_requests_total` | Every request that entered the access handler with `l402 on;`. |
-| `l402_challenges_issued_total` | Requests that received a `402` response (enforce mode). |
-| `l402_payments_valid_total` | Authorization headers that verified successfully. |
-| `l402_payments_invalid_total` | Authorization headers that failed verification. |
-| `l402_payments_missing_total` | Requests without an Authorization header. |
+| `l402_requests_total` | Every request that entered the access handler with `l402 on;`. Incremented for both enforce and shadow traffic. |
+| `l402_challenges_issued_total` | Requests that received a `402` response (enforce mode), counted *after* the rate-limit gate. |
+| `l402_rate_limited_total` | Requests rejected with `429` by `l402_invoice_rate_limit` (enforce mode). |
+| `l402_payments_valid_total` | Authorization headers that verified successfully (enforce mode only — dry-run traffic goes to `l402_dry_run_*`). |
+| `l402_payments_invalid_total` | Authorization headers that failed verification (enforce mode only). |
+| `l402_payments_missing_total` | Requests without an Authorization header (enforce mode only). |
 | `l402_dry_run_requests_total` | Requests handled in shadow mode. |
 | `l402_dry_run_would_block_total` | Shadow-mode requests that *would* have been blocked (`401` or `402`). |
 | `l402_dry_run_would_allow_total` | Shadow-mode requests that *would* have been allowed (`200`). |
+| `l402_dry_run_rate_limited_total` | Shadow-mode requests that would have hit `l402_invoice_rate_limit` — challenge synthesis was skipped. |
 | `l402_dry_run_challenge_errors_total` | Shadow-mode requests where challenge synthesis failed (e.g. LN backend unreachable). |
 | `l402_dry_run_price_msat_sum` | Sum of msat prices evaluated in shadow mode. Pair with `_requests_total` to derive an average price. |
 

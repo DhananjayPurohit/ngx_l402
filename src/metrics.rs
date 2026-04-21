@@ -6,7 +6,7 @@
 //!
 //! No label dimensions are used — per-route or per-backend granularity is
 //! intentionally left to the structured JSON log line emitted for each
-//! dry-run request (see [`crate::log_dry_run_event`]).
+//! dry-run request (see `handle_dry_run_passthrough` in `lib.rs`).
 
 use core::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +37,9 @@ counters! {
     /// Requests that arrived without an Authorization header.
     L402_PAYMENTS_MISSING_TOTAL,
 
+    /// Requests rejected with 429 by `l402_invoice_rate_limit` (enforce mode).
+    L402_RATE_LIMITED_TOTAL,
+
     /// Total requests handled in dry-run (shadow) mode.
     L402_DRY_RUN_REQUESTS_TOTAL,
 
@@ -49,6 +52,10 @@ counters! {
 
     /// Dry-run requests where challenge synthesis (invoice generation) failed.
     L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL,
+
+    /// Dry-run requests that would have been rejected with 429 by the
+    /// invoice rate limiter had enforcement been on.
+    L402_DRY_RUN_RATE_LIMITED_TOTAL,
 
     /// Sum of msat prices evaluated for dry-run requests. Divide by
     /// `l402_dry_run_requests_total` for an average-price gauge.
@@ -94,6 +101,11 @@ pub fn render() -> String {
             &L402_PAYMENTS_MISSING_TOTAL,
         ),
         (
+            "l402_rate_limited_total",
+            "Requests rejected with 429 by l402_invoice_rate_limit.",
+            &L402_RATE_LIMITED_TOTAL,
+        ),
+        (
             "l402_dry_run_requests_total",
             "Requests handled in dry-run (shadow) mode.",
             &L402_DRY_RUN_REQUESTS_TOTAL,
@@ -112,6 +124,11 @@ pub fn render() -> String {
             "l402_dry_run_challenge_errors_total",
             "Dry-run requests where L402 challenge synthesis failed.",
             &L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL,
+        ),
+        (
+            "l402_dry_run_rate_limited_total",
+            "Dry-run requests that would have been rate-limited in enforce mode.",
+            &L402_DRY_RUN_RATE_LIMITED_TOTAL,
         ),
         (
             "l402_dry_run_price_msat_sum",
