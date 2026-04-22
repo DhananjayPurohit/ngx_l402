@@ -31,7 +31,7 @@ use std::ptr::addr_of;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
 use tonic_openssl_lnd::lnrpc;
 
@@ -1556,24 +1556,47 @@ fn handle_dry_run_passthrough(
     if would_return == 402 && !rate_limited {
         req.add_header_out("X-L402-Dry-Run-Price-Msat", &final_amount.to_string());
 
+        // Hard cap on the LN backend round-trip. Shadow mode must not add
+        // latency to upstream traffic: if the backend stalls we bail out,
+        // count a challenge error, and pass the request through without a
+        // challenge header.
+        const DRY_RUN_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
+
         let rt = dry_run_runtime();
         let header_result = rt.block_on(async {
-            module
-                .get_l402_header(caveats, final_amount, macaroon_timeout, final_lnurl_addr)
-                .await
+            tokio::time::timeout(
+                DRY_RUN_CHALLENGE_TIMEOUT,
+                module.get_l402_header(
+                    caveats,
+                    final_amount,
+                    macaroon_timeout,
+                    final_lnurl_addr,
+                ),
+            )
+            .await
         });
 
         match header_result {
-            Some(header_value) => {
+            Ok(Some(header_value)) => {
                 req.add_header_out("WWW-Authenticate", &header_value);
                 req.add_header_out("X-L402-Dry-Run-Challenge", &header_value);
             }
-            None => {
+            Ok(None) => {
                 metrics::inc(&metrics::L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL);
                 ngx_log_error!(
                     NGX_LOG_WARN,
                     log_ref,
                     "[l402_dry_run] failed to synthesise challenge for {}",
+                    request_path
+                );
+            }
+            Err(_) => {
+                metrics::inc(&metrics::L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL);
+                ngx_log_error!(
+                    NGX_LOG_WARN,
+                    log_ref,
+                    "[l402_dry_run] challenge synthesis timed out after {}s for {}",
+                    DRY_RUN_CHALLENGE_TIMEOUT.as_secs(),
                     request_path
                 );
             }
