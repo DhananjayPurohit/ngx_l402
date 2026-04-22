@@ -32,6 +32,7 @@ use tonic_openssl_lnd::lnrpc;
 
 mod cashu;
 mod cashu_redemption_logger;
+mod payment_detector;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
@@ -236,6 +237,83 @@ pub fn store_cashu_token_as_used(token: &str) -> Result<(), String> {
         ttl_seconds
     );
     Ok(())
+}
+
+/// Look up a previously-cached preimage for a settled invoice.
+/// Key: `l402:settled:<payment_hash_hex>` → `<preimage_hex>`
+pub fn get_cached_settled_preimage(payment_hash: &[u8]) -> Option<Vec<u8>> {
+    let pool = REDIS_POOL.get()?;
+    let mut conn = pool.get().ok()?;
+    let hash_hex = hex::encode(payment_hash);
+    let redis_key = format!("l402:settled:{}", hash_hex);
+    let stored: Option<String> = conn.get(&redis_key).unwrap_or(None);
+    stored.and_then(|h| hex::decode(h).ok())
+}
+
+/// Cache a preimage for a settled invoice with TTL (same as preimage TTL).
+pub fn cache_settled_preimage(payment_hash: &[u8], preimage: &[u8]) -> Result<(), String> {
+    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
+    let mut conn = pool
+        .get()
+        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+
+    let hash_hex = hex::encode(payment_hash);
+    let preimage_hex = hex::encode(preimage);
+    let redis_key = format!("l402:settled:{}", hash_hex);
+
+    let ttl_seconds = std::env::var("L402_PREIMAGE_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(86400);
+
+    conn.set_ex::<_, _, ()>(&redis_key, preimage_hex, ttl_seconds)
+        .map_err(|e| format!("Failed to cache settled preimage: {}", e))?;
+
+    info!("✅ Cached settled preimage for payment_hash {}", &hash_hex[..16]);
+    Ok(())
+}
+
+/// Parse the macaroon from an L402 authorization string and return
+/// the raw 32-byte payment hash embedded in its identifier.
+
+/// Accepts both formats:
+///   - `L402 <macaroon_b64>:<preimage_hex>`  (classic)
+///   - `L402 <macaroon_b64>`                 (auto-detect)
+pub fn extract_payment_hash_from_auth_str(auth_str: &str) -> Result<Vec<u8>, String> {
+    let token = auth_str
+        .trim()
+        .trim_start_matches("L402 ")
+        .trim_start_matches("Bearer ");
+
+    // Take only the macaroon part (before any ':')
+    let macaroon_b64 = token.split(':').next().unwrap_or(token);
+
+    let mac = utils::get_macaroon_from_string(macaroon_b64.to_string())
+        .map_err(|e| format!("Failed to deserialize macaroon: {}", e))?;
+
+    // The identifier holds the raw payment-hash bytes (32 bytes).
+    // verify_l402 does: hex::encode(macaroon_id.0).replace("ff", "")
+    // and checks that payment_hash_hex is contained in that string.
+    // We need the raw bytes for the node lookup; we strip leading 0xff
+    // sentinel bytes the same way the verifier does.
+    let id_bytes = mac.identifier().0.clone();
+
+    // The identifier may have a leading 0xff version byte in some
+    // serialisation formats.  Drop any leading 0xff bytes.
+    let hash_bytes: Vec<u8> = id_bytes
+        .iter()
+        .copied()
+        .skip_while(|&b| b == 0xff)
+        .collect();
+
+    if hash_bytes.len() != 32 {
+        return Err(format!(
+            "Unexpected identifier length after stripping sentinel: {} bytes (expected 32)",
+            hash_bytes.len()
+        ));
+    }
+
+    Ok(hash_bytes)
 }
 
 pub struct L402Module {
@@ -683,9 +761,10 @@ pub struct ModuleConfig {
     // (max_requests, window_secs): e.g. (5, 60) means 5 invoices per minute per IP per route.
     // None means rate limiting is disabled for this location.
     invoice_rate_limit: Option<(u32, u64)>,
+    auto_detect_payment: bool,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 6] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 7] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -722,6 +801,14 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 6] = [
         name: ngx_string!("l402_invoice_rate_limit"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_invoice_rate_limit_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_auto_detect_payment"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_l402_auto_detect_payment_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -796,6 +883,9 @@ impl Merge for ModuleConfig {
         if self.invoice_rate_limit.is_none() {
             self.invoice_rate_limit = prev.invoice_rate_limit;
         }
+        if prev.auto_detect_payment {
+            self.auto_detect_payment = true;
+        }
         Ok(())
     }
 }
@@ -822,6 +912,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         macaroon_timeout,
         lnurl_addr,
         invoice_rate_limit,
+        auto_detect_payment,
     ) = unsafe {
         // NOTE: `authorization` can be null — not every request carries the header.
         let auth_header = if !r.headers_in.authorization.is_null() {
@@ -871,6 +962,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         let lnurl_addr = conf.lnurl_addr.clone();
         let invoice_rate_limit = conf.invoice_rate_limit;
+        let auto_detect_payment = conf.auto_detect_payment;
 
         (
             auth_header,
@@ -880,6 +972,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             macaroon_timeout,
             lnurl_addr,
             invoice_rate_limit,
+            auto_detect_payment,
         )
     };
 
@@ -917,6 +1010,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         final_amount,
         caveats.clone(),
         final_lnurl_addr.clone(),
+        auto_detect_payment,
     );
 
     // Only set L402 header if result is 402
@@ -1045,6 +1139,7 @@ pub fn l402_access_handler(
     amount_msat: i64,
     caveats: Vec<String>,
     lnurl_addr: Option<String>,
+    auto_detect_payment: bool,
 ) -> isize {
     let module = match unsafe { MODULE.as_ref() } {
         Some(m) => m,
@@ -1101,6 +1196,144 @@ pub fn l402_access_handler(
                 }
             }
         } else {
+            // ── Determine whether the header has a preimage suffix ──────────
+            // Classic:     L402 <macaroon>:<hex-preimage>
+            // Auto-detect: L402 <macaroon>           (no colon / preimage)
+            let token = auth_str.trim().trim_start_matches("L402 ");
+            let has_preimage = token.contains(':');
+
+            // ── Try the auto-detect path first when enabled ─────────────────
+            if auto_detect_payment && !has_preimage {
+                info!("🔍 Auto-detect path: no preimage in header, querying node");
+
+                // 1. Extract payment_hash from macaroon identifier
+                let payment_hash = match extract_payment_hash_from_auth_str(&auth_str) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        warn!("⚠️ Failed to extract payment_hash from macaroon: {}", e);
+                        return 401;
+                    }
+                };
+
+                // 2. Deserialise macaroon for verification later
+                let mac = match utils::get_macaroon_from_string(token.to_string()) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!("⚠️ Failed to deserialise macaroon: {}", e);
+                        return 401;
+                    }
+                };
+
+                // 3. Resolve preimage: Redis cache → node lookup
+                let preimage_bytes: Vec<u8> =
+                    if let Some(cached) = get_cached_settled_preimage(&payment_hash) {
+                        debug!("💾 Using cached settled preimage");
+                        cached
+                    } else {
+                        // Use a lazily initialized static runtime
+                        static AUTODETECT_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+                        let rt = AUTODETECT_RUNTIME.get_or_init(|| {
+                            match tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                Ok(rt) => rt,
+                                Err(e) => {
+                                    eprintln!("FATAL: failed to create autodetect runtime: {}", e);
+                                    std::process::abort();
+                                }
+                            }
+                        });
+
+                        match payment_detector::PAYMENT_DETECTOR.get() {
+                            Some(detector) => {
+                                match rt.block_on(async {
+                                    detector.lookup_settled_invoice(&payment_hash).await
+                                }) {
+                                    Ok(Some(p)) => {
+                                        // Cache for future requests
+                                        if let Err(e) = cache_settled_preimage(&payment_hash, &p) {
+                                            warn!("⚠️ Failed to cache settled preimage: {}", e);
+                                        }
+                                        p
+                                    }
+                                    Ok(None) => {
+                                        info!("⏳ Invoice not yet settled — returning 402");
+                                        return 402;
+                                    }
+                                    Err(e) => {
+                                        error!("❌ Node invoice lookup failed: {}", e);
+                                        return 500;
+                                    }
+                                }
+                            }
+                            None => {
+                                error!("❌ PAYMENT_DETECTOR not initialised");
+                                return 500;
+                            }
+                        }
+                    };
+
+                // 4. Check replay
+                if is_preimage_used(&preimage_bytes) {
+                    error!("🚨 Replay attack detected: preimage already used");
+                    return 401;
+                }
+
+                // 5. Build verifier (same logic as the classic path)
+                let mut verifier = Verifier::default();
+                verifier.satisfy_general(|predicate| {
+                    let predicate_str = match std::str::from_utf8(&predicate.0) {
+                        Ok(s) => s,
+                        Err(_) => return false,
+                    };
+                    if let Some(secs_str) = predicate_str.strip_prefix("ExpiresAt = ") {
+                        if let Ok(ts) = secs_str.parse::<i64>() {
+                            let current_time = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0);
+                            return current_time <= ts;
+                        }
+                    }
+                    true
+                });
+                for caveat in &caveats {
+                    if !caveat.starts_with("ExpiresAt = ") {
+                        verifier.satisfy_exact(caveat.clone().into());
+                    }
+                }
+
+                // 6. Verify macaroon signature + payment-hash binding
+                if preimage_bytes.len() != 32 {
+                    error!("❌ Preimage from node is not 32 bytes");
+                    return 500;
+                }
+                let mut preimage_arr = [0u8; 32];
+                preimage_arr.copy_from_slice(&preimage_bytes);
+                let preimage = lightning::ln::PaymentPreimage(preimage_arr);
+
+                match l402::verify_l402_with_verifier(
+                    &mac,
+                    &mut verifier,
+                    module.middleware.root_key.clone(),
+                    preimage,
+                ) {
+                    Ok(_) => {
+                        info!("✅ L402 auto-detect verification successful");
+                        if let Err(e) = store_preimage_as_used(&preimage_bytes) {
+                            error!("⚠️ Failed to store preimage in Redis: {}", e);
+                        }
+                        return NGX_DECLINED as isize;
+                    }
+                    Err(e) => {
+                        warn!("⚠️ L402 auto-detect verification failed: {:?}", e);
+                        return 401;
+                    }
+                }
+            }
+
+            // ── Classic path: preimage provided by client ───────────────────
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
                     // Check for replay attack - has this preimage been used before?
@@ -1187,6 +1420,8 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
 
     info!("🚀 Starting L402 module initialization");
     ngx_log_error!(NGX_LOG_INFO, log, "Starting module initialization");
+
+    payment_detector::init_payment_detector();
 
     // Check if Cashu eCash support is enabled
     let cashu_ecash_support_var =
@@ -1635,6 +1870,33 @@ pub unsafe extern "C" fn ngx_http_l402_invoice_rate_limit_set(
                 error!("Invalid l402_invoice_rate_limit value: '{}'", val);
                 return b"l402_invoice_rate_limit: expected e.g. '5r/m', '10r/h', '2r/s', or '5'\0"
                     .as_ptr() as *mut c_char;
+            }
+        }
+    }
+    std::ptr::null_mut()
+}
+pub unsafe extern "C" fn ngx_http_l402_auto_detect_payment_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args = (*(*cf).args).elts as *mut ngx_str_t;
+        let val = (*args.add(1)).to_str().trim().to_lowercase();
+
+        match val.as_str() {
+            "on" | "true" | "1" | "yes" => {
+                conf.auto_detect_payment = true;
+                info!("⚙️ Enabled L402 auto-detect payment for this location");
+            }
+            "off" | "false" | "0" | "no" => {
+                conf.auto_detect_payment = false;
+                info!("⚙️ Disabled L402 auto-detect payment for this location");
+            }
+            _ => {
+                error!("❌ Invalid auto_detect_payment configuration value: {}", val);
+                return std::ptr::null_mut();
             }
         }
     }
