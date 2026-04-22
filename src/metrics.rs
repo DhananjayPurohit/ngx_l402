@@ -74,7 +74,7 @@ pub fn add(c: &AtomicU64, n: u64) {
 
 /// Render all counters in Prometheus text exposition format (version 0.0.4).
 pub fn render() -> String {
-    const ENTRIES: &[(&str, &str, &AtomicU64)] = &[
+    static ENTRIES: &[(&str, &str, &AtomicU64)] = &[
         (
             "l402_requests_total",
             "Total L402-protected requests seen by the access handler.",
