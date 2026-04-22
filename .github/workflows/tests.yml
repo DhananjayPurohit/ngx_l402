@@ -176,6 +176,85 @@ jobs:
 
           echo "✅ Multi-tenant LNURL Lightning integration tests completed!"
 
+      - name: Run Integration Tests - Dry-Run (Shadow) Mode & Metrics
+        run: |
+          echo "Testing l402_dry_run shadow mode and l402_metrics endpoint..."
+
+          # Shadow mode must always pass through — same request that returns
+          # 402 on /protected must return 200 on /shadow.
+          echo "Request to /shadow without Authorization (expect 200, no 402)..."
+          shadow_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/shadow)
+          shadow_code=$(echo "$shadow_resp" | tail -n1)
+          if [ "$shadow_code" -ne 200 ]; then
+            echo "FAIL: /shadow returned $shadow_code, expected 200 (dry-run must not block)"
+            echo "$shadow_resp"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+          echo "PASS: /shadow returned 200"
+
+          if ! echo "$shadow_resp" | grep -qi "^X-L402-Dry-Run: 1"; then
+            echo "FAIL: X-L402-Dry-Run header missing from /shadow response"
+            echo "$shadow_resp"
+            exit 1
+          fi
+          echo "PASS: X-L402-Dry-Run: 1 header present"
+
+          if ! echo "$shadow_resp" | grep -qi "^X-L402-Dry-Run-Price-Msat: 10000"; then
+            echo "FAIL: X-L402-Dry-Run-Price-Msat header missing/incorrect"
+            echo "$shadow_resp"
+            exit 1
+          fi
+          echo "PASS: X-L402-Dry-Run-Price-Msat: 10000 present"
+
+          # Challenge synthesis may legitimately fail if the LN backend is
+          # flaky — we count it but don't fail the request. Just log whether
+          # a challenge header came back for visibility.
+          if echo "$shadow_resp" | grep -qi "^X-L402-Dry-Run-Challenge:"; then
+            echo "INFO: X-L402-Dry-Run-Challenge header present (LN backend reachable)"
+          else
+            echo "INFO: X-L402-Dry-Run-Challenge absent (LN backend may be unreachable — non-fatal)"
+          fi
+
+          # Metrics endpoint — must serve text/plain Prometheus exposition.
+          echo "Scraping /metrics endpoint..."
+          metrics_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/metrics)
+          metrics_code=$(echo "$metrics_resp" | tail -n1)
+          if [ "$metrics_code" -ne 200 ]; then
+            echo "FAIL: /metrics returned $metrics_code, expected 200"
+            echo "$metrics_resp"
+            docker logs nginx-lnurl
+            exit 1
+          fi
+          echo "PASS: /metrics returned 200"
+
+          if ! echo "$metrics_resp" | grep -qi "^Content-Type: text/plain"; then
+            echo "FAIL: /metrics Content-Type is not text/plain"
+            echo "$metrics_resp"
+            exit 1
+          fi
+          echo "PASS: Content-Type is text/plain"
+
+          for counter in l402_requests_total l402_dry_run_requests_total l402_dry_run_would_block_total; do
+            if ! echo "$metrics_resp" | grep -q "^${counter} "; then
+              echo "FAIL: expected counter ${counter} missing from /metrics body"
+              echo "$metrics_resp"
+              exit 1
+            fi
+            echo "PASS: counter ${counter} exposed"
+          done
+
+          # After the /shadow hit above, dry_run_requests_total must be >= 1.
+          dry_run_total=$(echo "$metrics_resp" | awk '/^l402_dry_run_requests_total / {print $2}')
+          if [ -z "$dry_run_total" ] || [ "$dry_run_total" -lt 1 ]; then
+            echo "FAIL: l402_dry_run_requests_total=$dry_run_total, expected >= 1"
+            echo "$metrics_resp"
+            exit 1
+          fi
+          echo "PASS: l402_dry_run_requests_total=$dry_run_total"
+
+          echo "✅ Dry-run shadow mode & metrics integration tests completed!"
+
       - name: Run Integration Tests - gRPC
         run: |
           docker logs grpc-content-server

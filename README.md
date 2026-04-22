@@ -19,6 +19,7 @@ For local contributor setup on macOS (Docker nginx recommended), see `docs/macos
 - [Configuration & Environment Variables](https://dhananjaypurohit.github.io/ngx_l402/config-env-vars.html)
 - [Cashu eCash Support](https://dhananjaypurohit.github.io/ngx_l402/cashu.html)
 - [Multi-Tenant](https://dhananjaypurohit.github.io/ngx_l402/config-multi-tenant.html)
+- [Dry-Run (Shadow) Mode](https://dhananjaypurohit.github.io/ngx_l402/dry-run.html)
 - [Building from Source](https://dhananjaypurohit.github.io/ngx_l402/building.html)
 
 ---
