@@ -53,6 +53,12 @@ For every request reaching a shadow-mode location, the module:
 > unauthenticated request. If you have high traffic, start by enabling
 > shadow mode on a sampled location (e.g. a canary route) before rolling
 > it out everywhere.
+>
+> **Latency cap**: the challenge-synthesis call is bounded by a 5-second
+> timeout. If the LN backend does not respond within that window the
+> request still passes through (with no `X-L402-Dry-Run-Challenge`
+> header) and `l402_dry_run_challenge_errors_total` is incremented —
+> shadow mode must never add latency to user-facing traffic.
 
 ---
 
