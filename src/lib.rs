@@ -8,7 +8,7 @@ use ngx::ffi::{
     nginx_version, ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle_s, ngx_http_core_module,
     ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
     ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
-    NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO,
+    NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MAIN_CONF, NGX_HTTP_SRV_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO,
     NGX_LOG_WARN, NGX_OK,
     NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
 };
@@ -807,7 +807,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 7] = [
     },
     ngx_command_t {
         name: ngx_string!("l402_auto_detect_payment"),
-        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: (NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_auto_detect_payment_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
