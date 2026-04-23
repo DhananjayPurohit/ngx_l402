@@ -833,6 +833,38 @@ jobs:
             exit 1
           fi
 
+      - name: Run Integration Tests - CLN Autodetect
+        run: |
+          echo "Testing CLN Autodetect Payment..."
+          docker-compose -f docker-compose.yml up -d nginx-cln
+          sleep 10
+          docker exec nginx-cln chmod 777 /root /root/.lightning /root/.lightning/regtest
+
+          # Get invoice from CLN
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found"
+            exit 1
+          fi
+
+          echo "Paying invoice with LND..."
+          docker exec lndnode lncli -n regtest payinvoice -f $invoice
+          sleep 5
+          
+          echo "Testing protected route with ONLY macaroon (expecting autodetect)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: CLN Autodetect failed with status $status_code, expected 200"
+            docker logs nginx-cln
+            exit 1
+          fi
+          echo "✅ CLN Autodetect successful!"
+          docker-compose -f docker-compose.yml stop nginx-cln
+
       - name: Stop NWC service and CLN node
         run: |
           docker-compose -f docker-compose.yml stop nginx-nwc cln
@@ -994,6 +1026,26 @@ jobs:
             docker logs nginx-lnd
             exit 1
           fi
+
+          # Test LND Autodetect Payment
+          echo "Testing LND Autodetect Payment..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          
+          echo "Paying invoice with lndnode-receiver..."
+          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 payinvoice -f $invoice
+          sleep 5
+          
+          echo "Testing protected route with ONLY macaroon (expecting autodetect)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: LND Autodetect failed with status $status_code, expected 200"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "✅ LND Autodetect successful!"
 
           # Test Cashu eCash support
           echo "Testing Cashu eCash support..."
@@ -1815,6 +1867,31 @@ jobs:
             echo "Invoice: $invoice"
             exit 1
           fi
+
+          # Test Eclair Autodetect
+          echo "Setting up Eclair channel for autodetect test..."
+          ECLAIR_NODE_ID=$(curl -s -u :password -X POST http://localhost:8080/getinfo | jq -r .nodeId)
+          echo "Eclair Node ID: $ECLAIR_NODE_ID"
+          
+          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9735 || true
+          docker exec lndnode lncli -n regtest openchannel ${ECLAIR_NODE_ID} 1000000 || true
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet generatetoaddress 6 $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet getnewaddress)
+          sleep 10
+          
+          echo "Paying Eclair invoice with LND..."
+          docker exec lndnode lncli -n regtest payinvoice -f $invoice
+          sleep 5
+          
+          macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          echo "Testing Eclair Autodetect (macaroon only)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Eclair Autodetect failed with status $status_code"
+            docker logs nginx-eclair
+            exit 1
+          fi
+          echo "✅ Eclair Autodetect successful!"
 
           echo "✅ Eclair invoice generation test completed successfully!"
 
