@@ -833,6 +833,9 @@ jobs:
             exit 1
           fi
 
+      - name: Stop nginx-nwc
+        run: docker-compose -f docker-compose.yml stop nginx-nwc
+
       - name: Run Integration Tests - CLN Autodetect
         run: |
           echo "Testing CLN Autodetect Payment..."
