@@ -844,7 +844,7 @@ jobs:
           docker exec nginx-cln chmod 777 /root /root/.lightning /root/.lightning/regtest
 
           # Get invoice from CLN
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
           invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
           macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
           
@@ -858,7 +858,7 @@ jobs:
           sleep 5
           
           echo "Testing protected route with ONLY macaroon (expecting autodetect)..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected-auto)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: CLN Autodetect failed with status $status_code, expected 200"
@@ -1032,7 +1032,7 @@ jobs:
 
           # Test LND Autodetect Payment
           echo "Testing LND Autodetect Payment..."
-          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
           invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
           macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
           
@@ -1041,7 +1041,7 @@ jobs:
           sleep 5
           
           echo "Testing protected route with ONLY macaroon (expecting autodetect)..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected-auto)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: LND Autodetect failed with status $status_code, expected 200"
@@ -1881,13 +1881,17 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet generatetoaddress 6 $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet getnewaddress)
           sleep 10
           
+          echo "Getting new invoice for Eclair Autodetect..."
+          response_auto=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
+          invoice_auto=$(echo "$response_auto" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          macaroon_auto=$(echo "$response_auto" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+
           echo "Paying Eclair invoice with LND..."
-          docker exec lndnode lncli -n regtest payinvoice -f $invoice
+          docker exec lndnode lncli -n regtest payinvoice -f $invoice_auto
           sleep 5
           
-          macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
           echo "Testing Eclair Autodetect (macaroon only)..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected)
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon_auto" http://0.0.0.0:8000/protected-auto)
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Eclair Autodetect failed with status $status_code"
