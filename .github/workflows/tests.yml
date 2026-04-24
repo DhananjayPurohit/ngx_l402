@@ -877,8 +877,14 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
+          # Make LND macaroon and cert readable by nginx user
+          docker exec lndnode-receiver chmod a+rx /root /root/.lnd /root/.lnd/data /root/.lnd/data/chain /root/.lnd/data/chain/bitcoin /root/.lnd/data/chain/bitcoin/regtest
+          docker exec lndnode-receiver chmod a+r /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon /root/.lnd/tls.cert
+          
           # Start the remaining services
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd redis
+          sleep 5
+          docker exec nginx-lnd chmod 755 /root
 
       - name: Run Integration Tests - LND
         run: |
