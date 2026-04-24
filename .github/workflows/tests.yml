@@ -1036,8 +1036,8 @@ jobs:
           invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
           macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
           
-          echo "Paying invoice with lndnode-receiver..."
-          docker exec lndnode-receiver lncli --network=regtest --rpcserver=127.0.0.1:10010 payinvoice -f $invoice
+          echo "Paying invoice with lndnode..."
+          docker exec lndnode lncli -n regtest payinvoice -f $invoice
           sleep 5
           
           echo "Testing protected route with ONLY macaroon (expecting autodetect)..."
