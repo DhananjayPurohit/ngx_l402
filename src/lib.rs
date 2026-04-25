@@ -292,8 +292,6 @@ pub fn extract_payment_hash_from_auth_str(auth_str: &str) -> Result<Vec<u8>, Str
         .map_err(|e| format!("Failed to deserialize macaroon: {}", e))?;
 
     // The identifier holds the raw payment-hash bytes (usually 32 bytes).
-    // In l402_middleware >= 2.2.1, verification correctly handles the leading 0xff 
-    // version byte often found in LND macaroons.
     // We extract the raw hash here for the node lookup by stripping the leading 
     // 0xff sentinel if the identifier length is 33 bytes.
     let id_bytes = mac.identifier().0.clone();

@@ -1879,10 +1879,10 @@ jobs:
 
           # Test Eclair Autodetect
           echo "Setting up Eclair channel for autodetect test..."
-          ECLAIR_NODE_ID=$(curl -s -u :password -X POST http://localhost:8080/getinfo | jq -r .nodeId)
+          ECLAIR_NODE_ID=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo | jq -r .nodeId)
           echo "Eclair Node ID: $ECLAIR_NODE_ID"
           
-          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9735 || true
+          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
           docker exec lndnode lncli -n regtest openchannel ${ECLAIR_NODE_ID} 1000000 || true
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet generatetoaddress 6 $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet getnewaddress)
           sleep 10
