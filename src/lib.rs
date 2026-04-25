@@ -291,27 +291,35 @@ pub fn extract_payment_hash_from_auth_str(auth_str: &str) -> Result<Vec<u8>, Str
     let mac = utils::get_macaroon_from_string(macaroon_b64.to_string())
         .map_err(|e| format!("Failed to deserialize macaroon: {}", e))?;
 
-    // The identifier holds the raw payment-hash bytes (32 bytes).
-    // verify_l402 does: hex::encode(macaroon_id.0).replace("ff", "")
-    // and checks that payment_hash_hex is contained in that string.
-    // We need the raw bytes for the node lookup; we strip leading 0xff
-    // sentinel bytes the same way the verifier does.
+    // The identifier holds the raw payment-hash bytes (usually 32 bytes).
+    // In l402_middleware >= 2.2.1, verification correctly handles the leading 0xff 
+    // version byte often found in LND macaroons.
+    // We extract the raw hash here for the node lookup by stripping the leading 
+    // 0xff sentinel if the identifier length is 33 bytes.
     let id_bytes = mac.identifier().0.clone();
 
-    // The identifier may have a leading 0xff version byte in some
-    // serialisation formats.  Drop any leading 0xff bytes.
-    let hash_bytes: Vec<u8> = id_bytes
-        .iter()
-        .copied()
-        .skip_while(|&b| b == 0xff)
-        .collect();
-
-    if hash_bytes.len() != 32 {
-        return Err(format!(
-            "Unexpected identifier length after stripping sentinel: {} bytes (expected 32)",
-            hash_bytes.len()
-        ));
-    }
+    let hash_bytes: Vec<u8> = if id_bytes.len() == 33 && id_bytes[0] == 0xff {
+        // Drop the 0xff version byte to get the 32-byte hash
+        id_bytes[1..].to_vec()
+    } else if id_bytes.len() == 32 {
+        id_bytes.clone()
+    } else {
+        // Fallback for unexpected lengths: skip leading 0xff until we find 32 bytes
+        let stripped: Vec<u8> = id_bytes
+            .iter()
+            .copied()
+            .skip_while(|&b| b == 0xff)
+            .collect();
+        
+        if stripped.len() == 32 {
+            stripped
+        } else {
+            return Err(format!(
+                "Unexpected identifier length: {} bytes (expected 32 after stripping 0xff)",
+                stripped.len()
+            ));
+        }
+    };
 
     Ok(hash_bytes)
 }
