@@ -1887,6 +1887,8 @@ jobs:
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet generatetoaddress 6 $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet getnewaddress)
           echo "Waiting for channel to become active..."
           for i in {1..30}; do
+            # Explicitly try to connect in case the connection was dropped
+            docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
             if docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} | grep -q "\"active\": true"; then
               echo "✅ Channel is active!"
               break
@@ -1895,7 +1897,10 @@ jobs:
             sleep 2
             if [ $i -eq 30 ]; then
               echo "Error: Channel did not become active in time"
+              echo "Channels status:"
               docker exec lndnode lncli -n regtest listchannels
+              echo "Peers status:"
+              docker exec lndnode lncli -n regtest listpeers
               exit 1
             fi
           done
