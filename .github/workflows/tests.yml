@@ -1816,7 +1816,18 @@ jobs:
         run: |
           echo "Starting nginx-eclair with Eclair configuration..."
           docker-compose -f docker-compose.yml up -d nginx-eclair
-          sleep 15 # Give Eclair time to start up and generate keys
+          
+          echo "Waiting for Eclair to be ready and synced..."
+          for i in {1..30}; do
+            ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo | jq -r .blockHeight 2>/dev/null || echo "0")
+            BITCOIND_HEIGHT=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount 2>/dev/null || echo "0")
+            echo "Eclair height: $ECLAIR_HEIGHT, Bitcoind height: $BITCOIND_HEIGHT"
+            if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_HEIGHT" ] && [ "$ECLAIR_HEIGHT" -gt 0 ]; then
+              echo "✅ Eclair is synced!"
+              break
+            fi
+            sleep 2
+          done
 
       - name: Run Integration Tests - Eclair
         run: |
@@ -1886,21 +1897,33 @@ jobs:
           docker exec lndnode lncli -n regtest openchannel ${ECLAIR_NODE_ID} 1000000 || true
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet generatetoaddress 6 $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet getnewaddress)
           echo "Waiting for channel to become active..."
-          for i in {1..30}; do
-            # Explicitly try to connect in case the connection was dropped
-            docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+          for i in {1..60}; do
+            # Only attempt to connect if not already connected to avoid RPC errors
+            if ! docker exec lndnode lncli -n regtest listpeers | grep -q "${ECLAIR_NODE_ID}"; then
+              docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+            fi
+            
             if docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} | grep -q "\"active\": true"; then
               echo "✅ Channel is active!"
               break
             fi
-            echo "Waiting for channel activation... ($i/30)"
+            
+            # Mine a nudge block every 10 attempts if not active
+            if [ $((i % 10)) -eq 0 ]; then
+              echo "Nudging bitcoind to trigger channel activation..."
+              docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet generatetoaddress 1 $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet getnewaddress) > /dev/null
+            fi
+            
+            echo "Waiting for channel activation... ($i/60)"
             sleep 2
-            if [ $i -eq 30 ]; then
+            if [ $i -eq 60 ]; then
               echo "Error: Channel did not become active in time"
               echo "Channels status:"
               docker exec lndnode lncli -n regtest listchannels
               echo "Peers status:"
               docker exec lndnode lncli -n regtest listpeers
+              echo "Eclair info:"
+              curl -s -u :eclairpass -X POST http://localhost:8282/getinfo
               exit 1
             fi
           done
