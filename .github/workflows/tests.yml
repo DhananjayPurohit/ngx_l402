@@ -1885,7 +1885,20 @@ jobs:
           docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
           docker exec lndnode lncli -n regtest openchannel ${ECLAIR_NODE_ID} 1000000 || true
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet generatetoaddress 6 $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=my_wallet getnewaddress)
-          sleep 10
+          echo "Waiting for channel to become active..."
+          for i in {1..30}; do
+            if docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} | grep -q "\"active\": true"; then
+              echo "✅ Channel is active!"
+              break
+            fi
+            echo "Waiting for channel activation... ($i/30)"
+            sleep 2
+            if [ $i -eq 30 ]; then
+              echo "Error: Channel did not become active in time"
+              docker exec lndnode lncli -n regtest listchannels
+              exit 1
+            fi
+          done
           
           echo "Getting new invoice for Eclair Autodetect..."
           response_auto=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
