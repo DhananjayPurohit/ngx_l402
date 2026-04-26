@@ -9,8 +9,7 @@ use ngx::ffi::{
     ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
     ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
     NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO,
-    NGX_LOG_WARN, NGX_OK,
-    NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
+    NGX_LOG_WARN, NGX_OK, NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
 };
 use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConfigError, Request};
 use ngx::{ngx_log_error, ngx_null_command, ngx_string};
@@ -149,39 +148,6 @@ pub async fn get_or_create_lnurl_client(
     }
 }
 
-/// Check if a preimage has been used before (replay attack prevention).
-/// Returns true if preimage is already used, false if it's new.
-/// Fails open (returns false) if Redis is unavailable.
-fn is_preimage_used(preimage: &[u8]) -> bool {
-    let Some(pool) = REDIS_POOL.get() else {
-        warn!("⚠️ Redis not configured - preimage replay protection disabled");
-        return false;
-    };
-
-    let mut conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => {
-            error!("❌ Failed to get Redis connection for preimage check: {}", e);
-            return false; // fail-open
-        }
-    };
-
-    let redis_key = preimage_redis_key(preimage);
-
-    match conn.exists::<_, bool>(&redis_key) {
-        Ok(exists) => {
-            if exists {
-                warn!("⚠️ Preimage replay attack detected");
-            }
-            exists
-        }
-        Err(e) => {
-            error!("❌ Failed to check preimage in Redis: {}", e);
-            false // fail-open
-        }
-    }
-}
-
 /// Atomically store a preimage as used via SET NX EX (single round-trip).
 /// Returns Ok(true) if stored successfully (first use), Ok(false) if already existed (race with another worker).
 /// Called ONLY after successful verification to avoid burning preimages on transient failures.
@@ -235,7 +201,10 @@ pub fn is_cashu_token_used(token: &str) -> bool {
     let mut conn = match pool.get() {
         Ok(c) => c,
         Err(e) => {
-            error!("❌ Failed to get Redis connection for Cashu token check: {}", e);
+            error!(
+                "❌ Failed to get Redis connection for Cashu token check: {}",
+                e
+            );
             return false; // fail-open
         }
     };
@@ -315,21 +284,19 @@ impl L402Module {
                 .unwrap_or(default_pool_size);
 
             match RedisClient::open(redis_url.clone()) {
-                Ok(manager) => {
-                    match Pool::builder().max_size(pool_size).build(manager) {
-                        Ok(pool) => {
-                            if REDIS_POOL.set(pool).is_ok() {
-                                info!(
-                                    "✅ Redis connection pool ready (max_size={}) at {}",
-                                    pool_size, redis_url
-                                );
-                            } else {
-                                error!("❌ Failed to register Redis pool in OnceLock");
-                            }
+                Ok(manager) => match Pool::builder().max_size(pool_size).build(manager) {
+                    Ok(pool) => {
+                        if REDIS_POOL.set(pool).is_ok() {
+                            info!(
+                                "✅ Redis connection pool ready (max_size={}) at {}",
+                                pool_size, redis_url
+                            );
+                        } else {
+                            error!("❌ Failed to register Redis pool in OnceLock");
                         }
-                        Err(e) => error!("❌ Failed to build Redis connection pool: {}", e),
                     }
-                }
+                    Err(e) => error!("❌ Failed to build Redis connection pool: {}", e),
+                },
                 Err(e) => error!("❌ Failed to create Redis client: {}", e),
             }
         } else {
@@ -682,28 +649,25 @@ impl L402Module {
         }
     }
 
-    pub fn get_dynamic_price(&self, path: &str) -> i64 {
-        if let Some(pool) = REDIS_POOL.get() {
-            if let Ok(mut conn) = pool.get() {
-                // Try to get price from Redis using the path as key
-                let price: Option<i64> = conn.get(path).unwrap_or(None);
-                return price.unwrap_or(0);
-            }
+    /// Fetch per-path price (`<path>` key) and LNURL override (`lnurl:<path>` key)
+    /// in a single Redis pipeline. Two GETs become one round-trip.
+    /// Returns `(0, None)` if Redis is unavailable or the keys are missing.
+    pub fn get_dynamic_config(&self, path: &str) -> (i64, Option<String>) {
+        let Some(pool) = REDIS_POOL.get() else {
+            return (0, None);
+        };
+        let Ok(mut conn) = pool.get() else {
+            return (0, None);
+        };
+        let lnurl_key = format!("lnurl:{}", path);
+        match redis::pipe()
+            .get(path)
+            .get(&lnurl_key)
+            .query::<(Option<i64>, Option<String>)>(&mut *conn)
+        {
+            Ok((price, lnurl)) => (price.unwrap_or(0), lnurl),
+            Err(_) => (0, None),
         }
-
-        0 // Return 0 if Redis is not configured or connection fails
-    }
-
-    pub fn get_dynamic_lnurl(&self, path: &str) -> Option<String> {
-        if let Some(pool) = REDIS_POOL.get() {
-            if let Ok(mut conn) = pool.get() {
-                // Try to get lnurl from Redis using the path as key with "lnurl:" prefix
-                let key = format!("lnurl:{}", path);
-                let lnurl: Option<String> = conn.get(key).unwrap_or(None);
-                return lnurl;
-            }
-        }
-        None // Return None if Redis is not configured or connection fails
     }
 }
 
@@ -870,15 +834,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     let log_ref = log as *mut ngx_log_s;
 
     // Check if L402 is enabled for this location
-    let (
-        auth_header,
-        uri,
-        method,
-        amount_msat,
-        macaroon_timeout,
-        lnurl_addr,
-        invoice_rate_limit,
-    ) = unsafe {
+    let (auth_header, uri, method, amount_msat, macaroon_timeout, lnurl_addr, invoice_rate_limit) = unsafe {
         // NOTE: `authorization` can be null — not every request carries the header.
         let auth_header = if !r.headers_in.authorization.is_null() {
             // SAFETY: `authorization` checked non-null; Nginx guarantees
@@ -955,25 +911,34 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         }
     };
 
-    // Fetch dynamic config from Redis — needed for correct Cashu amount verification
-    // and multi-tenant LNURL proof mapping. These are fast Redis GETs (~0.3ms each).
-    let redis_start = Instant::now();
-    let dynamic_amount = module.get_dynamic_price(&request_path);
-    let final_amount = if dynamic_amount > 0 {
-        dynamic_amount
-    } else {
-        amount_msat
+    // Fetch dynamic config (price + lnurl) from Redis only when it can affect the
+    // outcome: the Cashu auth path needs the per-path amount + lnurl for verification,
+    // and the no-auth path needs them for the 402 challenge. The L402 macaroon path
+    // uses neither, so we skip the Redis round-trip entirely for it.
+    let needs_dynamic_config = match auth_header.as_deref() {
+        Some(s) => s.starts_with("Cashu "),
+        None => true,
     };
-    let dynamic_lnurl = module.get_dynamic_lnurl(&request_path);
-    let final_lnurl_addr = dynamic_lnurl.or(lnurl_addr);
 
-    if perf_log_enabled() {
-        debug!(
-            "perf: stage=redis_dynamic_config duration_us={} path={}",
-            redis_start.elapsed().as_micros(),
-            request_path
-        );
-    }
+    let (final_amount, final_lnurl_addr) = if needs_dynamic_config {
+        let redis_start = Instant::now();
+        let (dynamic_amount, dynamic_lnurl) = module.get_dynamic_config(&request_path);
+        if perf_log_enabled() {
+            debug!(
+                "perf: stage=redis_dynamic_config duration_us={} path={}",
+                redis_start.elapsed().as_micros(),
+                request_path
+            );
+        }
+        let amount = if dynamic_amount > 0 {
+            dynamic_amount
+        } else {
+            amount_msat
+        };
+        (amount, dynamic_lnurl.or(lnurl_addr))
+    } else {
+        (amount_msat, lnurl_addr)
+    };
 
     let auth_start = Instant::now();
     let result = l402_access_handler(
@@ -981,7 +946,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         uri,
         method,
         final_amount,
-        caveats.clone(),
+        caveats,
         final_lnurl_addr.clone(),
     );
     let auth_duration = auth_start.elapsed();
@@ -1070,10 +1035,13 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         // Always send L402 header as well (for Lightning payments)
         // Pass lnurl_addr for per-location LNURL-based invoice generation
         let invoice_start = Instant::now();
+        // Caveats were consumed by the access handler above; rebuild on the 402
+        // path only — saves a Vec<String> clone on the auth-pass hot path.
+        let challenge_caveats = vec![format!("RequestPath = {}", request_path)];
         let header_result = rt.block_on(async {
             module
                 .get_l402_header(
-                    caveats.clone(),
+                    challenge_caveats,
                     final_amount,
                     macaroon_timeout,
                     final_lnurl_addr.clone(),
@@ -1170,11 +1138,10 @@ pub fn l402_access_handler(
         } else {
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
-                    // Check for replay attack — has this preimage been used before?
-                    if is_preimage_used(&preimage.0) {
-                        error!("🚨 Replay attack detected: preimage already used");
-                        return 401;
-                    }
+                    // Replay protection happens AFTER macaroon verification:
+                    // an unverified preimage is attacker-controlled, so checking
+                    // it first would let unauthenticated callers amplify Redis
+                    // load. The atomic SET NX EX below is the only admission gate.
 
                     // Check expiry using verifier
                     let mut verifier = Verifier::default();
@@ -1213,12 +1180,22 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
-                            // Store preimage AFTER successful verification via atomic SET NX EX
-                            if let Err(e) = store_preimage_as_used(&preimage.0) {
-                                error!("⚠️ Failed to store preimage in Redis: {}", e);
-                                // Continue — verification was successful
+                            // Atomic claim: SET NX EX returns Some on first use,
+                            // None if a concurrent request already claimed it
+                            // (genuine replay race across workers).
+                            match store_preimage_as_used(&preimage.0) {
+                                Ok(true) => return NGX_DECLINED as isize,
+                                Ok(false) => {
+                                    warn!("🚨 Replay attack detected: preimage already claimed");
+                                    return 401;
+                                }
+                                Err(e) => {
+                                    // Fail-open on Redis outage matches the
+                                    // existing policy for other Redis paths.
+                                    warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                                    return NGX_DECLINED as isize;
+                                }
                             }
-                            return NGX_DECLINED as isize;
                         }
                         Err(e) => {
                             warn!("⚠️ L402 verification failed: {:?}", e);

@@ -46,6 +46,41 @@ static GENERATED_WALLET_SECRET: OnceLock<String> = OnceLock::new();
 // Eliminates per-request blake3 hashing.
 static CACHED_WALLET_SEED: OnceLock<[u8; 64]> = OnceLock::new();
 
+// Per-(mint_url, unit) wallet cache. `cdk::wallet::Wallet` constructs internal state
+// and an HTTP client; reusing instances also keeps the in-memory keysets cache hot
+// across requests. Construction is amortized to once per (mint, unit) per worker.
+type WalletCache =
+    tokio::sync::RwLock<HashMap<(String, cdk::nuts::CurrencyUnit), Arc<cdk::wallet::Wallet>>>;
+static WALLET_CACHE: OnceLock<WalletCache> = OnceLock::new();
+
+async fn get_or_create_wallet(
+    mint_url: &str,
+    unit: cdk::nuts::CurrencyUnit,
+) -> Result<Arc<cdk::wallet::Wallet>, String> {
+    let cache = WALLET_CACHE.get_or_init(|| tokio::sync::RwLock::new(HashMap::new()));
+    let key = (mint_url.to_string(), unit.clone());
+
+    {
+        let guard = cache.read().await;
+        if let Some(w) = guard.get(&key) {
+            return Ok(w.clone());
+        }
+    }
+
+    let db = CASHU_DB
+        .get()
+        .ok_or_else(|| "Cashu database not initialized".to_string())?
+        .clone();
+    let seed = get_cached_seed();
+    let wallet = Arc::new(
+        cdk::wallet::Wallet::new(mint_url, unit.clone(), db, seed, None)
+            .map_err(|e| format!("Failed to create wallet: {}", e))?,
+    );
+
+    let mut guard = cache.write().await;
+    Ok(guard.entry(key).or_insert(wallet).clone())
+}
+
 /// Maximum number of entries in the thread-local PROCESSED_TOKENS cache.
 /// When exceeded, the set is cleared. Redis remains the authoritative replay check.
 const MAX_PROCESSED_TOKENS: usize = 10_000;
@@ -78,7 +113,10 @@ fn cache_processed_token(token: &str) {
     PROCESSED_TOKENS.with(|tokens| {
         if let Some(set) = tokens.borrow_mut().as_mut() {
             if set.len() >= MAX_PROCESSED_TOKENS {
-                debug!("🔄 PROCESSED_TOKENS cache at capacity ({}), clearing", MAX_PROCESSED_TOKENS);
+                debug!(
+                    "🔄 PROCESSED_TOKENS cache at capacity ({}), clearing",
+                    MAX_PROCESSED_TOKENS
+                );
                 set.clear();
             }
             set.insert(token.to_string());
@@ -215,17 +253,15 @@ pub async fn restore_wallets_state() {
         info!("🔄 Restoring wallet state for mint: {}", mint_url);
         // We restore for the Sat unit primarily (or Msat as well)
         let unit = cdk::nuts::CurrencyUnit::Sat;
-        
+
         match cdk::wallet::Wallet::new(mint_url, unit, db.clone(), seed, None) {
-            Ok(wallet) => {
-                match wallet.restore().await {
-                    Ok(amount) => {
-                        let amount_val: u64 = amount.into();
-                        info!("✅ Restored {} sats state from {}", amount_val, mint_url);
-                    }
-                    Err(e) => warn!("⚠️ Failed to restore {}: {}", mint_url, e),
+            Ok(wallet) => match wallet.restore().await {
+                Ok(amount) => {
+                    let amount_val: u64 = amount.into();
+                    info!("✅ Restored {} sats state from {}", amount_val, mint_url);
                 }
-            }
+                Err(e) => warn!("⚠️ Failed to restore {}: {}", mint_url, e),
+            },
             Err(e) => warn!("⚠️ Failed to create wallet for restore {}: {}", mint_url, e),
         }
     }
@@ -246,9 +282,7 @@ pub fn get_whitelisted_mints() -> Option<&'static HashSet<String>> {
 }
 
 fn get_lnurl_from_proof(proof: &cdk::nuts::Proof) -> Result<Option<String>, String> {
-    let pool = REDIS_POOL
-        .get()
-        .ok_or("Redis pool is not initialised")?;
+    let pool = REDIS_POOL.get().ok_or("Redis pool is not initialised")?;
 
     let mut conn = pool
         .get()
@@ -274,9 +308,7 @@ fn set_proof_to_lnurl(
     proofs: cdk::nuts::Proofs,
     lnurl_route: Option<String>,
 ) -> Result<(), String> {
-    let pool = REDIS_POOL
-        .get()
-        .ok_or("Redis pool is not initialised")?;
+    let pool = REDIS_POOL.get().ok_or("Redis pool is not initialised")?;
 
     let lnurl = lnurl_route.unwrap_or_else(|| std::env::var("LNURL_ADDRESS").unwrap_or_default());
 
@@ -306,9 +338,7 @@ fn set_proof_to_lnurl(
 
 /// Remove proof-to-lnurl mappings from Redis after proofs have been melted
 fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String> {
-    let pool = REDIS_POOL
-        .get()
-        .ok_or("Redis pool is not initialised")?;
+    let pool = REDIS_POOL.get().ok_or("Redis pool is not initialised")?;
 
     let mut conn = pool
         .get()
@@ -332,7 +362,9 @@ fn remove_proof_lnurl_mappings(proofs: &cdk::nuts::Proofs) -> Result<(), String>
 }
 
 /// Group proofs by their associated lnurl address for multi-tenant redemption
-fn group_proofs_by_lnurl(proofs: cdk::nuts::Proofs) -> Result<HashMap<String, cdk::nuts::Proofs>, String> {
+fn group_proofs_by_lnurl(
+    proofs: cdk::nuts::Proofs,
+) -> Result<HashMap<String, cdk::nuts::Proofs>, String> {
     let mut grouped: HashMap<String, cdk::nuts::Proofs> = HashMap::new();
     let default_lnurl = std::env::var("LNURL_ADDRESS")
         .map_err(|_| "LNURL_ADDRESS is required for multi-tenant mode".to_string())?;
@@ -543,19 +575,9 @@ pub async fn verify_cashu_token(
 
     let unit = token_decoded.unit().unwrap();
 
-    // Use the shared database instance
-    let db = CASHU_DB
-        .get()
-        .ok_or_else(|| "Cashu database not initialized".to_string())?
-        .clone();
-
-    // Use cached seed (computed once at startup, avoids per-request blake3 hashing)
-    let seed = get_cached_seed();
-    debug!("🔑 Using cached seed for receiving token from mint {}", mint_url);
-
-    // Create wallet directly for this specific mint (using normalized URL)
-    let wallet = cdk::wallet::Wallet::new(&mint_url, unit, db.clone(), seed, None)
-        .map_err(|e| format!("Failed to create wallet: {}", e))?;
+    // Reuse a cached wallet for this (mint, unit). Avoids per-request construction
+    // and keeps the keysets cache warm.
+    let wallet = get_or_create_wallet(&mint_url, unit).await?;
 
     match wallet
         .receive(token, cdk::wallet::ReceiveOptions::default())
@@ -577,13 +599,24 @@ pub async fn verify_cashu_token(
                 }
             }
 
-            // Store token AFTER successful receive via atomic SET NX EX
-            if let Err(e) = crate::store_cashu_token_as_used(token) {
-                warn!("⚠️ Failed to store Cashu token in Redis: {}", e);
+            // Atomic claim: Ok(true) = first claim (admit), Ok(false) =
+            // concurrent replay detected (reject), Err = Redis outage
+            // (admit, matches fail-open policy elsewhere).
+            match crate::store_cashu_token_as_used(token) {
+                Ok(true) => {
+                    cache_processed_token(token);
+                    Ok(true)
+                }
+                Ok(false) => {
+                    warn!("🚨 Concurrent Cashu replay detected: token already claimed");
+                    Ok(false)
+                }
+                Err(e) => {
+                    warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
+                    cache_processed_token(token);
+                    Ok(true)
+                }
             }
-            // Add to thread-local memory cache for fast-path on repeat lookups.
-            cache_processed_token(token);
-            Ok(true)
         }
         Err(e) => {
             error!(
@@ -670,16 +703,16 @@ pub async fn verify_cashu_token_p2pk(
         ));
     }
 
-    info!("✅ Validated: {} msat from {}", total_amount_msat, mint_url_str);
-
-    // Setup wallet (using normalized URL so it matches whitelisted mint keys)
-    let db = CASHU_DB.get().ok_or("Database not initialized")?.clone();
+    info!(
+        "✅ Validated: {} msat from {}",
+        total_amount_msat, mint_url_str
+    );
 
     let unit = token_decoded.unit().unwrap();
-    let seed = get_cached_seed();
 
-    let wallet = cdk::wallet::Wallet::new(&mint_url_str, unit.clone(), db, seed, None)
-        .map_err(|e| format!("Failed to create wallet: {}", e))?;
+    // Reuse a cached wallet for this (mint, unit). Same instance used by the
+    // non-P2PK path; keysets cache is shared.
+    let wallet = get_or_create_wallet(&mint_url_str, unit.clone()).await?;
 
     // Get keysets (use cached if available, fetch once if not)
     let keysets_info = match wallet.get_mint_keysets().await {
@@ -766,19 +799,31 @@ pub async fn verify_cashu_token_p2pk(
         }
     }
 
-    // Store token AFTER successful P2PK verification via atomic SET NX EX
-    if let Err(e) = crate::store_cashu_token_as_used(token) {
-        warn!("⚠️ Failed to store Cashu token in Redis: {}", e);
+    // Atomic claim: Ok(true) = first claim (admit), Ok(false) = concurrent
+    // replay detected (reject), Err = Redis outage (admit, fail-open).
+    match crate::store_cashu_token_as_used(token) {
+        Ok(true) => {
+            cache_processed_token(token);
+            info!(
+                "✅ ACCEPTED ({} msat stored in CDK database)",
+                total_amount_msat
+            );
+            Ok(true)
+        }
+        Ok(false) => {
+            warn!("🚨 Concurrent Cashu replay detected: token already claimed");
+            Ok(false)
+        }
+        Err(e) => {
+            warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
+            cache_processed_token(token);
+            info!(
+                "✅ ACCEPTED ({} msat stored in CDK database)",
+                total_amount_msat
+            );
+            Ok(true)
+        }
     }
-    // Add to thread-local memory cache for fast-path on repeat lookups.
-    cache_processed_token(token);
-
-    info!(
-        "✅ ACCEPTED ({} msat stored in CDK database)",
-        total_amount_msat
-    );
-
-    Ok(true)
 }
 
 pub async fn redeem_to_lightning() -> Result<bool, String> {
