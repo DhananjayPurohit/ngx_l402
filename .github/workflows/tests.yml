@@ -1851,13 +1851,25 @@ jobs:
             $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
               -rpcwallet=my_wallet getnewaddress)
 
-          # Wait for Eclair to sync past the funding block so the channel leaves WAIT_FOR_FUNDING_CONFIRMED
-          echo "Waiting for Eclair to process the new blocks..."
+          # Eclair's ZMQ subscription is a "slow joiner": it connects after the
+          # initial RPC sync and misses blocks mined in the same window. Restarting
+          # forces Eclair to do a full RPC catch-up (136→tip), discovering the
+          # funding tx confirmation and transitioning the channel to NORMAL.
           BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
+          echo "Restarting Eclair to force RPC sync to block $BITCOIND_TIP..."
+          docker-compose -f docker-compose.yml restart eclair
+          sleep 8
+
+          # Reconnect LND peer immediately so gossip exchange can start
+          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+
+          # Wait for Eclair to come back up and sync to the current tip
+          echo "Waiting for Eclair to sync after restart..."
           ECLAIR_SYNCED=false
           for i in {1..40}; do
-            ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo | jq -r .blockHeight 2>/dev/null || echo "0")
-            if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_TIP" ]; then
+            ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo \
+              | jq -r .blockHeight 2>/dev/null || echo "0")
+            if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_TIP" ] && [ "$ECLAIR_HEIGHT" -gt "0" ]; then
               echo "✅ Eclair synced to block $ECLAIR_HEIGHT (tip: $BITCOIND_TIP)"
               ECLAIR_SYNCED=true
               break
@@ -1866,7 +1878,7 @@ jobs:
             sleep 3
           done
           if [ "$ECLAIR_SYNCED" != "true" ]; then
-            echo "Error: Eclair did not sync past block $BITCOIND_TIP in time"
+            echo "Error: Eclair did not sync past block $BITCOIND_TIP after restart"
             docker logs eclair | tail -50
             exit 1
           fi
