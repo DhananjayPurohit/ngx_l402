@@ -1851,24 +1851,23 @@ jobs:
             $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
               -rpcwallet=my_wallet getnewaddress)
 
-          # Restarting forces Eclair to do a full RPC catch-up, discovering the
-          # funding tx confirmation and transitioning the channel to NORMAL.
+          # Restart Eclair to force a full RPC catch-up: this causes it to
+          # discover the confirmed funding tx and transition to WAIT_FOR_CHANNEL_READY.
           BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
           echo "Restarting Eclair to force RPC sync to block $BITCOIND_TIP..."
           docker-compose -f docker-compose.yml restart eclair
-          sleep 8
+          sleep 10
 
-          # Reconnect LND peer immediately so gossip exchange can start
-          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
-
-          # Wait for Eclair to come back up and sync to the current tip
+          # Wait for Eclair to sync BEFORE reconnecting LND.
+          # Connecting while Eclair is still initialising causes the peer to be
+          # dropped immediately; the channel_ready exchange then never completes.
           echo "Waiting for Eclair to sync after restart..."
           ECLAIR_SYNCED=false
           for i in {1..40}; do
             ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo \
               | jq -r .blockHeight 2>/dev/null || echo "0")
             if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_TIP" ] && [ "$ECLAIR_HEIGHT" -gt "0" ]; then
-              echo "✅ Eclair synced to block $ECLAIR_HEIGHT (tip: $BITCOIND_TIP)"
+              echo "Eclair synced to block $ECLAIR_HEIGHT (tip: $BITCOIND_TIP)"
               ECLAIR_SYNCED=true
               break
             fi
@@ -1880,6 +1879,59 @@ jobs:
             docker logs eclair | tail -50
             exit 1
           fi
+
+          # Reconnect LND to Eclair AFTER it is fully synced so that
+          # the channel_ready messages are exchanged on a stable connection.
+          echo "Reconnecting LND to Eclair after sync..."
+          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+          sleep 5
+
+          # Wait for the channel to become NORMAL right here in the setup step so
+          # we fail fast with good diagnostics rather than timing out in the test step.
+          echo "Waiting for LND<->Eclair channel to become NORMAL..."
+          CHAN_READY=false
+          for i in {1..60}; do
+            # Re-attempt peer connection every 10 iterations
+            if [ $((i % 10)) -eq 1 ]; then
+              docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 2>/dev/null || true
+            fi
+
+            ECLAIR_CHAN_STATE=$(curl -s -u :eclairpass -X POST http://localhost:8282/channels 2>/dev/null \
+              | jq -r ".[].state" 2>/dev/null | grep -m1 "NORMAL" || echo "")
+            LND_CHAN_ACTIVE=$(docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} \
+              2>/dev/null | grep -o '"active": true' | wc -l | tr -d ' ')
+
+            if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "${LND_CHAN_ACTIVE:-0}" -gt "0" ]; then
+              echo "Channel is NORMAL (Eclair: ${ECLAIR_CHAN_STATE}, LND active: ${LND_CHAN_ACTIVE})"
+              CHAN_READY=true
+              break
+            fi
+
+            # Mine a nudge block every 5 iterations to keep confirmations accumulating
+            if [ $((i % 5)) -eq 0 ]; then
+              NUDGE_ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+                -rpcwallet=my_wallet getnewaddress 2>/dev/null || echo "")
+              if [ -n "$NUDGE_ADDR" ]; then
+                docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+                  -rpcwallet=my_wallet generatetoaddress 1 "$NUDGE_ADDR" > /dev/null 2>&1 || true
+              fi
+            fi
+
+            echo "Channel not yet NORMAL ($i/60) [Eclair: ${ECLAIR_CHAN_STATE}, LND active: ${LND_CHAN_ACTIVE}]"
+            sleep 3
+          done
+
+          if [ "$CHAN_READY" != "true" ]; then
+            echo "Error: LND<->Eclair channel did not reach NORMAL state during setup"
+            echo "Eclair channels:"
+            curl -s -u :eclairpass -X POST http://localhost:8282/channels
+            echo "LND channels:"
+            docker exec lndnode lncli -n regtest listchannels
+            echo "Eclair logs (last 80 lines):"
+            docker logs eclair --tail=80
+            exit 1
+          fi
+          echo "LND<->Eclair channel ready!"
 
       - name: Run Integration Tests - Eclair
         run: |
