@@ -1810,6 +1810,12 @@ jobs:
       - name: Start Eclair Node and nginx-eclair
         run: |
           echo "Starting Eclair node and nginx-eclair..."
+          # Remove stale eclair-data volume so Eclair always starts with a clean
+          # blockchain/channel state. Without this, leftover data from a previous
+          # CI run causes Eclair to get stuck waiting for a funding tx that no
+          # longer exists on the regtest chain.
+          docker-compose -f docker-compose.yml rm -fsv eclair || true
+          docker volume rm ngx_l402_eclair-data 2>/dev/null || true
           docker-compose -f docker-compose.yml up -d eclair nginx-eclair
 
           echo "Waiting for Eclair to be ready and synced..."
@@ -1848,15 +1854,22 @@ jobs:
           # Wait for Eclair to sync past the funding block so the channel leaves WAIT_FOR_FUNDING_CONFIRMED
           echo "Waiting for Eclair to process the new blocks..."
           BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
-          for i in {1..30}; do
+          ECLAIR_SYNCED=false
+          for i in {1..40}; do
             ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo | jq -r .blockHeight 2>/dev/null || echo "0")
             if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_TIP" ]; then
               echo "✅ Eclair synced to block $ECLAIR_HEIGHT (tip: $BITCOIND_TIP)"
+              ECLAIR_SYNCED=true
               break
             fi
-            echo "Eclair at $ECLAIR_HEIGHT, waiting for $BITCOIND_TIP... ($i/30)"
-            sleep 2
+            echo "Eclair at $ECLAIR_HEIGHT, waiting for $BITCOIND_TIP... ($i/40)"
+            sleep 3
           done
+          if [ "$ECLAIR_SYNCED" != "true" ]; then
+            echo "Error: Eclair did not sync past block $BITCOIND_TIP in time"
+            docker logs eclair | tail -50
+            exit 1
+          fi
 
       - name: Run Integration Tests - Eclair
         run: |
