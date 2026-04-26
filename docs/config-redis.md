@@ -53,3 +53,32 @@ Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400   # Default: 24 hours
 ```
 
 **How it works**: After successful verification, SHA256 hashes of preimages/tokens are stored in Redis with a TTL. Subsequent use of the same credential is rejected with `401`. Protection persists across Nginx restarts and works with multiple Nginx instances.
+
+---
+
+## Invoice Rate Limiting
+
+Limits how many invoices (402 responses) a single IP can request per route within a time window. This protects your Lightning node from invoice-spam without affecting clients that hold a valid token.
+
+```nginx
+location /api/resource {
+    l402 on;
+    l402_amount_msat_default 1000;
+    l402_invoice_rate_limit 5r/m;   # 5 invoices per minute per IP
+}
+```
+
+**Supported formats**:
+
+| Value | Limit |
+|---|---|
+| `5r/m` | 5 per minute |
+| `10r/h` | 10 per hour |
+| `2r/s` | 2 per second |
+| `5` | 5 per minute (shorthand) |
+
+Requests that exceed the limit receive `429 Too Many Requests` with a `Retry-After` header set to the window duration.
+
+The rate limit only applies to unauthenticated requests (those that would result in a 402). Requests presenting a valid L402 token bypass it entirely.
+
+**How it works**: Uses a fixed-window Redis counter (`INCR` + `EXPIRE` on first hit) keyed by IP and path. Fails open — if Redis is unavailable, rate limiting is disabled and traffic passes through normally.

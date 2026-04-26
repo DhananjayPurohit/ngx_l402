@@ -1,3 +1,5 @@
+ARG NGX_VERSION=1.28.0
+
 # Build stage
 FROM rust:1.85 AS builder
 WORKDIR /app
@@ -8,7 +10,8 @@ RUN apt-get update && apt-get install -y \
     && rm -f /usr/bin/gpg /usr/bin/gpg2
 
 COPY . .
-ENV NGX_VERSION=1.28.0
+ARG NGX_VERSION
+ENV NGX_VERSION=${NGX_VERSION}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
@@ -16,13 +19,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/libngx_l402_lib.so /tmp/libngx_l402_lib.so
 
 # Runtime stage
-FROM nginx:1.28.0
+FROM nginx:${NGX_VERSION}
 EXPOSE 8000
 
 COPY --from=builder /tmp/libngx_l402_lib.so /etc/nginx/modules/libngx_l402_lib.so
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY index.html /usr/share/nginx/html/protected/index.html
 COPY index.html /usr/share/nginx/html/protected-timeout/index.html
+COPY index.html /usr/share/nginx/html/rate-limited/index.html
 COPY index.html /usr/share/nginx/html/tenant1/index.html
 COPY index.html /usr/share/nginx/html/tenant2/index.html
 

@@ -8,7 +8,8 @@ use ngx::ffi::{
     nginx_version, ngx_array_push, ngx_command_t, ngx_conf_t, ngx_cycle_s, ngx_http_core_module,
     ngx_http_handler_pt, ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE,
     ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t, ngx_str_t, ngx_uint_t, NGX_CONF_TAKE1,
-    NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO, NGX_OK,
+    NGX_DECLINED, NGX_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MODULE, NGX_LOG_ERR, NGX_LOG_INFO,
+    NGX_LOG_WARN, NGX_OK,
     NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
 };
 use ngx::http::{ngx_http_conf_get_module_main_conf, HTTPModule, Merge, MergeConfigError, Request};
@@ -733,9 +734,12 @@ pub struct ModuleConfig {
     amount_msat: i64,
     macaroon_timeout: i64,
     lnurl_addr: Option<String>,
+    // (max_requests, window_secs): e.g. (5, 60) means 5 invoices per minute per IP per route.
+    // None means rate limiting is disabled for this location.
+    invoice_rate_limit: Option<(u32, u64)>,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 5] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 6] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -764,6 +768,14 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 5] = [
         name: ngx_string!("l402_lnurl_addr"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_lnurl_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_invoice_rate_limit"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_l402_invoice_rate_limit_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -835,19 +847,42 @@ impl Merge for ModuleConfig {
         if self.lnurl_addr.is_none() && prev.lnurl_addr.is_some() {
             self.lnurl_addr = prev.lnurl_addr.clone();
         }
+        if self.invoice_rate_limit.is_none() {
+            self.invoice_rate_limit = prev.invoice_rate_limit;
+        }
         Ok(())
     }
 }
 
+// SAFETY: This function is an Nginx access-phase handler registered via
+// `postconfiguration`. Nginx guarantees that `request`, `request->connection`,
+// `request->connection->log`, and `request->loc_conf` are valid, non-null
+// pointers for the handler's lifetime.
 pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_request_t) -> isize {
     let handler_start = Instant::now();
-    let log = unsafe { &mut *(*(*request).connection).log };
+
+    // SAFETY: `request` is guaranteed non-null by Nginx for access-phase handlers.
+    let r = unsafe { &mut *request };
+
+    // SAFETY: `connection` and `log` are guaranteed valid by Nginx for the
+    // lifetime of the request.
+    let log = unsafe { &mut *(*r.connection).log };
     let log_ref = log as *mut ngx_log_s;
 
     // Check if L402 is enabled for this location
-    let (auth_header, uri, method, amount_msat, macaroon_timeout, lnurl_addr) = unsafe {
-        let r = &mut *request;
+    let (
+        auth_header,
+        uri,
+        method,
+        amount_msat,
+        macaroon_timeout,
+        lnurl_addr,
+        invoice_rate_limit,
+    ) = unsafe {
+        // NOTE: `authorization` can be null — not every request carries the header.
         let auth_header = if !r.headers_in.authorization.is_null() {
+            // SAFETY: `authorization` checked non-null; Nginx guarantees
+            // `value.data` is a valid C string for the header lifetime.
             Some(
                 CStr::from_ptr((*r.headers_in.authorization).value.data as *const c_char)
                     .to_str()
@@ -861,8 +896,11 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         let uri = r.uri.to_string();
         let method = r.method as u32;
 
-        // Get module config to check if L402 is enabled
-        let loc_conf = (*r).loc_conf;
+        // SAFETY: `loc_conf` is guaranteed valid by Nginx; `ctx_index` is set
+        // during module registration and is within bounds.
+        let loc_conf = r.loc_conf;
+        // SAFETY: The config slot is allocated by `create_loc_conf` and merged
+        // by Nginx before the access phase runs.
         let conf =
             &*((*loc_conf.offset(ngx_http_l402_module.ctx_index as isize)) as *const ModuleConfig);
 
@@ -888,6 +926,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         }
 
         let lnurl_addr = conf.lnurl_addr.clone();
+        let invoice_rate_limit = conf.invoice_rate_limit;
 
         (
             auth_header,
@@ -896,6 +935,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             amount_msat,
             macaroon_timeout,
             lnurl_addr,
+            invoice_rate_limit,
         )
     };
 
@@ -956,6 +996,25 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
     // Only set L402 header if result is 402
     if result == 402 {
+        if let Some((max_requests, window_secs)) = invoice_rate_limit {
+            let client_ip = get_client_ip(request);
+            if !check_invoice_rate_limit(&client_ip, &request_path, max_requests, window_secs) {
+                ngx_log_error!(
+                    NGX_LOG_WARN,
+                    log_ref,
+                    "Invoice rate limit exceeded for IP={} path={}",
+                    client_ip,
+                    request_path
+                );
+                // SAFETY: `request` is non-null and valid for this handler's
+                // lifetime, as guaranteed by nginx before invoking the handler.
+                unsafe {
+                    let req = Request::from_ngx_http_request(request);
+                    req.add_header_out("Retry-After", &window_secs.to_string());
+                }
+                return 429;
+            }
+        }
 
         let rt = get_handler_runtime();
 
@@ -1184,6 +1243,8 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         return -1;
     }
 
+    // SAFETY: `cycle->log` is guaranteed valid by Nginx before invoking
+    // module init callbacks; it points to the global error log.
     let log = (*cycle).log;
 
     // Initialize logger - this is critical for RUST_LOG to work
@@ -1308,7 +1369,10 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             .parse::<u64>()
             .unwrap_or(3600);
 
-        let _module = unsafe { MODULE.as_ref().expect("Module not initialized") };
+        let Some(_module) = (unsafe { MODULE.as_ref() }) else {
+            error!("Module not initialized — skipping Cashu redemption");
+            return 0;
+        };
 
         // Spawn redemption task in a separate thread to avoid blocking nginx
         let _ = std::thread::Builder::new()
@@ -1388,6 +1452,9 @@ pub unsafe extern "C" fn ngx_http_l402_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1412,6 +1479,9 @@ pub unsafe extern "C" fn ngx_http_l402_amount_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1438,6 +1508,9 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1469,6 +1542,9 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
     _cmd: *mut ngx_command_t,
     conf: *mut c_void,
 ) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
@@ -1485,5 +1561,147 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
         info!("Set L402 LNURL address to: {}", lnurl_addr);
     }
 
+    std::ptr::null_mut()
+}
+
+// accepted: "5r/m", "10r/h", "2r/s", or bare "5" (defaults to per minute)
+fn parse_rate_limit(val: &str) -> Option<(u32, u64)> {
+    let val = val.trim();
+    if let Some(n) = val.strip_suffix("r/m") {
+        n.trim().parse::<u32>().ok().map(|c| (c, 60))
+    } else if let Some(n) = val.strip_suffix("r/h") {
+        n.trim().parse::<u32>().ok().map(|c| (c, 3600))
+    } else if let Some(n) = val.strip_suffix("r/s") {
+        n.trim().parse::<u32>().ok().map(|c| (c, 1))
+    } else {
+        val.parse::<u32>().ok().map(|c| (c, 60))
+    }
+}
+
+/// Returns the client IP, preferring X-Real-IP then the first entry of
+/// X-Forwarded-For over the direct socket address. Falls back to `"unknown"`.
+///
+/// Note: X-Forwarded-For can be spoofed by clients unless nginx is configured
+/// to strip or overwrite it via the realip module before reaching this handler.
+fn get_client_ip(request: *mut ngx_http_request_t) -> String {
+    // SAFETY: called only from `l402_access_handler_wrapper`, where `request`
+    // is the pointer nginx passed to the access handler and is guaranteed
+    // non-null and valid for the handler's lifetime.
+    unsafe {
+        if request.is_null() {
+            return "unknown".to_string();
+        }
+        let r = &*request;
+
+        // X-Real-IP: single IP set by a trusted reverse proxy
+        if !r.headers_in.x_real_ip.is_null() {
+            let val = (*r.headers_in.x_real_ip).value.to_str().trim().to_string();
+            if !val.is_empty() {
+                return val;
+            }
+        }
+
+        // X-Forwarded-For: "client, proxy1, proxy2" — leftmost is the origin
+        if !r.headers_in.x_forwarded_for.is_null() {
+            let val = (*r.headers_in.x_forwarded_for).value.to_str();
+            if let Some(ip) = val.split(',').next() {
+                let ip = ip.trim();
+                if !ip.is_empty() {
+                    return ip.to_string();
+                }
+            }
+        }
+
+        // Direct socket address — unreliable behind a load balancer
+        let conn = r.connection;
+        if conn.is_null() {
+            return "unknown".to_string();
+        }
+        (*conn).addr_text.to_str().to_string()
+    }
+}
+
+/// Fixed-window INCR+EXPIRE counter. Fails open if Redis is unavailable.
+fn check_invoice_rate_limit(ip: &str, path: &str, max_requests: u32, window_secs: u64) -> bool {
+    let Some(pool) = REDIS_POOL.get() else {
+        warn!("Redis not configured - invoice rate limiting disabled");
+        return true;
+    };
+
+    let Ok(mut conn) = pool.get() else {
+        error!("Failed to get Redis connection for invoice rate limit check");
+        return true;
+    };
+
+    let key = format!("l402:invoice_rate:{}:{}", ip, path);
+
+    let count: u64 = match redis::Script::new(
+        r#"
+        local current = redis.call("INCR", KEYS[1])
+        if current == 1 then
+            redis.call("EXPIRE", KEYS[1], ARGV[1])
+        end
+        return current
+        "#,
+    )
+    .key(&key)
+    .arg(window_secs)
+    .invoke(&mut conn)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to update invoice rate limit counter: {}", e);
+            return true;
+        }
+    };
+
+    let allowed = count <= max_requests as u64;
+    if !allowed {
+        warn!(
+            "Invoice rate limit exceeded for IP={} path={} ({}/{})",
+            ip, path, count, max_requests
+        );
+    }
+    allowed
+}
+
+/// nginx directive handler for `l402_invoice_rate_limit`.
+///
+/// Accepted syntax (mirrors nginx's own `limit_req_zone` style):
+///   `l402_invoice_rate_limit 5r/m;`   - 5 invoices per minute per IP per route
+///   `l402_invoice_rate_limit 10r/h;`  - 10 per hour
+///   `l402_invoice_rate_limit 2r/s;`   - 2 per second
+///   `l402_invoice_rate_limit 5;`      - 5 per minute (shorthand)
+pub unsafe extern "C" fn ngx_http_l402_invoice_rate_limit_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    // SAFETY: `cf` and `conf` are non-null and valid for the duration of the
+    // configuration phase. `conf` points to a `ModuleConfig` allocated by
+    // `create_loc_conf`. `(*cf).args` element at index 1 is the directive's
+    // single argument, guaranteed present by NGX_CONF_TAKE1.
+    unsafe {
+        if cf.is_null() || conf.is_null() {
+            return b"l402_invoice_rate_limit: null configuration pointer\0".as_ptr()
+                as *mut c_char;
+        }
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let val = (*((*(*cf).args).elts as *mut ngx_str_t).add(1)).to_str();
+        match parse_rate_limit(val) {
+            Some((max_req, window_secs)) => {
+                conf.invoice_rate_limit = Some((max_req, window_secs));
+                info!(
+                    "Set invoice rate limit: {} requests per {}s",
+                    max_req, window_secs
+                );
+            }
+            None => {
+                error!("Invalid l402_invoice_rate_limit value: '{}'", val);
+                return b"l402_invoice_rate_limit: expected e.g. '5r/m', '10r/h', '2r/s', or '5'\0"
+                    .as_ptr() as *mut c_char;
+            }
+        }
+    }
     std::ptr::null_mut()
 }

@@ -1,0 +1,9 @@
+target/
+grpc-server/target/
+.git/
+.github/
+book/
+docs/
+.env
+*.md
+!README.md
