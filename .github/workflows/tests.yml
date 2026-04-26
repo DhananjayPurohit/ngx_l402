@@ -1851,9 +1851,7 @@ jobs:
             $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
               -rpcwallet=my_wallet getnewaddress)
 
-          # Eclair's ZMQ subscription is a "slow joiner": it connects after the
-          # initial RPC sync and misses blocks mined in the same window. Restarting
-          # forces Eclair to do a full RPC catch-up (136→tip), discovering the
+          # Restarting forces Eclair to do a full RPC catch-up, discovering the
           # funding tx confirmation and transitioning the channel to NORMAL.
           BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
           echo "Restarting Eclair to force RPC sync to block $BITCOIND_TIP..."
