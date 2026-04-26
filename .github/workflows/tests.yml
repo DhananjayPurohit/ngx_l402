@@ -1839,11 +1839,24 @@ jobs:
             --min_confs=0 || true
 
           # Mine 10 blocks – well above Eclair min-depth=1 and LND's 6-block default
-          echo "Channel funding tx broadcast and blocks mined."
+          echo "Mining 10 blocks to confirm channel funding..."
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
             -rpcwallet=my_wallet generatetoaddress 10 \
             $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
               -rpcwallet=my_wallet getnewaddress)
+
+          # Wait for Eclair to sync past the funding block so the channel leaves WAIT_FOR_FUNDING_CONFIRMED
+          echo "Waiting for Eclair to process the new blocks..."
+          BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
+          for i in {1..30}; do
+            ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo | jq -r .blockHeight 2>/dev/null || echo "0")
+            if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_TIP" ]; then
+              echo "✅ Eclair synced to block $ECLAIR_HEIGHT (tip: $BITCOIND_TIP)"
+              break
+            fi
+            echo "Eclair at $ECLAIR_HEIGHT, waiting for $BITCOIND_TIP... ($i/30)"
+            sleep 2
+          done
 
       - name: Run Integration Tests - Eclair
         run: |
@@ -1921,8 +1934,9 @@ jobs:
           # ── Quick pre-check: channel may already be NORMAL ──────────────────────
           ECLAIR_CHAN_STATE=$(curl -s -u :eclairpass -X POST http://localhost:8282/channels 2>/dev/null \
             | jq -r '.[].state' 2>/dev/null | grep -m1 "NORMAL" || echo "")
+          # Use grep -o | wc -l instead of grep -c to avoid "0\n0" when grep exits 1 on no match
           LND_CHAN_ACTIVE=$(docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} \
-            2>/dev/null | grep -c '"active": true' || echo "0")
+            2>/dev/null | grep -o '"active": true' | wc -l)
 
           if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "$LND_CHAN_ACTIVE" -gt "0" ]; then
             echo "✅ Channel already active (Eclair: ${ECLAIR_CHAN_STATE}, LND: ${LND_CHAN_ACTIVE}) – skipping wait loop."
@@ -1937,7 +1951,7 @@ jobs:
               ECLAIR_CHAN_STATE=$(curl -s -u :eclairpass -X POST http://localhost:8282/channels 2>/dev/null \
                 | jq -r '.[].state' 2>/dev/null | grep -m1 "NORMAL" || echo "")
               LND_CHAN_ACTIVE=$(docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} \
-                2>/dev/null | grep -c '"active": true' || echo "0")
+                2>/dev/null | grep -o '"active": true' | wc -l)
 
               if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "$LND_CHAN_ACTIVE" -gt "0" ]; then
                 echo "✅ Channel is active! (Eclair: ${ECLAIR_CHAN_STATE}, LND: ${LND_CHAN_ACTIVE})"
