@@ -1810,7 +1810,7 @@ jobs:
       - name: Start Eclair Node and nginx-eclair
         run: |
           echo "Starting Eclair node and nginx-eclair..."
-          docker-compose -f docker-compose.yml up -d eclair
+          docker-compose -f docker-compose.yml up -d eclair nginx-eclair
 
           echo "Waiting for Eclair to be ready and synced..."
           for i in {1..30}; do
@@ -1839,13 +1839,11 @@ jobs:
             --min_confs=0 || true
 
           # Mine 10 blocks – well above Eclair min-depth=1 and LND's 6-block default
+          echo "Channel funding tx broadcast and blocks mined."
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
             -rpcwallet=my_wallet generatetoaddress 10 \
             $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
               -rpcwallet=my_wallet getnewaddress)
-
-          echo "Channel funding tx broadcast and blocks mined – starting nginx-eclair in parallel."
-          docker-compose -f docker-compose.yml up -d nginx-eclair
 
       - name: Run Integration Tests - Eclair
         run: |
