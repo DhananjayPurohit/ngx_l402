@@ -6,7 +6,7 @@ services:
     image: lncm/bitcoind:v25.0
     container_name: bitcoind
     user: root
-    command: -regtest -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcauth=user:63cf03615adebaa9356591f95b07ec7b$$920588e53f94798bda636acac1b6a77e10e3ee7fe57e414d62f3ee9e580cd27a -fallbackfee=0.0001 -zmqpubrawblock=tcp://0.0.0.0:28332 -zmqpubrawtx=tcp://0.0.0.0:28333
+    command: -regtest -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcauth=user:63cf03615adebaa9356591f95b07ec7b$$920588e53f94798bda636acac1b6a77e10e3ee7fe57e414d62f3ee9e580cd27a -fallbackfee=0.0001 -zmqpubrawblock=tcp://0.0.0.0:28332 -zmqpubrawtx=tcp://0.0.0.0:28333 -txindex=1
     ports:
       - "18443:18443"
       - "28332:28332"
