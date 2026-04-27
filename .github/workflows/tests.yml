@@ -1844,23 +1844,22 @@ jobs:
             --local_amt=1000000 \
             --min_confs=0 || true
 
-          # Mine 10 blocks – well above Eclair min-depth=1 and LND's 6-block default
-          echo "Mining 10 blocks to confirm channel funding..."
+          # Mine 6 blocks first (enough to confirm the funding tx via RPC catch-up)
+          echo "Mining 6 blocks to confirm channel funding..."
+          MINE_ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+            -rpcwallet=my_wallet getnewaddress)
           docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
-            -rpcwallet=my_wallet generatetoaddress 10 \
-            $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
-              -rpcwallet=my_wallet getnewaddress)
+            -rpcwallet=my_wallet generatetoaddress 6 "$MINE_ADDR"
 
-          # Restart Eclair to force a full RPC catch-up: this causes it to
-          # discover the confirmed funding tx and transition to WAIT_FOR_CHANNEL_READY.
+          # Restart Eclair to force a full RPC catch-up: after restart Eclair will
+          # re-scan its channel history via bitcoind RPC (not ZMQ) and discover
+          # the confirmed funding tx.
           BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
           echo "Restarting Eclair to force RPC sync to block $BITCOIND_TIP..."
           docker-compose -f docker-compose.yml restart eclair
           sleep 10
 
-          # Wait for Eclair to sync BEFORE reconnecting LND.
-          # Connecting while Eclair is still initialising causes the peer to be
-          # dropped immediately; the channel_ready exchange then never completes.
+          # Wait for Eclair to sync after restart.
           echo "Waiting for Eclair to sync after restart..."
           ECLAIR_SYNCED=false
           for i in {1..40}; do
@@ -1879,6 +1878,18 @@ jobs:
             docker logs eclair | tail -50
             exit 1
           fi
+
+          # Mine additional blocks NOW (after Eclair is synced and listening on ZMQ).
+          # Eclair transitions WAIT_FOR_FUNDING_CONFIRMED → NORMAL only when it
+          # receives a live ZMQ hashblock notification for a block at or past min-depth.
+          # Without new blocks post-restart the channel stays stuck.
+          echo "Mining 6 more blocks to trigger Eclair ZMQ confirmation events..."
+          MINE_ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+            -rpcwallet=my_wallet getnewaddress)
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+            -rpcwallet=my_wallet generatetoaddress 6 "$MINE_ADDR"
+          BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
+          sleep 5
 
           # Reconnect LND to Eclair AFTER it is fully synced so that
           # the channel_ready messages are exchanged on a stable connection.
@@ -1899,15 +1910,16 @@ jobs:
             ECLAIR_CHAN_STATE=$(curl -s -u :eclairpass -X POST http://localhost:8282/channels 2>/dev/null \
               | jq -r ".[].state" 2>/dev/null | grep -m1 "NORMAL" || echo "")
             LND_CHAN_ACTIVE=$(docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} \
-              2>/dev/null | grep -o '"active": true' | wc -l | tr -d ' ')
+              2>/dev/null | jq '[.channels[] | select(.active == true)] | length' 2>/dev/null || echo "0")
+            LND_CHAN_ACTIVE=${LND_CHAN_ACTIVE:-0}
 
-            if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "${LND_CHAN_ACTIVE:-0}" -gt "0" ]; then
+            if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "$LND_CHAN_ACTIVE" -gt "0" ]; then
               echo "Channel is NORMAL (Eclair: ${ECLAIR_CHAN_STATE}, LND active: ${LND_CHAN_ACTIVE})"
               CHAN_READY=true
               break
             fi
 
-            # Mine a nudge block every 5 iterations to keep confirmations accumulating
+            # Mine a nudge block every 5 iterations to keep ZMQ events flowing
             if [ $((i % 5)) -eq 0 ]; then
               NUDGE_ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
                 -rpcwallet=my_wallet getnewaddress 2>/dev/null || echo "")
