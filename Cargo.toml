@@ -11,7 +11,7 @@ doctest = false
 
 [dependencies]
 ngx = { git = "https://github.com/nginx/ngx-rust", branch = "master" }
-l402_middleware = "=2.2.0"
+l402_middleware = "=2.2.1"
 tokio = { version = "1.33.0", features = ["full"] }
 futures = "0.3"
 serde_json = "1.0"
@@ -33,6 +33,9 @@ blake3 = "1.5"
 ciborium = "0.2.2"
 sha2 = "0.10"
 hex = "0.4"
+cln-rpc = "0.4.0"
+lightning = "0.0.125"
+tonic = "0.7"
 
 [features]
 default = []
