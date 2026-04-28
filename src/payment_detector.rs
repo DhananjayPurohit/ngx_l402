@@ -9,7 +9,7 @@
 //! Supported backends:
 //!   - **LND**    — `LookupInvoice` gRPC call
 //!   - **CLN**    — `listinvoices` JSON-RPC over unix socket
-//!   - **Eclair** — `POST /receivedinfo` REST call
+//!   - **Eclair** — `POST /getreceivedinfo` REST call
 //!   - **NWC**    — not supported (lookup_invoice is optional in NIP-47)
 //!   - **LNURL**  — not supported (remote wallet, no query API)
 
@@ -233,7 +233,7 @@ pub struct EclairDetector {
 impl EclairDetector {
     pub async fn lookup(&self, payment_hash: &[u8]) -> Result<Option<Vec<u8>>, String> {
         let payment_hash_hex = hex::encode(payment_hash);
-        let url = format!("{}/receivedinfo", self.api_url.trim_end_matches('/'));
+        let url = format!("{}/getreceivedinfo", self.api_url.trim_end_matches('/'));
 
         let client = HttpClient::new();
         let resp = client
@@ -250,7 +250,7 @@ impl EclairDetector {
         }
 
         if !resp.status().is_success() {
-            return Err(format!("Eclair /receivedinfo returned HTTP {}", resp.status()));
+            return Err(format!("Eclair /getreceivedinfo returned HTTP {}", resp.status()));
         }
 
         let body: serde_json::Value = resp
