@@ -2471,9 +2471,9 @@ dependencies = [
 
 [[package]]
 name = "l402_middleware"
-version = "2.2.0"
+version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65ff34806d19b29094b5a17f1df0499e27a6ae28970909db4085ec9220349d45"
+checksum = "718cd1e0c647caf7200d6f600879e82d5b200a1f47fefbae06217a7d5b49ea08"
 dependencies = [
  "base64 0.21.7",
  "bitcoin 0.32.5",
@@ -2890,10 +2890,12 @@ dependencies = [
  "cdk-sqlite",
  "chrono",
  "ciborium",
+ "cln-rpc",
  "env_logger 0.11.8",
  "futures",
  "hex",
  "l402_middleware",
+ "lightning 0.0.125",
  "log",
  "macaroon",
  "ngx",
@@ -2905,6 +2907,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tonic 0.7.2",
  "tonic_openssl_lnd",
 ]
 

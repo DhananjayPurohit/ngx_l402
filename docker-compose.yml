@@ -6,7 +6,7 @@ services:
     image: lncm/bitcoind:v25.0
     container_name: bitcoind
     user: root
-    command: -regtest -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcauth=user:63cf03615adebaa9356591f95b07ec7b$$920588e53f94798bda636acac1b6a77e10e3ee7fe57e414d62f3ee9e580cd27a -fallbackfee=0.0001 -zmqpubrawblock=tcp://0.0.0.0:28332 -zmqpubrawtx=tcp://0.0.0.0:28333
+    command: -regtest -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcauth=user:63cf03615adebaa9356591f95b07ec7b$$920588e53f94798bda636acac1b6a77e10e3ee7fe57e414d62f3ee9e580cd27a -fallbackfee=0.0001 -zmqpubrawblock=tcp://0.0.0.0:28332 -zmqpubrawtx=tcp://0.0.0.0:28333 -txindex=1
     ports:
       - "18443:18443"
       - "28332:28332"
@@ -383,7 +383,7 @@ services:
     container_name: eclair
     user: root
     environment:
-      - JAVA_OPTS=-Xmx512m -Declair.chain=regtest -Declair.server.public-ips.0=eclair -Declair.server.port=9945 -Declair.api.enabled=true -Declair.api.binding-ip=0.0.0.0 -Declair.api.port=8282 -Declair.api.password=eclairpass -Declair.bitcoind.host=bitcoind -Declair.bitcoind.rpcport=18443 -Declair.bitcoind.rpcuser=user -Declair.bitcoind.rpcpassword=pass -Declair.bitcoind.zmqblock=tcp://bitcoind:28332 -Declair.bitcoind.zmqtx=tcp://bitcoind:28333 -Declair.bitcoind.wallet=my_wallet -Declair.node-alias=eclair-node -Declair.trampoline-payments-enable=true
+      - JAVA_OPTS=-Xmx512m -Declair.chain=regtest -Declair.server.public-ips.0=eclair -Declair.server.port=9945 -Declair.server.binding-ip=0.0.0.0 -Declair.api.enabled=true -Declair.api.binding-ip=0.0.0.0 -Declair.api.port=8282 -Declair.api.password=eclairpass -Declair.bitcoind.host=bitcoind -Declair.bitcoind.rpcport=18443 -Declair.bitcoind.rpcuser=user -Declair.bitcoind.rpcpassword=pass -Declair.bitcoind.zmqblock=tcp://bitcoind:28332 -Declair.bitcoind.zmqtx=tcp://bitcoind:28333 -Declair.bitcoind.wallet=my_wallet -Declair.node-alias=eclair-node -Declair.trampoline-payments-enable=true -Declair.channel.min-depth=1
     ports:
       - "9945:9945"
       - "8282:8282"
