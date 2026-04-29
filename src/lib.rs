@@ -1697,15 +1697,20 @@ pub unsafe extern "C" fn ngx_http_l402_set(
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
 
-        let val = (*args.add(1)).to_str();
+        let val = (*args.add(1)).to_str().trim().to_lowercase();
 
-        // set default value optionally
-        conf.enable = false;
-
-        if val.len() == 2 && val.eq_ignore_ascii_case("on") {
-            conf.enable = true;
-        } else if val.len() == 3 && val.eq_ignore_ascii_case("off") {
-            conf.enable = false;
+        match val.as_str() {
+            "on" | "true" | "1" | "yes" => {
+                conf.enable = true;
+                info!("⚙️ Enabled L402 for this location");
+            }
+            "off" | "false" | "0" | "no" => {
+                conf.enable = false;
+                info!("⚙️ Disabled L402 for this location");
+            }
+            _ => {
+                error!("❌ Invalid l402 configuration value: {}", val);
+            }
         }
     };
 

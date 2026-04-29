@@ -35,11 +35,21 @@ graph TD;
     H --> J[Return 402 Payment Required]
     K --> L{Parse Success?}
     L -->|No| M[Return 500 Internal Server Error]
-    L -->|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount >= price)"]
+    L -->|Yes| AD{"Auto-detect enabled AND no preimage in header?"}
+    AD -->|Yes| ND[Query Lightning node for settled invoice]
+    ND --> NS{Invoice settled?}
+    NS -->|No| NR[Return 402 Payment Required]
+    NS -->|Yes| NV["Verify macaroon signature (preimage from node)"]
+    NV -->|Valid| P[Return 200 OK]
+    NV -->|Invalid| Q[Return 401 Unauthorized]
+    AD -->|No / preimage provided| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount >= price)"]
     N --> O{Verification Success?}
-    O -->|No| Q[Return 401 Unauthorized]
-    O -->|Yes| P[Return 200 OK]
+    O -->|No| Q
+    O -->|Yes| P
 ```
+
+> **Auto-detect**: When `l402_auto_detect_payment on` is set and the client sends only `Authorization: L402 <macaroon>` (no preimage), the server queries the Lightning node directly. Supported on **LND**, **CLN**, and **Eclair**.
+
 
 ---
 

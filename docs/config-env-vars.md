@@ -159,3 +159,36 @@ Environment=RUST_LOG=info
 # For module-specific debug logs:
 Environment=RUST_LOG=ngx_l402_lib=debug,info
 ```
+
+---
+
+## Nginx Location Directives
+
+These are set inside `location {}` blocks in `nginx.conf` (not environment variables).
+
+| Directive | Type | Default | Description |
+|---|---|---|---|
+| `l402` | boolean¹ | `off` | Enable L402 protection for this location |
+| `l402_amount_msat_default` | integer | — | Price in millisatoshis (overridden by Redis dynamic pricing) |
+| `l402_macaroon_timeout` | integer (seconds) | `0` (disabled) | Macaroon validity window; `0` = no expiry |
+| `l402_lnurl_addr` | string | — | Per-location LNURL address for multi-tenant setups |
+| `l402_invoice_rate_limit` | `<N>r/m` or `<N>r/s` | disabled | Max invoice generation rate per IP per route |
+| `l402_auto_detect_payment` | boolean¹ | `off` | Server-side payment detection — queries the Lightning node instead of requiring the client to supply the preimage |
+
+> ¹ **Boolean directives** accept: `on` / `off` / `true` / `false` / `1` / `0` / `yes` / `no` (case-insensitive).
+
+### Example: auto-detect enabled location
+
+```nginx
+location /protected {
+    l402                         on;
+    l402_amount_msat_default     10000;
+    l402_macaroon_timeout        0;
+    l402_auto_detect_payment     on;
+
+    try_files /index.html =404;
+}
+```
+
+> **Backends that support auto-detect**: `LND`, `CLN`, `BOLT12`, `ECLAIR`.
+> `LNC`, `NWC`, and `LNURL` do **not** support server-side lookup.
