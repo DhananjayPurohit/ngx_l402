@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4f181041.js";
+            window.path_to_searchindex_js = "searchindex-f125a711.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-a0b648fa.js"></script>
@@ -215,12 +215,22 @@
     H --&gt; J[Return 402 Payment Required]
     K --&gt; L{Parse Success?}
     L --&gt;|No| M[Return 500 Internal Server Error]
-    L --&gt;|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount &gt;= price)"]
+    L --&gt;|Yes| AD{"Auto-detect enabled AND no preimage in header?"}
+    AD --&gt;|Yes| ND[Query Lightning node for settled invoice]
+    ND --&gt; NS{Invoice settled?}
+    NS --&gt;|No| NR[Return 402 Payment Required]
+    NS --&gt;|Yes| NV["Verify macaroon signature (preimage from node)"]
+    NV --&gt;|Valid| P[Return 200 OK]
+    NV --&gt;|Invalid| Q[Return 401 Unauthorized]
+    AD --&gt;|No / preimage provided| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount &gt;= price)"]
     N --&gt; O{Verification Success?}
-    O --&gt;|No| Q[Return 401 Unauthorized]
-    O --&gt;|Yes| P[Return 200 OK]
+    O --&gt;|No| Q
+    O --&gt;|Yes| P
 </pre>
 
+<blockquote>
+<p><strong>Auto-detect</strong>: When <code>l402_auto_detect_payment on</code> is set and the client sends only <code>Authorization: L402 &lt;macaroon&gt;</code> (no preimage), the server queries the Lightning node directly. Supported on <strong>LND</strong>, <strong>CLN</strong>, and <strong>Eclair</strong>.</p>
+</blockquote>
 <hr>
 <h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
 <blockquote>

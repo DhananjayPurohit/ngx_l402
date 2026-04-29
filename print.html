@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-4f181041.js";
+            window.path_to_searchindex_js = "searchindex-f125a711.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-a0b648fa.js"></script>
@@ -213,12 +213,22 @@
     H --&gt; J[Return 402 Payment Required]
     K --&gt; L{Parse Success?}
     L --&gt;|No| M[Return 500 Internal Server Error]
-    L --&gt;|Yes| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount &gt;= price)"]
+    L --&gt;|Yes| AD{"Auto-detect enabled AND no preimage in header?"}
+    AD --&gt;|Yes| ND[Query Lightning node for settled invoice]
+    ND --&gt; NS{Invoice settled?}
+    NS --&gt;|No| NR[Return 402 Payment Required]
+    NS --&gt;|Yes| NV["Verify macaroon signature (preimage from node)"]
+    NV --&gt;|Valid| P[Return 200 OK]
+    NV --&gt;|Invalid| Q[Return 401 Unauthorized]
+    AD --&gt;|No / preimage provided| N["Verify macaroon/preimage OR Cashu proofs (whitelist; P2PK lock if enabled; double-spend check; amount &gt;= price)"]
     N --&gt; O{Verification Success?}
-    O --&gt;|No| Q[Return 401 Unauthorized]
-    O --&gt;|Yes| P[Return 200 OK]
+    O --&gt;|No| Q
+    O --&gt;|Yes| P
 </pre>
 
+<blockquote>
+<p><strong>Auto-detect</strong>: When <code>l402_auto_detect_payment on</code> is set and the client sends only <code>Authorization: L402 &lt;macaroon&gt;</code> (no preimage), the server queries the Lightning node directly. Supported on <strong>LND</strong>, <strong>CLN</strong>, and <strong>Eclair</strong>.</p>
+</blockquote>
 <hr>
 <h2 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h2>
 <blockquote>
@@ -560,6 +570,41 @@ Environment=CASHU_P2PK_PRIVATE_KEY=&lt;your-private-key-hex&gt;
 # For module-specific debug logs:
 Environment=RUST_LOG=ngx_l402_lib=debug,info
 </code></pre>
+<hr>
+<h2 id="nginx-location-directives"><a class="header" href="#nginx-location-directives">Nginx Location Directives</a></h2>
+<p>These are set inside <code>location {}</code> blocks in <code>nginx.conf</code> (not environment variables).</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Directive</th><th>Type</th><th>Default</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>l402</code></td><td>boolean¹</td><td><code>off</code></td><td>Enable L402 protection for this location</td></tr>
+<tr><td><code>l402_amount_msat_default</code></td><td>integer</td><td>—</td><td>Price in millisatoshis (overridden by Redis dynamic pricing)</td></tr>
+<tr><td><code>l402_macaroon_timeout</code></td><td>integer (seconds)</td><td><code>0</code> (disabled)</td><td>Macaroon validity window; <code>0</code> = no expiry</td></tr>
+<tr><td><code>l402_lnurl_addr</code></td><td>string</td><td>—</td><td>Per-location LNURL address for multi-tenant setups</td></tr>
+<tr><td><code>l402_invoice_rate_limit</code></td><td><code>&lt;N&gt;r/m</code> or <code>&lt;N&gt;r/s</code></td><td>disabled</td><td>Max invoice generation rate per IP per route</td></tr>
+<tr><td><code>l402_auto_detect_payment</code></td><td>boolean¹</td><td><code>off</code></td><td>Server-side payment detection — queries the Lightning node instead of requiring the client to supply the preimage</td></tr>
+</tbody>
+</table>
+</div>
+<blockquote>
+<p>¹ <strong>Boolean directives</strong> accept: <code>on</code> / <code>off</code> / <code>true</code> / <code>false</code> / <code>1</code> / <code>0</code> / <code>yes</code> / <code>no</code> (case-insensitive).</p>
+</blockquote>
+<h3 id="example-auto-detect-enabled-location"><a class="header" href="#example-auto-detect-enabled-location">Example: auto-detect enabled location</a></h3>
+<pre><code class="language-nginx">location /protected {
+    l402                         on;
+    l402_amount_msat_default     10000;
+    l402_macaroon_timeout        0;
+    l402_auto_detect_payment     on;
+
+    try_files /index.html =404;
+}
+</code></pre>
+<blockquote>
+<p><strong>Backends that support auto-detect</strong>: <code>LND</code>, <code>CLN</code>, <code>BOLT12</code>, <code>ECLAIR</code>.
+<code>LNC</code>, <code>NWC</code>, and <code>LNURL</code> do <strong>not</strong> support server-side lookup.</p>
+</blockquote>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="redis--dynamic-configuration"><a class="header" href="#redis--dynamic-configuration">Redis &amp; Dynamic Configuration</a></h1>
 <p>The module supports real-time configuration updates via Redis <strong>without requiring an Nginx reload</strong>.</p>
@@ -729,10 +774,66 @@ SET lnurl:/api/tenant2 bob@getalby.com
 </ol>
 <hr>
 <h2 id="authorization-header-format"><a class="header" href="#authorization-header-format">Authorization Header Format</a></h2>
-<pre><code>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;
-</code></pre>
+<p>Two formats are accepted:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Format</th><th>Header value</th><th>When to use</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Classic</strong></td><td><code>L402 &lt;macaroon&gt;:&lt;preimage_hex&gt;</code></td><td>Client has the preimage (standard wallet flow)</td></tr>
+<tr><td><strong>Auto-detect</strong></td><td><code>L402 &lt;macaroon&gt;</code></td><td>Server queries the node; no preimage needed from client</td></tr>
+</tbody>
+</table>
+</div>
 <blockquote>
-<p>The macaroon and preimage are separated by a colon (<code>:</code>). The preimage must be the <strong>32-byte (256-bit) hex-encoded payment preimage</strong> corresponding to the invoice’s <code>payment_hash</code>.</p>
+<p>The preimage in the classic format must be the <strong>32-byte (256-bit) hex-encoded payment preimage</strong> corresponding to the invoice’s <code>payment_hash</code>.</p>
+</blockquote>
+<hr>
+<h2 id="auto-detect-payment-server-side-settlement-lookup"><a class="header" href="#auto-detect-payment-server-side-settlement-lookup">Auto-Detect Payment (Server-Side Settlement Lookup)</a></h2>
+<p>With <strong>auto-detect</strong> enabled the client only needs to send the macaroon — no preimage required. The module queries your Lightning node directly to check whether the invoice is settled and retrieves the preimage from the node.</p>
+<h3 id="enabling-auto-detect"><a class="header" href="#enabling-auto-detect">Enabling auto-detect</a></h3>
+<p>Add <code>l402_auto_detect_payment on</code> to any <code>location {}</code> block:</p>
+<pre><code class="language-nginx">location /protected {
+    l402                         on;
+    l402_amount_msat_default     10000;
+    l402_macaroon_timeout        0;
+    l402_auto_detect_payment     on;   # ← enables server-side lookup
+}
+</code></pre>
+<p>All boolean directives (<code>l402</code>, <code>l402_auto_detect_payment</code>) accept: <code>on</code> / <code>off</code> / <code>true</code> / <code>false</code> / <code>1</code> / <code>0</code> / <code>yes</code> / <code>no</code> (case-insensitive).</p>
+<h3 id="client-flow-with-auto-detect-enabled"><a class="header" href="#client-flow-with-auto-detect-enabled">Client flow with auto-detect enabled</a></h3>
+<ol>
+<li>Client requests a protected endpoint → receives <code>402 Payment Required</code> with a BOLT-11 invoice.</li>
+<li>Client pays the invoice (no preimage handling needed).</li>
+<li>Client retries with just the macaroon:
+<pre><code>Authorization: L402 &lt;macaroon&gt;
+</code></pre>
+</li>
+<li>Module extracts the <code>payment_hash</code> from the macaroon identifier, queries the node, and — if the invoice is settled — uses the returned preimage to verify the macaroon signature.</li>
+<li>On success the module returns <code>200 OK</code>. If the invoice is not yet settled, it returns <code>402 Payment Required</code>.</li>
+</ol>
+<h3 id="preimage-caching-redis"><a class="header" href="#preimage-caching-redis">Preimage caching (Redis)</a></h3>
+<p>When Redis is configured (<code>REDIS_URL</code>), settled preimages are cached under the key <code>l402:settled:&lt;payment_hash_hex&gt;</code>. Subsequent requests for the same payment hash are served from the cache, avoiding repeated node round-trips.</p>
+<h3 id="backend-support-matrix"><a class="header" href="#backend-support-matrix">Backend support matrix</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th><code>LN_CLIENT_TYPE</code></th><th>Auto-detect supported</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>LND</code></td><td>✅</td><td>Uses <code>LookupInvoice</code> gRPC</td></tr>
+<tr><td><code>CLN</code> / <code>BOLT12</code></td><td>✅</td><td>Uses <code>listinvoices</code> JSON-RPC over unix socket</td></tr>
+<tr><td><code>ECLAIR</code></td><td>✅</td><td>Uses <code>POST /getreceivedinfo</code> REST API</td></tr>
+<tr><td><code>LNC</code></td><td>❌</td><td>LNC mailbox does not expose <code>LookupInvoice</code></td></tr>
+<tr><td><code>NWC</code></td><td>❌</td><td><code>lookup_invoice</code> is optional in NIP-47</td></tr>
+<tr><td><code>LNURL</code></td><td>❌</td><td>Remote wallet — no server-side query API</td></tr>
+</tbody>
+</table>
+</div>
+<blockquote class="blockquote-tag blockquote-tag-note">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"></path></svg>Note</p>
+<p>Even when <code>l402_auto_detect_payment on</code> is set, the classic <code>L402 &lt;macaroon&gt;:&lt;preimage&gt;</code> format is still accepted — auto-detect only activates when the client omits the preimage.</p>
 </blockquote>
 <hr>
 <h2 id="wallet-compatibility"><a class="header" href="#wallet-compatibility">Wallet Compatibility</a></h2>
