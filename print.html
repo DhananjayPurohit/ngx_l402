@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-24fce4e9.js";
+            window.path_to_searchindex_js = "searchindex-98fd63e4.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-a0b648fa.js"></script>
+        <script src="toc-52541bfd.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -1018,6 +1018,195 @@ Environment=RUST_LOG=debug
 # Module-specific debug logs only (reduces noise)
 Environment=RUST_LOG=ngx_l402_lib=debug,info
 </code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="dry-run-shadow-mode"><a class="header" href="#dry-run-shadow-mode">Dry-Run (Shadow) Mode</a></h1>
+<p>Shadow mode lets operators roll out L402 enforcement safely. With
+<code>l402_dry_run on;</code> set on a location, the module evaluates the full pricing
+pipeline, synthesises a valid L402 challenge, and records structured logs
+and Prometheus metrics — but <strong>always passes the request through to the
+upstream</strong>. No client ever sees <code>401</code> or <code>402</code>.</p>
+<p>This is the recommended way to validate pricing, LN backend reachability,
+and traffic patterns with real production traffic before flipping a route
+to enforcement.</p>
+<hr>
+<h2 id="enabling-shadow-mode"><a class="header" href="#enabling-shadow-mode">Enabling shadow mode</a></h2>
+<pre><code class="language-nginx">location /api/ {
+    l402                        on;
+    l402_amount_msat_default    10000;
+    l402_dry_run                on;          # evaluate, log, never block
+    proxy_pass                  http://upstream;
+}
+</code></pre>
+<p><code>l402_dry_run</code> accepts <code>on</code> or <code>off</code> (default). It can be combined with any
+other <code>l402_*</code> directive — dynamic pricing from Redis, multi-tenant LNURLs,
+macaroon timeouts, invoice rate limits — so the shadow-mode numbers you
+measure match the configuration you are about to enforce.</p>
+<p><code>l402</code> must still be <code>on</code> for the module to enter the access handler.
+Turning <code>l402</code> off disables the module entirely, including shadow mode.</p>
+<hr>
+<h2 id="what-happens-per-request"><a class="header" href="#what-happens-per-request">What happens per request</a></h2>
+<p>For every request reaching a shadow-mode location, the module:</p>
+<ol>
+<li>Reads the static and dynamic (Redis) price for the route and picks the
+effective <code>amount_msat</code>.</li>
+<li>Looks up any per-tenant LNURL override.</li>
+<li>Verifies the <code>Authorization</code> header if one is present (L402 or Cashu).</li>
+<li>If no valid token is present, calls the configured LN backend and
+generates a real invoice + macaroon — exactly the challenge enforce
+mode would have returned.</li>
+<li>Emits a structured JSON log line and bumps the relevant Prometheus
+counters.</li>
+<li>Returns <code>NGX_DECLINED</code>, so Nginx continues to the content phase and
+serves the upstream response with its natural status code.</li>
+</ol>
+<blockquote>
+<p><strong>Cost note</strong>: generating a challenge contacts your LN backend on every
+unauthenticated request. If you have high traffic, start by enabling
+shadow mode on a sampled location (e.g. a canary route) before rolling
+it out everywhere.</p>
+<p><strong>Latency cap</strong>: the challenge-synthesis call is bounded by a 5-second
+timeout. If the LN backend does not respond within that window the
+request still passes through (with no <code>X-L402-Dry-Run-Challenge</code>
+header) and <code>l402_dry_run_challenge_errors_total</code> is incremented —
+shadow mode must never add latency to user-facing traffic.</p>
+</blockquote>
+<hr>
+<h2 id="response-headers"><a class="header" href="#response-headers">Response headers</a></h2>
+<p>Shadow mode attaches debug headers to the upstream response so operators
+can inspect what would have happened without scraping logs:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Header</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>X-L402-Dry-Run: 1</code></td><td>Marks the response as produced by shadow mode. Always present.</td></tr>
+<tr><td><code>X-L402-Dry-Run-Price-Msat: &lt;n&gt;</code></td><td>Effective price for this route. Only emitted when the request <em>would</em> have been challenged (<code>402</code>) — not on paid-valid or rejected-invalid responses, to avoid leaking pricing against decided traffic.</td></tr>
+<tr><td><code>X-L402-Dry-Run-Challenge: L402 macaroon="...", invoice="..."</code></td><td>The exact <code>WWW-Authenticate</code> value enforce mode would have returned. Only present when the request would have been challenged (<code>402</code>) and the LN backend produced an invoice.</td></tr>
+<tr><td><code>WWW-Authenticate: L402 macaroon="...", invoice="..."</code></td><td>Also set alongside the challenge header, so real L402 clients can follow the payment flow in a staging environment.</td></tr>
+<tr><td><code>X-L402-Dry-Run-Rate-Limited: 1</code> + <code>X-L402-Dry-Run-Retry-After: &lt;sec&gt;</code></td><td>Set when the request would have been challenged but hit <code>l402_invoice_rate_limit</code>. No invoice is generated and no challenge header is attached, mirroring what enforce mode would have done (429 + <code>Retry-After</code>).</td></tr>
+</tbody>
+</table>
+</div>
+<hr>
+<h2 id="structured-log-events"><a class="header" href="#structured-log-events">Structured log events</a></h2>
+<p>Every shadow-mode request produces a single <code>info</code>-level JSON line via the
+Rust logger. A minimal example (formatted for readability):</p>
+<pre><code class="language-json">{
+  "event": "l402_dry_run",
+  "route": "/api/resource",
+  "price_msat": 10000,
+  "price_source": "static",
+  "backend": "LNURL",
+  "client_ip": "203.0.113.42",
+  "auth_state": "missing",
+  "would_return": 402
+}
+</code></pre>
+<p>Fields:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Values</th></tr>
+</thead>
+<tbody>
+<tr><td><code>route</code></td><td>Normalised request path used for pricing lookups.</td></tr>
+<tr><td><code>price_msat</code></td><td>Effective price in millisatoshis.</td></tr>
+<tr><td><code>price_source</code></td><td><code>static</code> (from <code>nginx.conf</code>) or <code>dynamic</code> (from Redis).</td></tr>
+<tr><td><code>backend</code></td><td>LN backend type snapshot: <code>LND</code>, <code>LNURL</code>, <code>NWC</code>, <code>CLN</code>, <code>BOLT12</code>, <code>ECLAIR</code>.</td></tr>
+<tr><td><code>client_ip</code></td><td>From <code>X-Real-IP</code> → <code>X-Forwarded-For</code> → socket address.</td></tr>
+<tr><td><code>auth_state</code></td><td><code>missing</code>, <code>valid</code>, or <code>invalid</code>.</td></tr>
+<tr><td><code>would_return</code></td><td>HTTP status enforce mode <em>would</em> have used (<code>200</code>, <code>401</code>, <code>402</code>).</td></tr>
+<tr><td><code>rate_limited</code></td><td><code>true</code> when <code>l402_invoice_rate_limit</code> would have produced a <code>429</code> — challenge synthesis was skipped to protect the LN backend.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Pipe into <code>jq</code> to see a live firehose:</p>
+<pre><code class="language-bash">sudo tail -f /var/log/nginx/error.log \
+  | grep '"event":"l402_dry_run"' \
+  | jq -c 'select(.would_return != 200) | {route, price_msat, auth_state}'
+</code></pre>
+<hr>
+<h2 id="prometheus-metrics"><a class="header" href="#prometheus-metrics">Prometheus metrics</a></h2>
+<p>The <code>l402_metrics</code> directive turns a location into a Prometheus scrape
+endpoint. It serves counters in text exposition format v0.0.4.</p>
+<pre><code class="language-nginx">location = /metrics {
+    l402_metrics;
+
+    # Production: restrict to your scrape network.
+    allow 10.0.0.0/8;
+    deny  all;
+}
+</code></pre>
+<p>Scrape it with a standard Prometheus config:</p>
+<pre><code class="language-yaml">scrape_configs:
+  - job_name: ngx_l402
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['nginx:8000']
+</code></pre>
+<h3 id="exported-counters"><a class="header" href="#exported-counters">Exported counters</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Metric</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>l402_requests_total</code></td><td>Every request that entered the access handler with <code>l402 on;</code>. Incremented for both enforce and shadow traffic.</td></tr>
+<tr><td><code>l402_challenges_issued_total</code></td><td>Requests that received a <code>402</code> response (enforce mode), counted <em>after</em> the rate-limit gate.</td></tr>
+<tr><td><code>l402_rate_limited_total</code></td><td>Requests rejected with <code>429</code> by <code>l402_invoice_rate_limit</code> (enforce mode).</td></tr>
+<tr><td><code>l402_payments_valid_total</code></td><td>Authorization headers that verified successfully (enforce mode only — dry-run traffic goes to <code>l402_dry_run_*</code>).</td></tr>
+<tr><td><code>l402_payments_invalid_total</code></td><td>Authorization headers that failed verification (enforce mode only).</td></tr>
+<tr><td><code>l402_payments_missing_total</code></td><td>Requests without an Authorization header (enforce mode only).</td></tr>
+<tr><td><code>l402_dry_run_requests_total</code></td><td>Requests handled in shadow mode.</td></tr>
+<tr><td><code>l402_dry_run_would_block_total</code></td><td>Shadow-mode requests that <em>would</em> have been blocked (<code>401</code> or <code>402</code>).</td></tr>
+<tr><td><code>l402_dry_run_would_allow_total</code></td><td>Shadow-mode requests that <em>would</em> have been allowed (<code>200</code>).</td></tr>
+<tr><td><code>l402_dry_run_rate_limited_total</code></td><td>Shadow-mode requests that would have hit <code>l402_invoice_rate_limit</code> — challenge synthesis was skipped.</td></tr>
+<tr><td><code>l402_dry_run_challenge_errors_total</code></td><td>Shadow-mode requests where challenge synthesis failed (e.g. LN backend unreachable).</td></tr>
+<tr><td><code>l402_dry_run_price_msat_sum</code></td><td>Sum of msat prices evaluated in shadow mode. Pair with <code>_requests_total</code> to derive an average price.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="useful-promql"><a class="header" href="#useful-promql">Useful PromQL</a></h3>
+<pre><code class="language-promql"># Fraction of traffic that would be blocked if you flipped enforcement on:
+rate(l402_dry_run_would_block_total[5m])
+/
+rate(l402_dry_run_requests_total[5m])
+
+# Average price served by shadow mode (msat):
+rate(l402_dry_run_price_msat_sum[5m])
+/
+rate(l402_dry_run_requests_total[5m])
+
+# Challenge-synthesis error rate — a signal that your LN backend is flaky:
+rate(l402_dry_run_challenge_errors_total[5m])
+</code></pre>
+<blockquote>
+<p>The endpoint has no built-in authentication. Restrict it at the Nginx
+level with <code>allow</code>/<code>deny</code>, an auth subrequest, or a firewall rule —
+exposing it publicly leaks traffic volume and pricing details.</p>
+</blockquote>
+<hr>
+<h2 id="suggested-rollout-recipe"><a class="header" href="#suggested-rollout-recipe">Suggested rollout recipe</a></h2>
+<ol>
+<li>Deploy with <code>l402 on;</code> and <code>l402_dry_run on;</code> on the target location.
+Leave existing routes untouched.</li>
+<li>Scrape <code>/metrics</code> for 24–48 hours. Confirm:
+<ul>
+<li><code>l402_dry_run_challenge_errors_total</code> stays flat (LN backend healthy).</li>
+<li><code>l402_dry_run_would_allow_total / l402_dry_run_requests_total</code> matches
+the fraction of paying clients you expect.</li>
+<li><code>l402_dry_run_price_msat_sum</code> divided by request count matches your
+posted price.</li>
+</ul>
+</li>
+<li>Sample the JSON log for a few high-volume paths and confirm
+<code>price_source</code> is what you configured (<code>static</code> vs <code>dynamic</code>).</li>
+<li>Remove <code>l402_dry_run on;</code> (or set it to <code>off</code>). Reload Nginx. The
+location now enforces.</li>
+</ol>
+<p>If you ever need to revert, setting <code>l402_dry_run on;</code> again immediately
+disables enforcement without touching upstream code paths.</p>
 
                     </main>
 
