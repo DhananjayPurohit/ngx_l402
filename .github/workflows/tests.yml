@@ -833,6 +833,41 @@ jobs:
             exit 1
           fi
 
+      - name: Stop nginx-nwc
+        run: docker-compose -f docker-compose.yml stop nginx-nwc
+
+      - name: Run Integration Tests - CLN Autodetect
+        run: |
+          echo "Testing CLN Autodetect Payment..."
+          docker-compose -f docker-compose.yml up -d nginx-cln
+          sleep 10
+          docker exec nginx-cln chmod 777 /root /root/.lightning /root/.lightning/regtest
+
+          # Get invoice from CLN
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          
+          if [ -z "$invoice" ]; then
+            echo "Error: No invoice found"
+            exit 1
+          fi
+
+          echo "Paying invoice with LND..."
+          docker exec lndnode lncli -n regtest payinvoice -f $invoice
+          sleep 5
+          
+          echo "Testing protected route with ONLY macaroon (expecting autodetect)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected-auto)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: CLN Autodetect failed with status $status_code, expected 200"
+            docker logs nginx-cln
+            exit 1
+          fi
+          echo "✅ CLN Autodetect successful!"
+          docker-compose -f docker-compose.yml stop nginx-cln
+
       - name: Stop NWC service and CLN node
         run: |
           docker-compose -f docker-compose.yml stop nginx-nwc cln
@@ -842,8 +877,14 @@ jobs:
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
+          # Make LND macaroon and cert readable by nginx user
+          docker exec lndnode-receiver chmod a+rx /root /root/.lnd /root/.lnd/data /root/.lnd/data/chain /root/.lnd/data/chain/bitcoin /root/.lnd/data/chain/bitcoin/regtest
+          docker exec lndnode-receiver chmod a+r /root/.lnd/data/chain/bitcoin/regtest/admin.macaroon /root/.lnd/tls.cert
+          
           # Start the remaining services
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd redis
+          sleep 5
+          docker exec nginx-lnd chmod 755 /root
 
       - name: Run Integration Tests - LND
         run: |
@@ -994,6 +1035,26 @@ jobs:
             docker logs nginx-lnd
             exit 1
           fi
+
+          # Test LND Autodetect Payment
+          echo "Testing LND Autodetect Payment..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
+          invoice=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          macaroon=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          
+          echo "Paying invoice with lndnode..."
+          docker exec lndnode lncli -n regtest payinvoice -f $invoice
+          sleep 5
+          
+          echo "Testing protected route with ONLY macaroon (expecting autodetect)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon" http://0.0.0.0:8000/protected-auto)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: LND Autodetect failed with status $status_code, expected 200"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "✅ LND Autodetect successful!"
 
           # Test Cashu eCash support
           echo "Testing Cashu eCash support..."
@@ -1746,16 +1807,143 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-lnc litd
 
-      - name: Start Eclair Node
+      - name: Start Eclair Node and nginx-eclair
         run: |
-          echo "Starting Eclair node..."
-          docker-compose -f docker-compose.yml up -d eclair
+          echo "Starting Eclair node and nginx-eclair..."
+          # Remove stale eclair-data volume so Eclair always starts with a clean
+          # blockchain/channel state. Without this, leftover data from a previous
+          # CI run causes Eclair to get stuck waiting for a funding tx that no
+          # longer exists on the regtest chain.
+          docker-compose -f docker-compose.yml rm -fsv eclair || true
+          docker volume rm ngx_l402_eclair-data 2>/dev/null || true
+          docker-compose -f docker-compose.yml up -d eclair nginx-eclair
 
-      - name: Start nginx-eclair
-        run: |
-          echo "Starting nginx-eclair with Eclair configuration..."
-          docker-compose -f docker-compose.yml up -d nginx-eclair
-          sleep 15 # Give Eclair time to start up and generate keys
+          echo "Waiting for Eclair to be ready and synced..."
+          for i in {1..30}; do
+            ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo | jq -r .blockHeight 2>/dev/null || echo "0")
+            BITCOIND_HEIGHT=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount 2>/dev/null || echo "0")
+            echo "Eclair height: $ECLAIR_HEIGHT, Bitcoind height: $BITCOIND_HEIGHT"
+            if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_HEIGHT" ] && [ "$ECLAIR_HEIGHT" -gt 0 ]; then
+              echo "✅ Eclair is synced!"
+              break
+            fi
+            sleep 2
+          done
+
+          # ── Pre-open LND→Eclair channel NOW so it accumulates confirmations
+          #    while the basic Eclair tests run, giving autodetect a head start.
+          echo "Pre-opening LND→Eclair channel..."
+          ECLAIR_NODE_ID=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo | jq -r .nodeId)
+          echo "Eclair Node ID: $ECLAIR_NODE_ID"
+          echo "ECLAIR_NODE_ID=${ECLAIR_NODE_ID}" >> $GITHUB_ENV
+
+          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+          sleep 3
+          docker exec lndnode lncli -n regtest openchannel \
+            --node_key=${ECLAIR_NODE_ID} \
+            --local_amt=1000000 \
+            --min_confs=0 || true
+
+          # Mine 6 blocks first (enough to confirm the funding tx via RPC catch-up)
+          echo "Mining 6 blocks to confirm channel funding..."
+          MINE_ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+            -rpcwallet=my_wallet getnewaddress)
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+            -rpcwallet=my_wallet generatetoaddress 6 "$MINE_ADDR"
+
+          # Restart Eclair to force a full RPC catch-up: after restart Eclair will
+          # re-scan its channel history via bitcoind RPC (not ZMQ) and discover
+          # the confirmed funding tx.
+          BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
+          echo "Restarting Eclair to force RPC sync to block $BITCOIND_TIP..."
+          docker-compose -f docker-compose.yml restart eclair
+          sleep 10
+
+          # Wait for Eclair to sync after restart.
+          echo "Waiting for Eclair to sync after restart..."
+          ECLAIR_SYNCED=false
+          for i in {1..40}; do
+            ECLAIR_HEIGHT=$(curl -s -u :eclairpass -X POST http://localhost:8282/getinfo \
+              | jq -r .blockHeight 2>/dev/null || echo "0")
+            if [ "$ECLAIR_HEIGHT" -ge "$BITCOIND_TIP" ] && [ "$ECLAIR_HEIGHT" -gt "0" ]; then
+              echo "Eclair synced to block $ECLAIR_HEIGHT (tip: $BITCOIND_TIP)"
+              ECLAIR_SYNCED=true
+              break
+            fi
+            echo "Eclair at $ECLAIR_HEIGHT, waiting for $BITCOIND_TIP... ($i/40)"
+            sleep 3
+          done
+          if [ "$ECLAIR_SYNCED" != "true" ]; then
+            echo "Error: Eclair did not sync past block $BITCOIND_TIP after restart"
+            docker logs eclair | tail -50
+            exit 1
+          fi
+
+          # Mine additional blocks NOW (after Eclair is synced and listening on ZMQ).
+          # Eclair transitions WAIT_FOR_FUNDING_CONFIRMED → NORMAL only when it
+          # receives a live ZMQ hashblock notification for a block at or past min-depth.
+          # Without new blocks post-restart the channel stays stuck.
+          echo "Mining 6 more blocks to trigger Eclair ZMQ confirmation events..."
+          MINE_ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+            -rpcwallet=my_wallet getnewaddress)
+          docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+            -rpcwallet=my_wallet generatetoaddress 6 "$MINE_ADDR"
+          BITCOIND_TIP=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass getblockcount)
+          sleep 5
+
+          # Reconnect LND to Eclair AFTER it is fully synced so that
+          # the channel_ready messages are exchanged on a stable connection.
+          echo "Reconnecting LND to Eclair after sync..."
+          docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+          sleep 5
+
+          # Wait for the channel to become NORMAL right here in the setup step so
+          # we fail fast with good diagnostics rather than timing out in the test step.
+          echo "Waiting for LND<->Eclair channel to become NORMAL..."
+          CHAN_READY=false
+          for i in {1..60}; do
+            # Re-attempt peer connection every 10 iterations
+            if [ $((i % 10)) -eq 1 ]; then
+              docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 2>/dev/null || true
+            fi
+
+            ECLAIR_CHAN_STATE=$(curl -s -u :eclairpass -X POST http://localhost:8282/channels 2>/dev/null \
+              | jq -r ".[].state" 2>/dev/null | grep -m1 "NORMAL" || echo "")
+            LND_CHAN_ACTIVE=$(docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} \
+              2>/dev/null | jq '[.channels[] | select(.active == true)] | length' 2>/dev/null || echo "0")
+            LND_CHAN_ACTIVE=${LND_CHAN_ACTIVE:-0}
+
+            if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "$LND_CHAN_ACTIVE" -gt "0" ]; then
+              echo "Channel is NORMAL (Eclair: ${ECLAIR_CHAN_STATE}, LND active: ${LND_CHAN_ACTIVE})"
+              CHAN_READY=true
+              break
+            fi
+
+            # Mine a nudge block every 5 iterations to keep ZMQ events flowing
+            if [ $((i % 5)) -eq 0 ]; then
+              NUDGE_ADDR=$(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+                -rpcwallet=my_wallet getnewaddress 2>/dev/null || echo "")
+              if [ -n "$NUDGE_ADDR" ]; then
+                docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+                  -rpcwallet=my_wallet generatetoaddress 1 "$NUDGE_ADDR" > /dev/null 2>&1 || true
+              fi
+            fi
+
+            echo "Channel not yet NORMAL ($i/60) [Eclair: ${ECLAIR_CHAN_STATE}, LND active: ${LND_CHAN_ACTIVE}]"
+            sleep 3
+          done
+
+          if [ "$CHAN_READY" != "true" ]; then
+            echo "Error: LND<->Eclair channel did not reach NORMAL state during setup"
+            echo "Eclair channels:"
+            curl -s -u :eclairpass -X POST http://localhost:8282/channels
+            echo "LND channels:"
+            docker exec lndnode lncli -n regtest listchannels
+            echo "Eclair logs (last 80 lines):"
+            docker logs eclair --tail=80
+            exit 1
+          fi
+          echo "LND<->Eclair channel ready!"
 
       - name: Run Integration Tests - Eclair
         run: |
@@ -1815,6 +2003,91 @@ jobs:
             echo "Invoice: $invoice"
             exit 1
           fi
+
+          # Test Eclair Autodetect
+          # ECLAIR_NODE_ID was exported in the "Start Eclair Node and nginx-eclair" step.
+          # The channel was also opened and funded there, so it has had time to confirm
+          # while the basic Eclair tests ran above.
+          echo "Checking Eclair channel status for autodetect test..."
+          echo "Eclair Node ID (from env): $ECLAIR_NODE_ID"
+
+          # Ensure peer is still connected
+          if ! docker exec lndnode lncli -n regtest listpeers | grep -q "${ECLAIR_NODE_ID}"; then
+            echo "Peer disconnected – reconnecting..."
+            docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+            sleep 3
+          fi
+
+          # ── Quick pre-check: channel may already be NORMAL ──────────────────────
+          ECLAIR_CHAN_STATE=$(curl -s -u :eclairpass -X POST http://localhost:8282/channels 2>/dev/null \
+            | jq -r '.[].state' 2>/dev/null | grep -m1 "NORMAL" || echo "")
+          # Use grep -o | wc -l instead of grep -c to avoid "0\n0" when grep exits 1 on no match
+          LND_CHAN_ACTIVE=$(docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} \
+            2>/dev/null | grep -o '"active": true' | wc -l)
+
+          if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "$LND_CHAN_ACTIVE" -gt "0" ]; then
+            echo "✅ Channel already active (Eclair: ${ECLAIR_CHAN_STATE}, LND: ${LND_CHAN_ACTIVE}) – skipping wait loop."
+          else
+            echo "Waiting for channel to become active..."
+            for i in {1..60}; do
+              # Reconnect only if peer dropped (expensive call – do it sparingly)
+              if [ $((i % 10)) -eq 0 ] && ! docker exec lndnode lncli -n regtest listpeers | grep -q "${ECLAIR_NODE_ID}"; then
+                docker exec lndnode lncli -n regtest connect ${ECLAIR_NODE_ID}@eclair:9945 || true
+              fi
+
+              ECLAIR_CHAN_STATE=$(curl -s -u :eclairpass -X POST http://localhost:8282/channels 2>/dev/null \
+                | jq -r '.[].state' 2>/dev/null | grep -m1 "NORMAL" || echo "")
+              LND_CHAN_ACTIVE=$(docker exec lndnode lncli -n regtest listchannels --peer=${ECLAIR_NODE_ID} \
+                2>/dev/null | grep -o '"active": true' | wc -l)
+
+              if [ "$ECLAIR_CHAN_STATE" = "NORMAL" ] || [ "$LND_CHAN_ACTIVE" -gt "0" ]; then
+                echo "✅ Channel is active! (Eclair: ${ECLAIR_CHAN_STATE}, LND: ${LND_CHAN_ACTIVE})"
+                break
+              fi
+
+              # Mine a nudge block every 2 iterations (~4 s cadence) for fast gossip propagation
+              if [ $((i % 2)) -eq 0 ]; then
+                docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+                  -rpcwallet=my_wallet generatetoaddress 1 \
+                  $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass \
+                    -rpcwallet=my_wallet getnewaddress) > /dev/null
+              fi
+
+              echo "Waiting for channel activation... ($i/60) [Eclair: ${ECLAIR_CHAN_STATE}, LND: ${LND_CHAN_ACTIVE}]"
+              sleep 2
+              if [ $i -eq 60 ]; then
+                echo "Error: Channel did not become active in time"
+                echo "Channels status:"
+                docker exec lndnode lncli -n regtest listchannels
+                echo "Peers status:"
+                docker exec lndnode lncli -n regtest listpeers
+                echo "Eclair channels:"
+                curl -s -u :eclairpass -X POST http://localhost:8282/channels
+                echo "Eclair info:"
+                curl -s -u :eclairpass -X POST http://localhost:8282/getinfo
+                exit 1
+              fi
+            done
+          fi
+
+          echo "Getting new invoice for Eclair Autodetect..."
+          response_auto=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
+          invoice_auto=$(echo "$response_auto" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          macaroon_auto=$(echo "$response_auto" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+
+          echo "Paying Eclair invoice with LND..."
+          docker exec lndnode lncli -n regtest payinvoice -f $invoice_auto
+          sleep 5
+
+          echo "Testing Eclair Autodetect (macaroon only)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon_auto" http://0.0.0.0:8000/protected-auto)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Eclair Autodetect failed with status $status_code"
+            docker logs nginx-eclair
+            exit 1
+          fi
+          echo "✅ Eclair Autodetect successful!"
 
           echo "✅ Eclair invoice generation test completed successfully!"
 
