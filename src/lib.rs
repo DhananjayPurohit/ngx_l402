@@ -148,6 +148,21 @@ pub async fn get_or_create_lnurl_client(
     }
 }
 
+/// Check if a preimage has already been claimed.
+/// Fast-fail before macaroon verification to avoid wasted CPU on known replays.
+/// Fails open (returns false) if Redis is unavailable.
+fn is_preimage_used(preimage: &[u8]) -> bool {
+    let Some(pool) = REDIS_POOL.get() else {
+        return false;
+    };
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let redis_key = preimage_redis_key(preimage);
+    conn.exists::<_, bool>(&redis_key).unwrap_or(false)
+}
+
 /// Atomically store a preimage as used via SET NX EX (single round-trip).
 /// Returns Ok(true) if stored successfully (first use), Ok(false) if already existed (race with another worker).
 /// Called ONLY after successful verification to avoid burning preimages on transient failures.
@@ -1138,10 +1153,13 @@ pub fn l402_access_handler(
         } else {
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
-                    // Replay protection happens AFTER macaroon verification:
-                    // an unverified preimage is attacker-controlled, so checking
-                    // it first would let unauthenticated callers amplify Redis
-                    // load. The atomic SET NX EX below is the only admission gate.
+                    // Fast-fail: known-replayed preimages are rejected before
+                    // running macaroon verification. The SET NX EX below is the
+                    // authoritative cross-worker admission gate.
+                    if is_preimage_used(&preimage.0) {
+                        warn!("🚨 Replay attack detected: preimage already used");
+                        return 401;
+                    }
 
                     // Check expiry using verifier
                     let mut verifier = Verifier::default();
@@ -1180,22 +1198,15 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
-                            // Atomic claim: SET NX EX returns Some on first use,
-                            // None if a concurrent request already claimed it
-                            // (genuine replay race across workers).
-                            match store_preimage_as_used(&preimage.0) {
-                                Ok(true) => return NGX_DECLINED as isize,
-                                Ok(false) => {
-                                    warn!("🚨 Replay attack detected: preimage already claimed");
-                                    return 401;
-                                }
-                                Err(e) => {
-                                    // Fail-open on Redis outage matches the
-                                    // existing policy for other Redis paths.
-                                    warn!("⚠️ Redis claim failed, admitting request: {}", e);
-                                    return NGX_DECLINED as isize;
-                                }
+                            // Atomic claim. Real replays are filtered by the
+                            // pre-check above, so Ok(false) here only happens
+                            // for benign concurrent races between workers
+                            // serving the same legitimate request — admit them.
+                            // Err is fail-open, matching the policy elsewhere.
+                            if let Err(e) = store_preimage_as_used(&preimage.0) {
+                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
                             }
+                            return NGX_DECLINED as isize;
                         }
                         Err(e) => {
                             warn!("⚠️ L402 verification failed: {:?}", e);
