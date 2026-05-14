@@ -1150,16 +1150,19 @@ jobs:
             exit 1
           fi
 
-          # Cross-method replay: a GET-bound token used on POST must be rejected.
+          # Cross-method replay: a GET-bound token used on a different allowed
+          # method must be rejected. We use HEAD (not POST): this location uses
+          # try_files + static content, so nginx returns 405 for POST before
+          # the L402 handler runs — HEAD still reaches access phase like GET.
           # Run this BEFORE the GET case so the preimage isn't yet stored as used
           # by replay protection — we want to confirm the rejection comes from
           # the method caveat, not from preimage reuse.
-          echo "POST /protected with GET-bound token (expect 401)..."
-          post_resp=$(curl -s -w "\n%{http_code}" --max-time 30 -X POST -H "Authorization: L402 $method_macaroon:$method_preimage" http://0.0.0.0:8000/protected)
-          post_status=$(echo "$post_resp" | tail -n1)
-          if [ "$post_status" -ne 401 ]; then
-            echo "Error: POST /protected with GET-bound token returned $post_status, expected 401 (cross-method replay must be rejected)"
-            echo "$post_resp"
+          echo "HEAD /protected with GET-bound token (expect 401)..."
+          cross_method_resp=$(curl -s -w "\n%{http_code}" --max-time 30 -X HEAD -H "Authorization: L402 $method_macaroon:$method_preimage" http://0.0.0.0:8000/protected)
+          cross_method_status=$(echo "$cross_method_resp" | tail -n1)
+          if [ "$cross_method_status" -ne 401 ]; then
+            echo "Error: HEAD /protected with GET-bound token returned $cross_method_status, expected 401 (cross-method replay must be rejected)"
+            echo "$cross_method_resp"
             docker logs nginx-lnd
             exit 1
           fi
