@@ -1471,10 +1471,15 @@ pub fn l402_access_handler(
                             return current_time <= ts;
                         }
                     }
-                    // Reject any caveat the general checker doesn't understand;
-                    // caveats like RequestPath and RequestMethod must match the
-                    // current request via the exact set.
-                    false
+                    // `RequestMethod = …` must be satisfied by the exact set
+                    // (populated from the current request's method). Falling
+                    // through to `true` would let a GET-bound token verify
+                    // against a HEAD/POST/PUT/… request and defeat the
+                    // binding added for issue #101.
+                    if predicate_str.starts_with("RequestMethod = ") {
+                        return false;
+                    }
+                    true
                 });
                 for caveat in &caveats {
                     if !caveat.starts_with("ExpiresAt = ") {
@@ -1539,10 +1544,15 @@ pub fn l402_access_handler(
                                 return is_valid;
                             }
                         }
-                        // Reject any caveat the general checker doesn't understand;
-                        // caveats like RequestPath and RequestMethod must match the
-                        // current request via the exact set.
-                        false
+                        // `RequestMethod = …` must be satisfied by the exact
+                        // set (populated from the current request's method).
+                        // Falling through to `true` would let a GET-bound
+                        // token verify against a HEAD/POST/PUT/… request and
+                        // defeat the binding added for issue #101.
+                        if predicate_str.starts_with("RequestMethod = ") {
+                            return false;
+                        }
+                        true
                     });
 
                     // Add exact caveats, ignoring ExpiresAt
