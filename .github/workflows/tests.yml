@@ -1154,12 +1154,14 @@ jobs:
           # method must be rejected. We use HEAD (not POST): this location uses
           # try_files + static content, so nginx returns 405 for POST before
           # the L402 handler runs — HEAD still reaches access phase like GET.
+          # Use `curl -I` (libcurl proper HEAD) instead of `-X HEAD`; the latter
+          # makes curl wait for a body that never comes and hangs until timeout.
           # Run this BEFORE the GET case so the preimage isn't yet stored as used
           # by replay protection — we want to confirm the rejection comes from
           # the method caveat, not from preimage reuse.
           echo "HEAD /protected with GET-bound token (expect 401)..."
-          cross_method_resp=$(curl -s -w "\n%{http_code}" --max-time 30 -X HEAD -H "Authorization: L402 $method_macaroon:$method_preimage" http://0.0.0.0:8000/protected)
-          cross_method_status=$(echo "$cross_method_resp" | tail -n1)
+          cross_method_status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 -I -H "Authorization: L402 $method_macaroon:$method_preimage" http://0.0.0.0:8000/protected)
+          cross_method_resp="(status only: $cross_method_status)"
           if [ "$cross_method_status" -ne 401 ]; then
             echo "Error: HEAD /protected with GET-bound token returned $cross_method_status, expected 401 (cross-method replay must be rejected)"
             echo "$cross_method_resp"
