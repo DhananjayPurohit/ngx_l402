@@ -1471,7 +1471,10 @@ pub fn l402_access_handler(
                             return current_time <= ts;
                         }
                     }
-                    true
+                    // Reject any caveat the general checker doesn't understand;
+                    // caveats like RequestPath and RequestMethod must match the
+                    // current request via the exact set.
+                    false
                 });
                 for caveat in &caveats {
                     if !caveat.starts_with("ExpiresAt = ") {
@@ -1536,9 +1539,10 @@ pub fn l402_access_handler(
                                 return is_valid;
                             }
                         }
-                        // Return true for predicates we don't need to validate
-                        // This allows other predicates to pass through
-                        true
+                        // Reject any caveat the general checker doesn't understand;
+                        // caveats like RequestPath and RequestMethod must match the
+                        // current request via the exact set.
+                        false
                     });
 
                     // Add exact caveats, ignoring ExpiresAt
