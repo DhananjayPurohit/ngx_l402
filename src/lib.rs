@@ -38,11 +38,37 @@ use tonic_openssl_lnd::lnrpc;
 
 mod cashu;
 mod cashu_redemption_logger;
+mod manifest;
 mod metrics;
 mod payment_detector;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
+
+/// Registry of l402-enabled locations, populated at config-parse time and
+/// drained at `.well-known/l402` request time. Each entry holds the
+/// location's path and a raw pointer to its `ModuleConfig` — the config
+/// lives in nginx's cycle pool, so the pointer remains valid until the
+/// next reload, at which point a fresh worker process is started with a
+/// new registry.
+struct ConfPtr(*const ModuleConfig);
+// SAFETY: the ModuleConfig pointers are written once during single-threaded
+// config-parse and read-only afterwards. nginx's cycle pool guarantees the
+// pointee outlives the registry. There is no aliasing with mutable access.
+unsafe impl Send for ConfPtr {}
+unsafe impl Sync for ConfPtr {}
+
+struct RouteRegistration {
+    path: String,
+    conf: ConfPtr,
+}
+
+static MANIFEST_REGISTRY: OnceLock<std::sync::Mutex<Vec<RouteRegistration>>> = OnceLock::new();
+
+fn manifest_registry() -> &'static std::sync::Mutex<Vec<RouteRegistration>> {
+    MANIFEST_REGISTRY.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
 /// Connection pool for Redis. Checked out connections are returned automatically on drop.
 /// Pool size is configurable via REDIS_POOL_SIZE (default: cpu_count * 3, min 5, max 50).
 static REDIS_POOL: OnceLock<Pool<RedisClient>> = OnceLock::new();
@@ -787,6 +813,18 @@ impl HTTPModule for L402Module {
     type SrvConf = ();
     type LocConf = ModuleConfig;
 
+    unsafe extern "C" fn preconfiguration(_cf: *mut ngx_conf_t) -> ngx_int_t {
+        // Clear the manifest registry at the start of each config parse.
+        // On `nginx -s reload`, the master parses the new config; without
+        // this clear we'd accumulate stale (path, conf_ptr) entries from
+        // the previous cycle whose pool memory has been freed — reading
+        // them later from /.well-known/l402 is a use-after-free.
+        if let Ok(mut reg) = manifest_registry().lock() {
+            reg.clear();
+        }
+        NGX_OK as ngx_int_t
+    }
+
     unsafe extern "C" fn postconfiguration(cf: *mut ngx_conf_t) -> ngx_int_t {
         info!("🚀 Initializing L402 module handler");
         let cmcf = ngx_http_conf_get_module_main_conf(cf, &*addr_of!(ngx_http_core_module));
@@ -818,9 +856,13 @@ pub struct ModuleConfig {
     // (inherit from parent scope); `Some(false)` explicitly turns it off and
     // stops inheritance.
     dry_run: Option<bool>,
+    // When set via `l402_manifest_hide;`, this route is excluded from the
+    // `.well-known/l402` capability manifest. The route is still gated as
+    // normal — this just makes it not discoverable.
+    manifest_hidden: bool,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 9] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -881,6 +923,22 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 9] = [
         name: ngx_string!("l402_metrics"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
         set: Some(ngx_http_l402_metrics_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_manifest"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
+        set: Some(ngx_http_l402_manifest_set),
+        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_manifest_hide"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
+        set: Some(ngx_http_l402_manifest_hide_set),
         conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -962,6 +1020,9 @@ impl Merge for ModuleConfig {
         // location overrides `l402_dry_run on;` on the outer scope.
         if self.dry_run.is_none() {
             self.dry_run = prev.dry_run;
+        }
+        if prev.manifest_hidden {
+            self.manifest_hidden = true;
         }
         Ok(())
     }
@@ -1563,6 +1624,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     ngx_log_error!(NGX_LOG_INFO, log, "Starting module initialization");
 
     payment_detector::init_payment_detector();
+    manifest::init_env_snapshot();
 
     // Cache the LN backend type string for structured log lines. We can't
     // read env vars from worker threads, so snapshot it here.
@@ -2071,6 +2133,135 @@ pub unsafe extern "C" fn ngx_http_l402_metrics_set(
     std::ptr::null_mut()
 }
 
+pub unsafe extern "C" fn ngx_http_l402_manifest_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    _conf: *mut c_void,
+) -> *mut c_char {
+    // SAFETY: same guarantees as `ngx_http_l402_metrics_set` above.
+    unsafe {
+        let clcf = ngx_http_conf_get_module_loc_conf(cf, &*addr_of!(ngx_http_core_module));
+        if clcf.is_null() {
+            return b"l402_manifest: missing core loc conf\0".as_ptr() as *mut c_char;
+        }
+        if (*clcf).handler.is_some() {
+            error!(
+                "l402_manifest: another content handler is already registered for this location"
+            );
+            return b"l402_manifest: conflicts with another content handler in this location\0"
+                .as_ptr() as *mut c_char;
+        }
+        (*clcf).handler = Some(l402_manifest_content_handler);
+    }
+    info!("⚙️ l402_manifest endpoint registered (.well-known/l402 capability manifest)");
+    std::ptr::null_mut()
+}
+
+pub unsafe extern "C" fn ngx_http_l402_manifest_hide_set(
+    _cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    // SAFETY: `conf` points to this location's ModuleConfig, guaranteed
+    // valid by nginx during directive parsing.
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        conf.manifest_hidden = true;
+    }
+    info!("⚙️ l402_manifest_hide: excluding this route from /.well-known/l402");
+    std::ptr::null_mut()
+}
+
+/// Content-phase handler for `l402_manifest`. Serves the
+/// `.well-known/l402` capability manifest as JSON.
+///
+/// Only `GET` and `HEAD` are accepted; anything else returns `405`. The
+/// manifest is rebuilt on every request — cheap because the registry is
+/// in-process and small (one entry per l402-protected location).
+pub unsafe extern "C" fn l402_manifest_content_handler(r: *mut ngx_http_request_t) -> ngx_int_t {
+    let r_ref = unsafe { &mut *r };
+
+    let method = r_ref.method as u32;
+    if method & (NGX_HTTP_GET | NGX_HTTP_HEAD) == 0 {
+        return NGX_HTTP_NOT_ALLOWED as ngx_int_t;
+    }
+
+    let rc = unsafe { ngx_http_discard_request_body(r) };
+    if rc != NGX_OK as ngx_int_t {
+        return rc;
+    }
+
+    let snapshots = collect_route_snapshots();
+    let body = manifest::render(&snapshots);
+    let body_len = body.len();
+
+    let req = unsafe { Request::from_ngx_http_request(r) };
+    let mut pool = req.pool();
+
+    let Some(mut buf) = pool.create_buffer_from_str(&body) else {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t;
+    };
+    buf.set_last_buf(true);
+    buf.set_last_in_chain(true);
+
+    let chain = pool.alloc_type::<ngx_chain_t>();
+    if chain.is_null() {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t;
+    }
+    // SAFETY: `chain` was just allocated from the request pool.
+    unsafe {
+        (*chain).buf = buf.as_ngx_buf_mut();
+        (*chain).next = std::ptr::null_mut();
+    }
+
+    req.set_status(HTTPStatus::OK);
+    req.set_content_length_n(body_len);
+    let _ = req.add_header_out("Content-Type", "application/json; charset=utf-8");
+
+    let status = req.send_header();
+    if status.0 == NGX_ERROR as ngx_int_t || status.0 > NGX_OK as ngx_int_t || req.header_only() {
+        return status.0;
+    }
+
+    // SAFETY: `chain` is non-null, initialised, and lives for the request
+    // via the request pool.
+    unsafe { req.output_filter(&mut *chain).0 }
+}
+
+/// Read each registered route's `ModuleConfig` and build a snapshot. Called
+/// at request time so post-merge values (amount_msat, rate_limit, …) are
+/// reflected.
+fn collect_route_snapshots() -> Vec<manifest::RouteSnapshot> {
+    let Ok(registry) = manifest_registry().lock() else {
+        return Vec::new();
+    };
+    registry
+        .iter()
+        .filter_map(|entry| {
+            if entry.conf.0.is_null() {
+                return None;
+            }
+            // SAFETY: the pointer was captured during config parse; the
+            // pointee lives in nginx's cycle pool for the lifetime of the
+            // worker process. No mutable aliasing — we hold a shared ref.
+            let conf = unsafe { &*entry.conf.0 };
+            if !conf.enable {
+                // `l402 off;` in a child location overrides a parent `on`.
+                return None;
+            }
+            Some(manifest::RouteSnapshot {
+                path: entry.path.clone(),
+                price_msat: conf.amount_msat,
+                macaroon_timeout: conf.macaroon_timeout,
+                lnurl_addr: conf.lnurl_addr.clone(),
+                rate_limit: conf.invoice_rate_limit,
+                auto_detect_payment: conf.auto_detect_payment,
+                hidden: conf.manifest_hidden,
+            })
+        })
+        .collect()
+}
+
 pub unsafe extern "C" fn ngx_http_l402_set(
     cf: *mut ngx_conf_t,
     _cmd: *mut ngx_command_t,
@@ -2080,7 +2271,8 @@ pub unsafe extern "C" fn ngx_http_l402_set(
     // during config-parsing callbacks. `args.add(1)` is safe because
     // NGX_CONF_TAKE1 ensures exactly one argument is present.
     unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
+        let conf_ptr = conf as *mut ModuleConfig;
+        let conf = &mut *conf_ptr;
         let args = (*(*cf).args).elts as *mut ngx_str_t;
 
         let val = (*args.add(1)).to_str().trim().to_lowercase();
@@ -2089,6 +2281,25 @@ pub unsafe extern "C" fn ngx_http_l402_set(
             "on" | "true" | "1" | "yes" => {
                 conf.enable = true;
                 info!("⚙️ Enabled L402 for this location");
+                // Snapshot the location's path now and remember the conf
+                // pointer; the `.well-known/l402` handler re-reads the conf
+                // at request time so post-merge values (amount_msat, etc.)
+                // are picked up correctly.
+                if let Some(path) = location_name_str(cf) {
+                    if let Ok(mut reg) = manifest_registry().lock() {
+                        // Skip dup entries — `l402 on;` could appear more
+                        // than once in pathological configs.
+                        if !reg
+                            .iter()
+                            .any(|r| r.path == path && r.conf.0 == conf_ptr)
+                        {
+                            reg.push(RouteRegistration {
+                                path,
+                                conf: ConfPtr(conf_ptr),
+                            });
+                        }
+                    }
+                }
             }
             "off" | "false" | "0" | "no" => {
                 conf.enable = false;
@@ -2101,6 +2312,22 @@ pub unsafe extern "C" fn ngx_http_l402_set(
     };
 
     std::ptr::null_mut()
+}
+
+/// Read the current location's name (path) from the core loc conf during
+/// directive parsing. Returns `None` if nginx hasn't populated `name` yet
+/// (e.g. directive used outside a `location` block).
+unsafe fn location_name_str(cf: *mut ngx_conf_t) -> Option<String> {
+    let clcf = ngx_http_conf_get_module_loc_conf(cf, &*addr_of!(ngx_http_core_module));
+    if clcf.is_null() {
+        return None;
+    }
+    let name: ngx_str_t = (*clcf).name;
+    if name.len == 0 || name.data.is_null() {
+        return None;
+    }
+    let slice = std::slice::from_raw_parts(name.data, name.len);
+    Some(String::from_utf8_lossy(slice).into_owned())
 }
 
 pub unsafe extern "C" fn ngx_http_l402_amount_set(
