@@ -150,9 +150,13 @@ scrape_configs:
 | `l402_requests_total` | Every request that entered the access handler with `l402 on;`. Incremented for both enforce and shadow traffic. |
 | `l402_challenges_issued_total` | Requests that received a `402` response (enforce mode), counted *after* the rate-limit gate. |
 | `l402_rate_limited_total` | Requests rejected with `429` by `l402_invoice_rate_limit` (enforce mode). |
-| `l402_payments_valid_total` | Authorization headers that verified successfully (enforce mode only — dry-run traffic goes to `l402_dry_run_*`). |
+| `l402_payments_valid_total` | Authorization headers that verified successfully — Lightning + Cashu (enforce mode only — dry-run traffic goes to `l402_dry_run_*`). |
+| `l402_payments_lightning_total` | Successful payments settled via a Lightning macaroon (classic preimage *or* auto-detect). |
+| `l402_payments_cashu_total` | Successful payments settled via a Cashu token redemption. |
 | `l402_payments_invalid_total` | Authorization headers that failed verification (enforce mode only). |
 | `l402_payments_missing_total` | Requests without an Authorization header (enforce mode only). |
+| `l402_invoices_generated_total` | Lightning invoices successfully generated for L402 challenges (enforce mode only). |
+| `l402_invoices_generation_errors_total` | Failures generating a Lightning invoice during challenge synthesis (returns `500`). |
 | `l402_dry_run_requests_total` | Requests handled in shadow mode. |
 | `l402_dry_run_would_block_total` | Shadow-mode requests that *would* have been blocked (`401` or `402`). |
 | `l402_dry_run_would_allow_total` | Shadow-mode requests that *would* have been allowed (`200`). |

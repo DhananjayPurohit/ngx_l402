@@ -1317,6 +1317,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         match header_result {
             Some(header_value) => unsafe {
+                metrics::inc(&metrics::L402_INVOICES_GENERATED_TOTAL);
                 ngx_log_error!(
                     NGX_LOG_INFO,
                     log_ref,
@@ -1326,6 +1327,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 req.add_header_out("WWW-Authenticate", &header_value);
             },
             None => {
+                metrics::inc(&metrics::L402_INVOICES_GENERATION_ERRORS_TOTAL);
                 ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
                 return 500; // Return server error if we couldn't get the header
             }
@@ -1383,6 +1385,7 @@ pub fn l402_access_handler(
 
             match verify_result {
                 Ok(true) => {
+                    metrics::inc(&metrics::L402_PAYMENTS_CASHU_TOTAL);
                     return NGX_DECLINED as isize;
                 }
                 Ok(false) => {
@@ -1520,6 +1523,7 @@ pub fn l402_access_handler(
                 ) {
                     Ok(_) => {
                         info!("✅ L402 auto-detect verification successful");
+                        metrics::inc(&metrics::L402_PAYMENTS_LIGHTNING_TOTAL);
                         if let Err(e) = store_preimage_as_used(&preimage_bytes) {
                             error!("⚠️ Failed to store preimage in Redis: {}", e);
                         }
@@ -1580,6 +1584,7 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
+                            metrics::inc(&metrics::L402_PAYMENTS_LIGHTNING_TOTAL);
                             // Atomic claim. Real replays are filtered by the
                             // pre-check above, so Ok(false) here only happens
                             // for benign concurrent races between workers

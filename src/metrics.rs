@@ -29,13 +29,29 @@ counters! {
     L402_CHALLENGES_ISSUED_TOTAL,
 
     /// Requests whose Authorization header verified successfully.
+    /// Aggregate of [`L402_PAYMENTS_LIGHTNING_TOTAL`] and
+    /// [`L402_PAYMENTS_CASHU_TOTAL`].
     L402_PAYMENTS_VALID_TOTAL,
+
+    /// Successful payments settled via a Lightning macaroon (classic preimage
+    /// path *or* auto-detect path).
+    L402_PAYMENTS_LIGHTNING_TOTAL,
+
+    /// Successful payments settled via a Cashu token redemption.
+    L402_PAYMENTS_CASHU_TOTAL,
 
     /// Requests whose Authorization header failed verification (401).
     L402_PAYMENTS_INVALID_TOTAL,
 
     /// Requests that arrived without an Authorization header.
     L402_PAYMENTS_MISSING_TOTAL,
+
+    /// Lightning invoices successfully generated as part of a 402 challenge.
+    L402_INVOICES_GENERATED_TOTAL,
+
+    /// Lightning invoice generation failures (LN backend unreachable, LNURL
+    /// errors, etc.) that resulted in a 500 response.
+    L402_INVOICES_GENERATION_ERRORS_TOTAL,
 
     /// Requests rejected with 429 by `l402_invoice_rate_limit` (enforce mode).
     L402_RATE_LIMITED_TOTAL,
@@ -87,8 +103,18 @@ pub fn render() -> String {
         ),
         (
             "l402_payments_valid_total",
-            "Authorization headers that verified successfully.",
+            "Authorization headers that verified successfully (Lightning + Cashu).",
             &L402_PAYMENTS_VALID_TOTAL,
+        ),
+        (
+            "l402_payments_lightning_total",
+            "Successful payments settled via a Lightning macaroon.",
+            &L402_PAYMENTS_LIGHTNING_TOTAL,
+        ),
+        (
+            "l402_payments_cashu_total",
+            "Successful payments settled via a Cashu token redemption.",
+            &L402_PAYMENTS_CASHU_TOTAL,
         ),
         (
             "l402_payments_invalid_total",
@@ -99,6 +125,16 @@ pub fn render() -> String {
             "l402_payments_missing_total",
             "Requests without an Authorization header.",
             &L402_PAYMENTS_MISSING_TOTAL,
+        ),
+        (
+            "l402_invoices_generated_total",
+            "Lightning invoices successfully generated for L402 challenges.",
+            &L402_INVOICES_GENERATED_TOTAL,
+        ),
+        (
+            "l402_invoices_generation_errors_total",
+            "Failures generating a Lightning invoice during L402 challenge synthesis.",
+            &L402_INVOICES_GENERATION_ERRORS_TOTAL,
         ),
         (
             "l402_rate_limited_total",
