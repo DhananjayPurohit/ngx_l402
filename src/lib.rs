@@ -9,11 +9,13 @@ use ngx::ffi::{
     nginx_version, ngx_array_push, ngx_chain_t, ngx_command_t, ngx_conf_t, ngx_cycle_s,
     ngx_http_core_module, ngx_http_discard_request_body, ngx_http_handler_pt, ngx_http_module_t,
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t,
-    ngx_str_t, ngx_uint_t, NGX_CONF_NOARGS, NGX_CONF_TAKE1, NGX_DECLINED, NGX_ERROR, NGX_HTTP_GET,
-    NGX_HTTP_HEAD, NGX_HTTP_INTERNAL_SERVER_ERROR, NGX_HTTP_LOC_CONF, NGX_HTTP_MAIN_CONF,
-    NGX_HTTP_MODULE, NGX_HTTP_NOT_ALLOWED, NGX_HTTP_SRV_CONF, NGX_LOG_ERR, NGX_LOG_INFO,
-    NGX_LOG_WARN, NGX_OK,
-    NGX_RS_HTTP_LOC_CONF_OFFSET, NGX_RS_MODULE_SIGNATURE,
+    ngx_str_t, ngx_uint_t, NGX_CONF_NOARGS, NGX_CONF_TAKE1, NGX_DECLINED, NGX_ERROR, NGX_HTTP_COPY,
+    NGX_HTTP_DELETE, NGX_HTTP_GET, NGX_HTTP_HEAD, NGX_HTTP_INTERNAL_SERVER_ERROR, NGX_HTTP_LOCK,
+    NGX_HTTP_LOC_CONF, NGX_HTTP_MAIN_CONF, NGX_HTTP_MKCOL, NGX_HTTP_MODULE, NGX_HTTP_MOVE,
+    NGX_HTTP_NOT_ALLOWED, NGX_HTTP_OPTIONS, NGX_HTTP_PATCH, NGX_HTTP_POST, NGX_HTTP_PROPFIND,
+    NGX_HTTP_PROPPATCH, NGX_HTTP_PUT, NGX_HTTP_SRV_CONF, NGX_HTTP_TRACE, NGX_HTTP_UNLOCK,
+    NGX_LOG_ERR, NGX_LOG_INFO, NGX_LOG_WARN, NGX_OK, NGX_RS_HTTP_LOC_CONF_OFFSET,
+    NGX_RS_MODULE_SIGNATURE,
 };
 use ngx::http::{
     ngx_http_conf_get_module_loc_conf, ngx_http_conf_get_module_main_conf, HTTPModule, HTTPStatus,
@@ -1028,6 +1030,32 @@ impl Merge for ModuleConfig {
     }
 }
 
+/// Map nginx's `r->method` bitmask to the canonical uppercase string used in
+/// the `RequestMethod` macaroon caveat. Falls back to `"UNKNOWN"` for methods
+/// nginx didn't recognise; both sides of the protocol see the same fallback,
+/// so the binding still excludes cross-method replay between recognised
+/// methods (the only ones a typical client will use).
+fn method_caveat_value(method: u32) -> &'static str {
+    match method {
+        m if m == NGX_HTTP_GET => "GET",
+        m if m == NGX_HTTP_HEAD => "HEAD",
+        m if m == NGX_HTTP_POST => "POST",
+        m if m == NGX_HTTP_PUT => "PUT",
+        m if m == NGX_HTTP_DELETE => "DELETE",
+        m if m == NGX_HTTP_OPTIONS => "OPTIONS",
+        m if m == NGX_HTTP_PATCH => "PATCH",
+        m if m == NGX_HTTP_TRACE => "TRACE",
+        m if m == NGX_HTTP_MKCOL => "MKCOL",
+        m if m == NGX_HTTP_COPY => "COPY",
+        m if m == NGX_HTTP_MOVE => "MOVE",
+        m if m == NGX_HTTP_PROPFIND => "PROPFIND",
+        m if m == NGX_HTTP_PROPPATCH => "PROPPATCH",
+        m if m == NGX_HTTP_LOCK => "LOCK",
+        m if m == NGX_HTTP_UNLOCK => "UNLOCK",
+        _ => "UNKNOWN",
+    }
+}
+
 // SAFETY: This function is an Nginx access-phase handler registered via
 // `postconfiguration`. Nginx guarantees that `request`, `request->connection`,
 // `request->connection->log`, and `request->loc_conf` are valid, non-null
@@ -1125,7 +1153,13 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             request_path = request_path[..pos].to_string();
         }
     }
-    let caveats = vec![format!("RequestPath = {}", request_path)];
+    // Bind the macaroon to both the normalized path and the HTTP method so a
+    // token paid for `GET /v1/data` can't be replayed against `POST /v1/data`.
+    let request_method = method_caveat_value(method);
+    let caveats = vec![
+        format!("RequestPath = {}", request_path),
+        format!("RequestMethod = {}", request_method),
+    ];
 
     let module = match unsafe { MODULE.as_ref() } {
         Some(m) => m,
@@ -1295,7 +1329,10 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         let invoice_start = Instant::now();
         // Caveats were consumed by the access handler above; rebuild on the 402
         // path only — saves a Vec<String> clone on the auth-pass hot path.
-        let challenge_caveats = vec![format!("RequestPath = {}", request_path)];
+        let challenge_caveats = vec![
+            format!("RequestPath = {}", request_path),
+            format!("RequestMethod = {}", request_method),
+        ];
         let header_result = rt.block_on(async {
             module
                 .get_l402_header(
@@ -1495,6 +1532,14 @@ pub fn l402_access_handler(
                             return current_time <= ts;
                         }
                     }
+                    // `RequestMethod = …` must be satisfied by the exact set
+                    // (populated from the current request's method). Falling
+                    // through to `true` would let a GET-bound token verify
+                    // against a HEAD/POST/PUT/… request and defeat HTTP method
+                    // binding on the macaroon.
+                    if predicate_str.starts_with("RequestMethod = ") {
+                        return false;
+                    }
                     true
                 });
                 for caveat in &caveats {
@@ -1560,8 +1605,14 @@ pub fn l402_access_handler(
                                 return is_valid;
                             }
                         }
-                        // Return true for predicates we don't need to validate
-                        // This allows other predicates to pass through
+                        // `RequestMethod = …` must be satisfied by the exact
+                        // set (populated from the current request's method).
+                        // Falling through to `true` would let a GET-bound
+                        // token verify against a HEAD/POST/PUT/… request and
+                        // defeat HTTP method binding on the macaroon.
+                        if predicate_str.starts_with("RequestMethod = ") {
+                            return false;
+                        }
                         true
                     });
 
