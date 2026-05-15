@@ -1474,8 +1474,8 @@ pub fn l402_access_handler(
                     // `RequestMethod = …` must be satisfied by the exact set
                     // (populated from the current request's method). Falling
                     // through to `true` would let a GET-bound token verify
-                    // against a HEAD/POST/PUT/… request and defeat the
-                    // binding added for issue #101.
+                    // against a HEAD/POST/PUT/… request and defeat HTTP method
+                    // binding on the macaroon.
                     if predicate_str.starts_with("RequestMethod = ") {
                         return false;
                     }
@@ -1548,7 +1548,7 @@ pub fn l402_access_handler(
                         // set (populated from the current request's method).
                         // Falling through to `true` would let a GET-bound
                         // token verify against a HEAD/POST/PUT/… request and
-                        // defeat the binding added for issue #101.
+                        // defeat HTTP method binding on the macaroon.
                         if predicate_str.starts_with("RequestMethod = ") {
                             return false;
                         }

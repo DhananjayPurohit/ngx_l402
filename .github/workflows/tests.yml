@@ -1115,7 +1115,7 @@ jobs:
             exit 1
           fi
 
-          # Test L402 method binding (issue #101): a token paid for one HTTP
+          # Test L402 method binding: a token paid for one HTTP
           # method must not be redeemable on a different method on the same
           # path. Uses a freshly-paid invoice so this case is independent of
           # the hardcoded preimage tested above.
