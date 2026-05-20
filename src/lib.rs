@@ -1483,23 +1483,36 @@ pub fn l402_access_handler(
 
                         match payment_detector::PAYMENT_DETECTOR.get() {
                             Some(detector) => {
+                                const AUTODETECT_LOOKUP_TIMEOUT: Duration =
+                                    Duration::from_secs(5);
                                 match rt.block_on(async {
-                                    detector.lookup_settled_invoice(&payment_hash).await
+                                    tokio::time::timeout(
+                                        AUTODETECT_LOOKUP_TIMEOUT,
+                                        detector.lookup_settled_invoice(&payment_hash),
+                                    )
+                                    .await
                                 }) {
-                                    Ok(Some(p)) => {
+                                    Ok(Ok(Some(p))) => {
                                         // Cache for future requests
                                         if let Err(e) = cache_settled_preimage(&payment_hash, &p) {
                                             warn!("⚠️ Failed to cache settled preimage: {}", e);
                                         }
                                         p
                                     }
-                                    Ok(None) => {
+                                    Ok(Ok(None)) => {
                                         info!("⏳ Invoice not yet settled — returning 402");
                                         return 402;
                                     }
-                                    Err(e) => {
+                                    Ok(Err(e)) => {
                                         error!("❌ Node invoice lookup failed: {}", e);
                                         return 500;
+                                    }
+                                    Err(_) => {
+                                        warn!(
+                                            "Auto-detect invoice lookup timed out after {}s — returning 402",
+                                            AUTODETECT_LOOKUP_TIMEOUT.as_secs()
+                                        );
+                                        return 402;
                                     }
                                 }
                             }
