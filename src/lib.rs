@@ -7,21 +7,21 @@ use macaroon::Verifier;
 use ngx::core::Buffer;
 use ngx::ffi::{
     nginx_version, ngx_array_push, ngx_chain_t, ngx_command_t, ngx_conf_t, ngx_cycle_s,
-    ngx_http_core_module, ngx_http_discard_request_body, ngx_http_handler_pt, ngx_http_module_t,
+    ngx_http_discard_request_body, ngx_http_handler_pt, ngx_http_module_t,
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t,
     ngx_str_t, ngx_uint_t, NGX_CONF_NOARGS, NGX_CONF_TAKE1, NGX_DECLINED, NGX_ERROR, NGX_HTTP_COPY,
     NGX_HTTP_DELETE, NGX_HTTP_GET, NGX_HTTP_HEAD, NGX_HTTP_INTERNAL_SERVER_ERROR, NGX_HTTP_LOCK,
-    NGX_HTTP_LOC_CONF, NGX_HTTP_MAIN_CONF, NGX_HTTP_MKCOL, NGX_HTTP_MODULE, NGX_HTTP_MOVE,
+    NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MAIN_CONF, NGX_HTTP_MKCOL, NGX_HTTP_MODULE, NGX_HTTP_MOVE,
     NGX_HTTP_NOT_ALLOWED, NGX_HTTP_OPTIONS, NGX_HTTP_PATCH, NGX_HTTP_POST, NGX_HTTP_PROPFIND,
     NGX_HTTP_PROPPATCH, NGX_HTTP_PUT, NGX_HTTP_SRV_CONF, NGX_HTTP_TRACE, NGX_HTTP_UNLOCK,
-    NGX_LOG_ERR, NGX_LOG_INFO, NGX_LOG_WARN, NGX_OK, NGX_RS_HTTP_LOC_CONF_OFFSET,
+    NGX_LOG_ERR, NGX_LOG_INFO, NGX_LOG_WARN, NGX_OK,
     NGX_RS_MODULE_SIGNATURE,
 };
 use ngx::http::{
-    ngx_http_conf_get_module_loc_conf, ngx_http_conf_get_module_main_conf, HTTPModule, HTTPStatus,
-    Merge, MergeConfigError, Request,
+    HttpModule, HttpModuleLocationConf, HttpModuleMainConf, HttpModuleServerConf, HTTPStatus,
+    Merge, MergeConfigError, NgxHttpCoreModule, Request,
 };
-use ngx::{ngx_log_error, ngx_null_command, ngx_string};
+use ngx::{ngx_log_error, ngx_string};
 use r2d2::Pool;
 use redis::Client as RedisClient;
 use redis::Commands;
@@ -30,7 +30,6 @@ use std::collections::HashMap;
 use std::ffi::c_char;
 use std::ffi::CStr;
 use std::os::raw::c_void;
-use std::ptr::addr_of;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::OnceLock;
@@ -43,6 +42,7 @@ mod cashu_redemption_logger;
 mod manifest;
 mod metrics;
 mod payment_detector;
+mod payment_page;
 
 static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
@@ -810,10 +810,10 @@ impl L402Module {
     }
 }
 
-impl HTTPModule for L402Module {
-    type MainConf = ();
-    type SrvConf = ();
-    type LocConf = ModuleConfig;
+impl HttpModule for L402Module {
+    fn module() -> &'static ngx_module_t {
+        unsafe { &*::core::ptr::addr_of!(ngx_http_l402_module) }
+    }
 
     unsafe extern "C" fn preconfiguration(_cf: *mut ngx_conf_t) -> ngx_int_t {
         // Clear the manifest registry at the start of each config parse.
@@ -829,7 +829,7 @@ impl HTTPModule for L402Module {
 
     unsafe extern "C" fn postconfiguration(cf: *mut ngx_conf_t) -> ngx_int_t {
         info!("🚀 Initializing L402 module handler");
-        let cmcf = ngx_http_conf_get_module_main_conf(cf, &*addr_of!(ngx_http_core_module));
+        let cmcf: *mut ngx::ffi::ngx_http_core_main_conf_t = NgxHttpCoreModule::main_conf_mut(&*cf).expect("http core main conf") as *mut _;
         let h = ngx_array_push(
             &mut (*cmcf).phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers,
         ) as *mut ngx_http_handler_pt;
@@ -841,6 +841,18 @@ impl HTTPModule for L402Module {
         *h = Some(l402_access_handler_wrapper);
         NGX_OK as ngx_int_t
     }
+}
+
+unsafe impl HttpModuleLocationConf for L402Module {
+    type LocationConf = ModuleConfig;
+}
+
+unsafe impl HttpModuleMainConf for L402Module {
+    type MainConf = ();
+}
+
+unsafe impl HttpModuleServerConf for L402Module {
+    type ServerConf = ();
 }
 
 #[derive(Debug, Default)]
@@ -869,7 +881,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -877,7 +889,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_amount_msat_default"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_amount_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -885,7 +897,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_macaroon_timeout"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_timeout_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -893,7 +905,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_lnurl_addr"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_lnurl_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -901,7 +913,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_invoice_rate_limit"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_invoice_rate_limit_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -909,7 +921,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_auto_detect_payment"),
         type_: (NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_auto_detect_payment_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -917,7 +929,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_dry_run"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_l402_dry_run_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -925,7 +937,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_metrics"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
         set: Some(ngx_http_l402_metrics_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -933,7 +945,7 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_manifest"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
         set: Some(ngx_http_l402_manifest_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
@@ -941,11 +953,11 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_manifest_hide"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
         set: Some(ngx_http_l402_manifest_hide_set),
-        conf: NGX_RS_HTTP_LOC_CONF_OFFSET,
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
     },
-    ngx_null_command!(),
+    ngx_command_t::empty(),
 ];
 
 pub static NGX_HTTP_L402_MODULE_CTX: ngx_http_module_t = ngx_http_module_t {
@@ -1030,6 +1042,7 @@ impl Merge for ModuleConfig {
     }
 }
 
+
 /// Map nginx's `r->method` bitmask to the canonical uppercase string used in
 /// the `RequestMethod` macaroon caveat. Falls back to `"UNKNOWN"` for methods
 /// nginx didn't recognise; both sides of the protocol see the same fallback,
@@ -1055,6 +1068,62 @@ fn method_caveat_value(method: u32) -> &'static str {
         _ => "UNKNOWN",
     }
 }
+/// Extract the raw macaroon (base64) and invoice (bolt11) strings from a
+/// `WWW-Authenticate` header value of the form:
+///   `L402 macaroon="<b64>", invoice="<bolt11>"`
+fn parse_l402_header_value(header: &str) -> Option<(String, String)> {
+    let mac = header.split("macaroon=\"").nth(1)?.split('"').next()?.to_string();
+    let inv = header.split("invoice=\"").nth(1)?.split('"').next()?.to_string();
+    Some((mac, inv))
+}
+
+/// Send a full HTTP response (status + body) from within an access-phase
+/// handler. Mirrors the pattern used by `l402_metrics_content_handler`.
+///
+/// Returns the value to pass straight back to nginx (an `ngx_int_t` / `isize`).
+///
+/// # Safety
+/// `r` must be the non-null, valid request pointer supplied by nginx.
+unsafe fn send_html_response(r: *mut ngx_http_request_t, status: u16, body: String) -> isize {
+    let rc = unsafe { ngx_http_discard_request_body(r) };
+    if rc != NGX_OK as ngx_int_t {
+        return rc as isize;
+    }
+
+    let body_len = body.len();
+    let req = unsafe { Request::from_ngx_http_request(r) };
+    let pool = req.pool();
+
+    let Some(mut buf) = pool.create_buffer_from_str(&body) else {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR as isize;
+    };
+    buf.set_last_buf(true);
+    buf.set_last_in_chain(true);
+
+    let chain = pool.alloc_type::<ngx_chain_t>();
+    if chain.is_null() {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR as isize;
+    }
+    unsafe {
+        (*chain).buf = buf.as_ngx_buf_mut();
+        (*chain).next = std::ptr::null_mut();
+    }
+
+    req.set_status(HTTPStatus(status as usize));
+    req.set_content_length_n(body_len);
+    let _ = req.add_header_out("Content-Type", "text/html; charset=utf-8");
+
+    let send_status = req.send_header();
+    if send_status.0 == NGX_ERROR as ngx_int_t
+        || send_status.0 > NGX_OK as ngx_int_t
+        || req.header_only()
+    {
+        return send_status.0 as isize;
+    }
+
+    unsafe { req.output_filter(&mut *chain).0 as isize }
+}
+
 
 // SAFETY: This function is an Nginx access-phase handler registered via
 // `postconfiguration`. Nginx guarantees that `request`, `request->connection`,
@@ -1353,18 +1422,47 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         }
 
         match header_result {
-            Some(header_value) => unsafe {
-                ngx_log_error!(
-                    NGX_LOG_INFO,
-                    log_ref,
-                    "Setting L402/WWW-Authenticate header"
-                );
-                let req = Request::from_ngx_http_request(request);
-                req.add_header_out("WWW-Authenticate", &header_value);
-            },
+            Some(header_value) => {
+                // Set WWW-Authenticate header for API clients
+                unsafe {
+                    ngx_log_error!(
+                        NGX_LOG_INFO,
+                        log_ref,
+                        "Setting L402/WWW-Authenticate header"
+                    );
+                    let req = Request::from_ngx_http_request(request);
+                    req.add_header_out("WWW-Authenticate", &header_value);
+                }
+
+                // Render and send the HTML payment page for browser clients.
+                // API clients that check WWW-Authenticate will still function
+                // correctly because the header is already set above.
+                if let Some((macaroon_b64, invoice)) = parse_l402_header_value(&header_value) {
+                    // Show the Cashu tab whenever cashu ecash support is enabled.
+                    // P2PK mode controls only the X-Cashu payment request header.
+                    let cashu_en = cashu_ecash_support;
+                    // Retrieve the Cashu payment request that was generated
+                    // earlier (if any) — re-use module ref already in scope.
+                    let cashu_pr_owned: Option<String> = if cashu_en {
+                        module.get_cashu_payment_request(final_amount)
+                    } else {
+                        None
+                    };
+                    let html = payment_page::render_payment_page(
+                        &invoice,
+                        final_amount,
+                        &macaroon_b64,
+                        auto_detect_payment,
+                        cashu_en,
+                        cashu_pr_owned.as_deref(),
+                    );
+                    return unsafe { send_html_response(request, 402, html) };
+                }
+                // Fallback: could not parse header, return plain 402
+            }
             None => {
                 ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
-                return 500; // Return server error if we couldn't get the header
+                return 500;
             }
         }
     }
@@ -1748,6 +1846,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
 
     INIT.call_once(|| {
         info!("🔄 Initializing runtime and L402Module");
+        openssl_probe::init_openssl_env_vars();
         match std::panic::catch_unwind(|| {
             let rt = Runtime::new().expect("Failed to create runtime");
             let module = rt.block_on(async {
@@ -2099,7 +2198,7 @@ pub unsafe extern "C" fn l402_metrics_content_handler(r: *mut ngx_http_request_t
     // SAFETY: `r` is valid; `Request::from_ngx_http_request` just wraps the
     // pointer, `pool()` returns a Pool tied to the request lifetime.
     let req = unsafe { Request::from_ngx_http_request(r) };
-    let mut pool = req.pool();
+    let pool = req.pool();
 
     let Some(mut buf) = pool.create_buffer_from_str(&body) else {
         return NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t;
@@ -2142,7 +2241,7 @@ pub unsafe extern "C" fn ngx_http_l402_dry_run_set(
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
-        let val = (*args.add(1)).to_str();
+        let val = (*args.add(1)).to_str().unwrap_or_default();
 
         if val.eq_ignore_ascii_case("on") {
             conf.dry_run = Some(true);
@@ -2166,7 +2265,9 @@ pub unsafe extern "C" fn ngx_http_l402_metrics_set(
     // `ngx_http_conf_get_module_loc_conf` requires a valid module reference.
     // `ngx_http_core_module` is a static global defined by nginx core.
     unsafe {
-        let clcf = ngx_http_conf_get_module_loc_conf(cf, &*addr_of!(ngx_http_core_module));
+        let clcf: *mut ngx::ffi::ngx_http_core_loc_conf_t = NgxHttpCoreModule::location_conf_mut(&*cf)
+            .map(|r| r as *mut _)
+            .unwrap_or(std::ptr::null_mut());
         if clcf.is_null() {
             return b"l402_metrics: missing core loc conf\0".as_ptr() as *mut c_char;
         }
@@ -2191,7 +2292,9 @@ pub unsafe extern "C" fn ngx_http_l402_manifest_set(
 ) -> *mut c_char {
     // SAFETY: same guarantees as `ngx_http_l402_metrics_set` above.
     unsafe {
-        let clcf = ngx_http_conf_get_module_loc_conf(cf, &*addr_of!(ngx_http_core_module));
+        let clcf: *mut ngx::ffi::ngx_http_core_loc_conf_t = NgxHttpCoreModule::location_conf_mut(&*cf)
+            .map(|r| r as *mut _)
+            .unwrap_or(std::ptr::null_mut());
         if clcf.is_null() {
             return b"l402_manifest: missing core loc conf\0".as_ptr() as *mut c_char;
         }
@@ -2247,7 +2350,7 @@ pub unsafe extern "C" fn l402_manifest_content_handler(r: *mut ngx_http_request_
     let body_len = body.len();
 
     let req = unsafe { Request::from_ngx_http_request(r) };
-    let mut pool = req.pool();
+    let pool = req.pool();
 
     let Some(mut buf) = pool.create_buffer_from_str(&body) else {
         return NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t;
@@ -2326,7 +2429,7 @@ pub unsafe extern "C" fn ngx_http_l402_set(
         let conf = &mut *conf_ptr;
         let args = (*(*cf).args).elts as *mut ngx_str_t;
 
-        let val = (*args.add(1)).to_str().trim().to_lowercase();
+        let val = (*args.add(1)).to_str().unwrap_or_default().trim().to_lowercase();
 
         match val.as_str() {
             "on" | "true" | "1" | "yes" => {
@@ -2369,7 +2472,9 @@ pub unsafe extern "C" fn ngx_http_l402_set(
 /// directive parsing. Returns `None` if nginx hasn't populated `name` yet
 /// (e.g. directive used outside a `location` block).
 unsafe fn location_name_str(cf: *mut ngx_conf_t) -> Option<String> {
-    let clcf = ngx_http_conf_get_module_loc_conf(cf, &*addr_of!(ngx_http_core_module));
+    let clcf: *mut ngx::ffi::ngx_http_core_loc_conf_t = NgxHttpCoreModule::location_conf_mut(&*cf)
+        .map(|r| r as *mut _)
+        .unwrap_or(std::ptr::null_mut());
     if clcf.is_null() {
         return None;
     }
@@ -2393,7 +2498,7 @@ pub unsafe extern "C" fn ngx_http_l402_amount_set(
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
 
-        let val = (*args.add(1)).to_str();
+        let val = (*args.add(1)).to_str().unwrap_or_default();
 
         match val.parse::<i64>() {
             Ok(amount) if amount > 0 => {
@@ -2422,7 +2527,7 @@ pub unsafe extern "C" fn ngx_http_l402_timeout_set(
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
 
-        let val = (*args.add(1)).to_str();
+        let val = (*args.add(1)).to_str().unwrap_or_default();
 
         match val.parse::<i64>() {
             Ok(timeout) if timeout >= 0 => {
@@ -2456,12 +2561,19 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
 
-        let val = (*args.add(1)).to_str().trim();
+        let val_raw = (*args.add(1)).to_str().unwrap_or_default();
+        let val = val_raw.trim();
 
         let lnurl_addr = if !val.is_empty() {
             val.to_string()
         } else {
-            std::env::var("LNURL_ADDRESS").unwrap_or_else(|_| "admin@getalby.com".to_string())
+            match std::env::var("LNURL_ADDRESS") {
+                Ok(env_val) if !env_val.is_empty() => env_val,
+                _ => {
+                    error!("❌ LNURL_ADDRESS environment variable is not set and no value provided in config");
+                    return b"LNURL_ADDRESS environment variable is not set\0".as_ptr() as *mut c_char;
+                }
+            }
         };
 
         conf.lnurl_addr = Some(lnurl_addr.clone());
@@ -2502,7 +2614,7 @@ fn get_client_ip(request: *mut ngx_http_request_t) -> String {
 
         // X-Real-IP: single IP set by a trusted reverse proxy
         if !r.headers_in.x_real_ip.is_null() {
-            let val = (*r.headers_in.x_real_ip).value.to_str().trim().to_string();
+            let val = (*r.headers_in.x_real_ip).value.to_str().unwrap_or_default().trim().to_string();
             if !val.is_empty() {
                 return val;
             }
@@ -2510,8 +2622,8 @@ fn get_client_ip(request: *mut ngx_http_request_t) -> String {
 
         // X-Forwarded-For: "client, proxy1, proxy2" — leftmost is the origin
         if !r.headers_in.x_forwarded_for.is_null() {
-            let val = (*r.headers_in.x_forwarded_for).value.to_str();
-            if let Some(ip) = val.split(',').next() {
+            let val_str = (*r.headers_in.x_forwarded_for).value.to_str().unwrap_or_default();
+            if let Some(ip) = val_str.split(',').next() {
                 let ip = ip.trim();
                 if !ip.is_empty() {
                     return ip.to_string();
@@ -2524,7 +2636,7 @@ fn get_client_ip(request: *mut ngx_http_request_t) -> String {
         if conn.is_null() {
             return "unknown".to_string();
         }
-        (*conn).addr_text.to_str().to_string()
+        (*conn).addr_text.to_str().unwrap_or_default().to_string()
     }
 }
 
@@ -2594,7 +2706,7 @@ pub unsafe extern "C" fn ngx_http_l402_invoice_rate_limit_set(
                 as *mut c_char;
         }
         let conf = &mut *(conf as *mut ModuleConfig);
-        let val = (*((*(*cf).args).elts as *mut ngx_str_t).add(1)).to_str();
+        let val = (*((*(*cf).args).elts as *mut ngx_str_t).add(1)).to_str().unwrap_or_default();
         match parse_rate_limit(val) {
             Some((max_req, window_secs)) => {
                 conf.invoice_rate_limit = Some((max_req, window_secs));
@@ -2620,7 +2732,7 @@ pub unsafe extern "C" fn ngx_http_l402_auto_detect_payment_set(
     unsafe {
         let conf = &mut *(conf as *mut ModuleConfig);
         let args = (*(*cf).args).elts as *mut ngx_str_t;
-        let val = (*args.add(1)).to_str().trim().to_lowercase();
+        let val = (*args.add(1)).to_str().unwrap_or_default().trim().to_lowercase();
 
         match val.as_str() {
             "on" | "true" | "1" | "yes" => {

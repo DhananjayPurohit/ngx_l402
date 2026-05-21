@@ -1747,7 +1747,7 @@ jobs:
           TOKEN1=$(docker exec cashu-mint poetry run cashu send 50)
           echo "Token1 for tenant1 (50 sats): $TOKEN1"
 
-          # Create token 2 for tenant2 (amount: 30 sats) - maps to bumi@getalby.com (nginx.conf)
+          # Create token 2 for tenant2 (amount: 30 sats) - maps to test@walletofsatoshi.com (nginx.conf)
           TOKEN2=$(docker exec cashu-mint poetry run cashu send 30)
           echo "Token2 for tenant2 (30 sats): $TOKEN2"
 
@@ -1766,15 +1766,15 @@ jobs:
           fi
           echo "✅ Token1 accepted and mapped to tenant1 (hello@getalby.com)"
 
-          # Access tenant2 route - should map to bumi@getalby.com (from nginx.conf)
-          echo "Accessing tenant2 route (bumi@getalby.com)..."
+          # Access tenant2 route - should map to test@walletofsatoshi.com (from nginx.conf)
+          echo "Accessing tenant2 route (test@walletofsatoshi.com)..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $TOKEN2" http://0.0.0.0:8000/tenant2)
           if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
             echo "Error: Failed to access tenant2 route with Token2"
             docker logs nginx-lnurl | tail -50
             exit 1
           fi
-          echo "✅ Token2 accepted and mapped to tenant2 (bumi@getalby.com)"
+          echo "✅ Token2 accepted and mapped to tenant2 (test@walletofsatoshi.com)"
 
           # ========== VERIFY REDIS PROOF-TO-LNURL MAPPINGS ==========
           echo "Checking Redis for proof-to-lnurl mappings..."
