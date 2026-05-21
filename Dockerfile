@@ -1,7 +1,7 @@
 ARG NGX_VERSION=1.28.0
 
 # Build stage
-FROM rust:1.85 AS builder
+FROM rust:1.93 AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
