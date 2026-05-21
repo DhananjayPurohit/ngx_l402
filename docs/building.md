@@ -42,6 +42,9 @@ cd ngx_l402
 # Example for Nginx 1.28.0
 curl -fsSL http://nginx.org/download/nginx-1.28.0.tar.gz -o nginx.tar.gz
 tar -xzf nginx.tar.gz
+cd nginx-1.28.0
+./configure --with-compat
+cd ..
 export NGINX_SOURCE_DIR=$(pwd)/nginx-1.28.0
 
 cargo build --release --features export-modules

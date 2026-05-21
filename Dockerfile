@@ -1,11 +1,11 @@
-ARG NGX_VERSION=1.27.2
+ARG NGX_VERSION=1.28.0
 
 # Build stage
 FROM rust:1.93 AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
-    pkg-config libssl-dev libclang-dev protobuf-compiler make \
+    pkg-config libssl-dev libclang-dev protobuf-compiler make libpcre3-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /usr/bin/gpg /usr/bin/gpg2
 
@@ -14,7 +14,9 @@ ARG NGX_VERSION
 ENV NGX_VERSION=${NGX_VERSION}
 RUN curl -fsSL http://nginx.org/download/nginx-${NGX_VERSION}.tar.gz -o nginx.tar.gz \
     && tar -xzf nginx.tar.gz \
-    && rm nginx.tar.gz
+    && rm nginx.tar.gz \
+    && cd nginx-${NGX_VERSION} \
+    && ./configure --with-compat
 ENV NGINX_SOURCE_DIR=/app/nginx-${NGX_VERSION}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
