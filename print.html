@@ -16,8 +16,8 @@
         <link rel="icon" href="favicon-de23e50b.svg">
         <link rel="shortcut icon" href="favicon-8114d1fc.png">
         <link rel="stylesheet" href="css/variables-8adf115d.css">
-        <link rel="stylesheet" href="css/general-2459343d.css">
-        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/general-0392ca55.css">
+        <link rel="stylesheet" href="css/chrome-fc474251.css">
         <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
 
         <!-- Fonts -->
@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-98fd63e4.js";
+            window.path_to_searchindex_js = "searchindex-3f5337b6.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-52541bfd.js"></script>
+        <script src="toc-7c233cc9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -977,9 +977,20 @@ sudo chmod 755 /var/lib/nginx
 cd ngx_l402
 </code></pre>
 <ol start="2">
-<li>Build the module:</li>
+<li>Download Nginx source and build the module:</li>
 </ol>
-<pre><code class="language-bash">cargo build --release --features export-modules
+<blockquote>
+<p>⚠️ <strong>Important</strong>: You must download the exact Nginx source code matching your target version and set the <code>NGINX_SOURCE_DIR</code> environment variable before building.</p>
+</blockquote>
+<pre><code class="language-bash"># Example for Nginx 1.28.0
+curl -fsSL http://nginx.org/download/nginx-1.28.0.tar.gz -o nginx.tar.gz
+tar -xzf nginx.tar.gz
+cd nginx-1.28.0
+./configure --with-compat
+cd ..
+export NGINX_SOURCE_DIR=$(pwd)/nginx-1.28.0
+
+cargo build --release --features export-modules
 </code></pre>
 <p>The compiled module will be at <code>target/release/libngx_l402_lib.so</code>.</p>
 <ol start="3">
@@ -1240,11 +1251,11 @@ disables enforcement without touching upstream code paths.</p>
 
         <script src="elasticlunr-ef4e11c1.min.js"></script>
         <script src="mark-09e88c2c.min.js"></script>
-        <script src="searcher-c2a407aa.js"></script>
+        <script src="searcher-09f2665d.js"></script>
 
         <script src="clipboard-1626706a.min.js"></script>
         <script src="highlight-abc7f01d.js"></script>
-        <script src="book-a0b12cfe.js"></script>
+        <script src="book-c22b7243.js"></script>
 
         <!-- Custom JS scripts -->
         <script src="mermaid-eefea253.min.js"></script>
