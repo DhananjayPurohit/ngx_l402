@@ -34,9 +34,16 @@ git clone https://github.com/DhananjayPurohit/ngx_l402.git
 cd ngx_l402
 ```
 
-2. Build the module:
+2. Download Nginx source and build the module:
+
+> ⚠️ **Important**: You must download the exact Nginx source code matching your target version and set the `NGINX_SOURCE_DIR` environment variable before building.
 
 ```bash
+# Example for Nginx 1.28.0
+curl -fsSL http://nginx.org/download/nginx-1.28.0.tar.gz -o nginx.tar.gz
+tar -xzf nginx.tar.gz
+export NGINX_SOURCE_DIR=$(pwd)/nginx-1.28.0
+
 cargo build --release --features export-modules
 ```
 

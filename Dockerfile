@@ -1,4 +1,4 @@
-ARG NGX_VERSION=1.28.0
+ARG NGX_VERSION=1.27.2
 
 # Build stage
 FROM rust:1.93 AS builder
@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y \
 COPY . .
 ARG NGX_VERSION
 ENV NGX_VERSION=${NGX_VERSION}
+RUN curl -fsSL http://nginx.org/download/nginx-${NGX_VERSION}.tar.gz -o nginx.tar.gz \
+    && tar -xzf nginx.tar.gz \
+    && rm nginx.tar.gz
+ENV NGINX_SOURCE_DIR=/app/nginx-${NGX_VERSION}
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
