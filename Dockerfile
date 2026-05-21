@@ -5,7 +5,7 @@ FROM rust:1.93 AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
-    pkg-config libssl-dev libclang-dev protobuf-compiler make libpcre3-dev zlib1g-dev \
+    pkg-config libssl-dev libclang-dev protobuf-compiler make libpcre2-dev zlib1g-dev \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /usr/bin/gpg /usr/bin/gpg2
 
