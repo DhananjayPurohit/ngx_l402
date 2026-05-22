@@ -1115,6 +1115,73 @@ jobs:
             exit 1
           fi
 
+          # Test L402 method binding: a token paid for one HTTP
+          # method must not be redeemable on a different method on the same
+          # path. Uses a freshly-paid invoice so this case is independent of
+          # the hardcoded preimage tested above.
+          echo "Testing L402 method binding (RequestMethod caveat)..."
+          docker exec redis redis-cli flushall
+
+          method_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 -X GET http://0.0.0.0:8000/protected)
+          method_status=$(echo "$method_resp" | tail -n1)
+          if [ "$method_status" -ne 402 ]; then
+            echo "Error: GET /protected (no auth) returned $method_status, expected 402"
+            echo "$method_resp"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          method_invoice=$(echo "$method_resp" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          method_macaroon=$(echo "$method_resp" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$method_invoice" ] || [ -z "$method_macaroon" ]; then
+            echo "Error: missing invoice or macaroon in 402 response for method-binding test"
+            echo "$method_resp"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          echo "Paying method-binding invoice from lndnode..."
+          docker exec lndnode lncli -n regtest payinvoice -f "$method_invoice"
+          sleep 5
+          method_preimage=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1].payment_preimage')
+          if [ -z "$method_preimage" ] || [ "$method_preimage" = "null" ]; then
+            echo "Error: could not extract preimage from lndnode for method-binding test"
+            docker exec lndnode lncli -n regtest listpayments
+            exit 1
+          fi
+
+          # Cross-method replay: a GET-bound token used on a different allowed
+          # method must be rejected. We use HEAD (not POST): this location uses
+          # try_files + static content, so nginx returns 405 for POST before
+          # the L402 handler runs — HEAD still reaches access phase like GET.
+          # Use `curl -I` (libcurl proper HEAD) instead of `-X HEAD`; the latter
+          # makes curl wait for a body that never comes and hangs until timeout.
+          # Run this BEFORE the GET case so the preimage isn't yet stored as used
+          # by replay protection — we want to confirm the rejection comes from
+          # the method caveat, not from preimage reuse.
+          echo "HEAD /protected with GET-bound token (expect 401)..."
+          cross_method_status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 -I -H "Authorization: L402 $method_macaroon:$method_preimage" http://0.0.0.0:8000/protected)
+          cross_method_resp="(status only: $cross_method_status)"
+          if [ "$cross_method_status" -ne 401 ]; then
+            echo "Error: HEAD /protected with GET-bound token returned $cross_method_status, expected 401 (cross-method replay must be rejected)"
+            echo "$cross_method_resp"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "PASS: cross-method replay rejected"
+
+          # Same token on the original method must still succeed.
+          echo "GET /protected with GET-bound token (expect 200)..."
+          get_resp=$(curl -s -w "\n%{http_code}" --max-time 30 -X GET -H "Authorization: L402 $method_macaroon:$method_preimage" http://0.0.0.0:8000/protected)
+          get_status=$(echo "$get_resp" | tail -n1)
+          if [ "$get_status" -ne 200 ]; then
+            echo "Error: GET /protected with GET-bound token returned $get_status, expected 200"
+            echo "$get_resp"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          echo "PASS: same-method redemption accepted"
+
           # Test LND Autodetect Payment
           echo "Testing LND Autodetect Payment..."
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-auto)
@@ -1680,7 +1747,7 @@ jobs:
           TOKEN1=$(docker exec cashu-mint poetry run cashu send 50)
           echo "Token1 for tenant1 (50 sats): $TOKEN1"
 
-          # Create token 2 for tenant2 (amount: 30 sats) - maps to bumi@getalby.com (nginx.conf)
+          # Create token 2 for tenant2 (amount: 30 sats) - maps to test@walletofsatoshi.com (nginx.conf)
           TOKEN2=$(docker exec cashu-mint poetry run cashu send 30)
           echo "Token2 for tenant2 (30 sats): $TOKEN2"
 
@@ -1699,15 +1766,15 @@ jobs:
           fi
           echo "✅ Token1 accepted and mapped to tenant1 (hello@getalby.com)"
 
-          # Access tenant2 route - should map to bumi@getalby.com (from nginx.conf)
-          echo "Accessing tenant2 route (bumi@getalby.com)..."
+          # Access tenant2 route - should map to test@walletofsatoshi.com (from nginx.conf)
+          echo "Accessing tenant2 route (test@walletofsatoshi.com)..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 -L -H "Authorization: Cashu $TOKEN2" http://0.0.0.0:8000/tenant2)
           if [ "$(echo "$response" | tail -n1)" -ne 200 ]; then
             echo "Error: Failed to access tenant2 route with Token2"
             docker logs nginx-lnurl | tail -50
             exit 1
           fi
-          echo "✅ Token2 accepted and mapped to tenant2 (bumi@getalby.com)"
+          echo "✅ Token2 accepted and mapped to tenant2 (test@walletofsatoshi.com)"
 
           # ========== VERIFY REDIS PROOF-TO-LNURL MAPPINGS ==========
           echo "Checking Redis for proof-to-lnurl mappings..."
