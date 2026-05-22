@@ -665,14 +665,14 @@ impl L402Module {
         Self { middleware }
     }
 
-    /// Generate a Lightning invoice and return `(bolt11, payment_hash_bytes)`.
+    /// Generate a Lightning invoice and return `(bolt11, payment_hash)`.
     /// Routes through the per-location LNURL client when `lnurl_addr` is set;
     /// otherwise uses the global ln_client. `None` signals backend failure.
     pub async fn generate_invoice_only(
         &self,
         amount_msat: i64,
         lnurl_addr: Option<&str>,
-    ) -> Option<(String, Vec<u8>)> {
+    ) -> Option<(String, lightning::ln::PaymentHash)> {
         let ln_invoice = lnrpc::Invoice {
             value_msat: amount_msat,
             memo: l402::L402_HEADER.to_string(),
