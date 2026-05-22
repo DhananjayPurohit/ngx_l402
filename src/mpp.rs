@@ -2,29 +2,21 @@
 //!
 //! Implements the HTTP envelope for the Payment HTTP Authentication Scheme
 //! (`draft-ryan-httpauth-payment`) using the `lightning` method, in parity
-//! with `mppx` and `@buildonspark/lightning-mpp-sdk`. Pure functions, no
-//! nginx types — the wiring into the access-phase handler lives in `lib.rs`.
+//! with `wevm/mppx` and `buildonspark/lightning-mpp-sdk`. Pure functions —
+//! the access-phase wiring lives in `lib.rs`.
 //!
 //! ## Security model
 //!
 //! Unlike L402 (where a macaroon HMAC anchors `payment_hash` to the server),
-//! MPP binds the entire challenge via `id = HMAC-SHA256(secret, realm | method
-//! | intent | request | expires | digest | opaque)`. The client echoes the
-//! full challenge in the credential; the server recomputes the HMAC and
-//! constant-time compares it to the echoed `id`. If they match, every echoed
-//! field — including `methodDetails.paymentHash` — is server-trusted, so no
-//! Lightning-node lookup is required to confirm server issuance.
-//!
-//! Verification then checks `sha256(preimage) == paymentHash` and that the
-//! challenge hasn't expired. Replay protection is the caller's responsibility
-//! (the existing scheme-agnostic preimage cache in `lib.rs` is the right home).
-//!
-//! ## Wire format references
-//!
-//! - Challenge serialization: `wevm/mppx` `src/Challenge.ts`
-//! - Credential serialization: `wevm/mppx` `src/Credential.ts`
-//! - Receipt serialization: `wevm/mppx` `src/Receipt.ts`
-//! - Lightning method schema: `buildonspark/lightning-mpp-sdk` `sdk/src/Methods.ts`
+//! MPP binds the entire challenge via
+//! `id = HMAC-SHA256(secret, realm | method | intent | request | expires | digest | opaque)`.
+//! The client echoes the full challenge back in the credential; the server
+//! recomputes the HMAC and constant-time compares it to the echoed `id`. Any
+//! tamper to a covered field (including `methodDetails.paymentHash`) yields a
+//! different HMAC, so server-issuance is proven without a Lightning-node
+//! lookup. Verification then checks `sha256(preimage) == paymentHash` and that
+//! the challenge has not expired. Replay protection is the caller's job — this
+//! module is stateless.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -33,93 +25,57 @@ use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// All inputs needed to issue an MPP-Lightning challenge for a single
-/// charge-intent request.
 #[derive(Debug)]
 pub struct Challenge<'a> {
-    /// Server realm — typically the request `Host` header.
     pub realm: &'a str,
-    /// BOLT11-encoded payment request the client must settle.
     pub invoice: &'a str,
-    /// SHA-256 of the invoice's preimage, lowercase hex. Convenience field;
-    /// MUST agree with what's encoded in `invoice`.
+    /// Lowercase hex. MUST agree with the hash encoded in `invoice` — clients
+    /// validate by decoding the bolt11 and reject on mismatch.
     pub payment_hash_hex: &'a str,
-    /// Invoice amount in satoshis. Emitted as a decimal string per the
-    /// lightning-mpp-sdk schema (`amount: z.string()`).
+    /// Decimal sats. Serialized as a string per the lightning-mpp-sdk schema.
     pub amount_sat: u64,
-    /// Lightning network identifier (`"mainnet"`, `"regtest"`, `"signet"`).
-    /// Optional but recommended; clients use it to reject mismatched invoices.
     pub network: Option<&'a str>,
-    /// Human-readable label for the payment.
     pub description: Option<&'a str>,
-    /// RFC 3339 / ISO 8601 datetime at which this challenge must no longer
-    /// be honored. Should never be set later than the BOLT11 invoice expiry.
+    /// RFC 3339. Should never be later than the BOLT11 invoice expiry —
+    /// a still-valid challenge for a dead invoice is a payment dead-end.
     pub expires: Option<&'a str>,
-    /// Opaque server correlation handle, base64url-encoded. Clients MUST
-    /// echo unchanged in the credential.
+    /// Base64url. Clients MUST echo unchanged in the credential.
     pub opaque: Option<&'a str>,
 }
 
-/// Build the JCS-canonical PaymentRequest JSON for a lightning charge.
+/// JCS-canonical PaymentRequest JSON for the lightning charge schema:
+/// `{ amount, currency?, description?, methodDetails: { invoice, paymentHash?, network? } }`.
 ///
-/// Mirrors the `Methods.charge` zod schema from lightning-mpp-sdk:
-/// ```text
-/// { amount, currency?, description?, methodDetails: { invoice, paymentHash?, network? } }
-/// ```
-///
-/// `serde_json::Map` is backed by `BTreeMap` when the `preserve_order` feature
-/// is off (the default), so keys serialize in lexicographic byte order — which
-/// is the JCS sort order for the ASCII keys used here.
+/// `serde_json::Map` uses `BTreeMap` when the `preserve_order` feature is off
+/// (the default), so keys serialize in lexicographic byte order — which is the
+/// JCS sort order for the ASCII keys used here.
 pub fn serialize_payment_request_json(c: &Challenge<'_>) -> String {
     let mut details = serde_json::Map::new();
-    details.insert(
-        "invoice".to_string(),
-        serde_json::Value::String(c.invoice.to_string()),
-    );
-    details.insert(
-        "paymentHash".to_string(),
-        serde_json::Value::String(c.payment_hash_hex.to_string()),
-    );
+    details.insert("invoice".into(), c.invoice.into());
+    details.insert("paymentHash".into(), c.payment_hash_hex.into());
     if let Some(n) = c.network {
-        details.insert(
-            "network".to_string(),
-            serde_json::Value::String(n.to_string()),
-        );
+        details.insert("network".into(), n.into());
     }
 
     let mut req = serde_json::Map::new();
-    req.insert(
-        "amount".to_string(),
-        serde_json::Value::String(c.amount_sat.to_string()),
-    );
-    req.insert(
-        "currency".to_string(),
-        serde_json::Value::String("sat".to_string()),
-    );
+    req.insert("amount".into(), c.amount_sat.to_string().into());
+    req.insert("currency".into(), "sat".into());
     if let Some(d) = c.description {
-        req.insert(
-            "description".to_string(),
-            serde_json::Value::String(d.to_string()),
-        );
+        req.insert("description".into(), d.into());
     }
-    req.insert(
-        "methodDetails".to_string(),
-        serde_json::Value::Object(details),
-    );
+    req.insert("methodDetails".into(), serde_json::Value::Object(details));
 
     serde_json::to_string(&serde_json::Value::Object(req))
-        .expect("serializing static-shape JSON cannot fail")
+        .expect("static-shape JSON cannot fail to serialize")
 }
 
 fn b64url(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Compute the HMAC-SHA256 challenge ID over the canonical
+/// Compute the HMAC-SHA256 challenge id over the canonical
 /// `realm | method | intent | request | expires | digest | opaque` input.
-///
-/// Optional fields use empty strings when absent so the slot count is stable
-/// — mirrors `wevm/mppx`'s `idBindingInput`.
+/// Optional fields use empty strings so the slot count is stable.
 pub fn compute_challenge_id(
     secret_key: &[u8],
     realm: &str,
@@ -140,16 +96,12 @@ pub fn compute_challenge_id(
     ]
     .join("|");
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret_key).expect("HMAC accepts any key length");
+    let mut mac = HmacSha256::new_from_slice(secret_key).expect("HMAC accepts any key length");
     mac.update(input.as_bytes());
     b64url(&mac.finalize().into_bytes())
 }
 
-/// Format a complete `WWW-Authenticate: Payment …` header value.
-///
-/// The output omits the header name — callers pass the returned string as
-/// the value to `add_header_out("WWW-Authenticate", …)`.
+/// Format a `WWW-Authenticate: Payment …` header value.
 pub fn format_challenge(secret_key: &[u8], c: &Challenge<'_>) -> String {
     let request_serialized = b64url(serialize_payment_request_json(c).as_bytes());
     let id = compute_challenge_id(
@@ -180,22 +132,20 @@ pub fn format_challenge(secret_key: &[u8], c: &Challenge<'_>) -> String {
     format!("Payment {}", parts.join(", "))
 }
 
-/// Fields recovered from a parsed `Authorization: Payment …` header. Mirrors
-/// the JSON shape `wevm/mppx` `Credential.serialize` emits.
 #[derive(Debug, Clone)]
 pub struct ParsedCredential {
     pub challenge_id: String,
     pub realm: String,
     pub method: String,
     pub intent: String,
-    /// The opaque base64url payload of the `request` field as it appeared on
-    /// the wire. Used unchanged when recomputing the challenge HMAC.
+    /// Base64url payload of the `request` field as it appeared on the wire.
+    /// Reused verbatim when recomputing the challenge HMAC — any decode/encode
+    /// round-trip would risk drift from the bytes the HMAC was taken over.
     pub request_serialized: String,
     pub expires: Option<String>,
     pub digest: Option<String>,
     pub opaque: Option<String>,
     pub preimage_hex: String,
-    /// Lowercase hex `payment_hash` extracted from `request.methodDetails`.
     pub payment_hash_hex: String,
 }
 
@@ -230,10 +180,8 @@ impl std::fmt::Display for CredentialError {
     }
 }
 
-/// Parse an `Authorization: Payment …` header value into its structural parts.
-///
-/// Does not verify the HMAC or the preimage hash — those run in
-/// [`verify_credential`].
+/// Parse an `Authorization: Payment …` header into its structural parts.
+/// Fields are NOT trusted until [`verify_credential`] confirms the HMAC.
 pub fn parse_credential(header_value: &str) -> Result<ParsedCredential, CredentialError> {
     let token = header_value
         .trim()
@@ -254,11 +202,15 @@ pub fn parse_credential(header_value: &str) -> Result<ParsedCredential, Credenti
         .get("payload")
         .ok_or(CredentialError::MissingField("payload"))?;
 
-    let str_field = |obj: &serde_json::Value, name: &'static str| -> Result<String, CredentialError> {
-        obj.get(name)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .ok_or(CredentialError::MissingField(name))
+    let str_field =
+        |obj: &serde_json::Value, name: &'static str| -> Result<String, CredentialError> {
+            obj.get(name)
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or(CredentialError::MissingField(name))
+        };
+    let opt_str_field = |obj: &serde_json::Value, name: &str| -> Option<String> {
+        obj.get(name).and_then(|v| v.as_str()).map(String::from)
     };
 
     let challenge_id = str_field(challenge, "id")?;
@@ -266,18 +218,9 @@ pub fn parse_credential(header_value: &str) -> Result<ParsedCredential, Credenti
     let method = str_field(challenge, "method")?;
     let intent = str_field(challenge, "intent")?;
     let request_serialized = str_field(challenge, "request")?;
-    let expires = challenge
-        .get("expires")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let digest = challenge
-        .get("digest")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let opaque = challenge
-        .get("opaque")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let expires = opt_str_field(challenge, "expires");
+    let digest = opt_str_field(challenge, "digest");
+    let opaque = opt_str_field(challenge, "opaque");
 
     if method != "lightning" {
         return Err(CredentialError::InvalidMethod);
@@ -288,9 +231,8 @@ pub fn parse_credential(header_value: &str) -> Result<ParsedCredential, Credenti
 
     let preimage_hex = str_field(payload, "preimage")?;
 
-    // Decode the echoed PaymentRequest to read its `methodDetails.paymentHash`.
-    // Reading from this echoed copy is safe ONLY after the HMAC check in
-    // verify_credential confirms the field hasn't been tampered with.
+    // Surface paymentHash here for the convenience of callers — the HMAC check
+    // in verify_credential is what makes this field trustworthy.
     let request_json_bytes = URL_SAFE_NO_PAD
         .decode(&request_serialized)
         .map_err(|_| CredentialError::InvalidBase64)?;
@@ -300,7 +242,7 @@ pub fn parse_credential(header_value: &str) -> Result<ParsedCredential, Credenti
         .get("methodDetails")
         .and_then(|v| v.get("paymentHash"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(String::from)
         .ok_or(CredentialError::MissingField("methodDetails.paymentHash"))?;
 
     Ok(ParsedCredential {
@@ -317,14 +259,9 @@ pub fn parse_credential(header_value: &str) -> Result<ParsedCredential, Credenti
     })
 }
 
-/// Verify the HMAC of an echoed challenge, that any `expires` is still in
-/// the future, and that `sha256(preimage) == payment_hash`.
-///
-/// `now_unix_ms` is injected so callers can pin a single clock reading per
-/// request and keep this function pure.
-///
-/// Returns `Ok(())` only when every check passes. Replay protection is
-/// the caller's responsibility — this function is stateless.
+/// Verify HMAC, `expires`, and `sha256(preimage) == payment_hash`. Stateless;
+/// `now_unix_ms` is injected so callers pin a single clock reading per request.
+/// Replay protection is the caller's responsibility.
 pub fn verify_credential(
     cred: &ParsedCredential,
     secret_key: &[u8],
@@ -361,10 +298,7 @@ pub fn verify_credential(
     Ok(())
 }
 
-/// Build a `Payment-Receipt` header value for a successful lightning charge.
-///
-/// `timestamp_iso` must be RFC 3339 (e.g. `"2026-05-23T12:34:56.000Z"`); the
-/// caller owns clock reading.
+/// `Payment-Receipt` header value for a successful lightning charge.
 pub fn format_receipt(payment_hash_hex: &str, timestamp_iso: &str) -> String {
     let obj = serde_json::json!({
         "method": "lightning",
@@ -401,11 +335,8 @@ mod tests {
     const PREIMAGE_HEX: &str =
         "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
-    /// Compute the lowercase-hex sha256 of `PREIMAGE_HEX` at test setup so the
-    /// fixture stays internally consistent without a hand-pasted constant.
-    fn payment_hash_hex() -> String {
-        let bytes = hex::decode(PREIMAGE_HEX).unwrap();
-        hex::encode(Sha256::digest(&bytes))
+    fn sha256_hex(hex_input: &str) -> String {
+        hex::encode(Sha256::digest(hex::decode(hex_input).unwrap()))
     }
 
     fn fixture_challenge<'a>(payment_hash: &'a str) -> Challenge<'a> {
@@ -421,38 +352,64 @@ mod tests {
         }
     }
 
+    /// Build a `ParsedCredential` that would verify against `SECRET` (unless the
+    /// caller overrides one of the fields to simulate tampering).
+    fn make_credential(c: &Challenge<'_>, secret: &[u8], preimage_hex: &str) -> ParsedCredential {
+        let request_serialized = b64url(serialize_payment_request_json(c).as_bytes());
+        let challenge_id = compute_challenge_id(
+            secret,
+            c.realm,
+            "charge",
+            &request_serialized,
+            c.expires,
+            None,
+            c.opaque,
+        );
+        ParsedCredential {
+            challenge_id,
+            realm: c.realm.to_string(),
+            method: "lightning".into(),
+            intent: "charge".into(),
+            request_serialized,
+            expires: c.expires.map(String::from),
+            digest: None,
+            opaque: c.opaque.map(String::from),
+            preimage_hex: preimage_hex.into(),
+            payment_hash_hex: c.payment_hash_hex.into(),
+        }
+    }
+
     #[test]
     fn payment_request_is_canonical_json() {
-        let ph = payment_hash_hex();
+        let ph = sha256_hex(PREIMAGE_HEX);
         let c = fixture_challenge(&ph);
         let s = serialize_payment_request_json(&c);
-        // Keys must be alphabetically sorted at every level: amount, currency,
-        // methodDetails. Inside methodDetails: invoice, network, paymentHash.
-        let amt_pos = s.find("\"amount\"").unwrap();
-        let cur_pos = s.find("\"currency\"").unwrap();
-        let md_pos = s.find("\"methodDetails\"").unwrap();
-        assert!(amt_pos < cur_pos && cur_pos < md_pos);
 
-        let inv_pos = s.find("\"invoice\"").unwrap();
-        let net_pos = s.find("\"network\"").unwrap();
+        // Keys at every level must be alphabetically sorted: outer
+        // amount/currency/methodDetails; inner invoice/network/paymentHash.
+        let amt = s.find("\"amount\"").unwrap();
+        let cur = s.find("\"currency\"").unwrap();
+        let md = s.find("\"methodDetails\"").unwrap();
+        assert!(amt < cur && cur < md);
+
+        let inv = s.find("\"invoice\"").unwrap();
+        let net = s.find("\"network\"").unwrap();
         let ph_pos = s.find("\"paymentHash\"").unwrap();
-        assert!(inv_pos < net_pos && net_pos < ph_pos);
+        assert!(inv < net && net < ph_pos);
 
-        // No pretty-printing whitespace.
-        assert!(!s.contains('\n'));
-        assert!(!s.contains("  "));
+        assert!(!s.contains('\n') && !s.contains("  "));
     }
 
     #[test]
     fn challenge_round_trip_through_credential_verify() {
-        let ph = payment_hash_hex();
+        let ph = sha256_hex(PREIMAGE_HEX);
         let c = fixture_challenge(&ph);
+
         let header = format_challenge(SECRET, &c);
         assert!(header.starts_with("Payment "));
         assert!(header.contains("method=\"lightning\""));
         assert!(header.contains("intent=\"charge\""));
 
-        // Compute what a well-behaved client would echo back.
         let request_serialized = b64url(serialize_payment_request_json(&c).as_bytes());
         let id = compute_challenge_id(
             SECRET,
@@ -474,8 +431,7 @@ mod tests {
             },
             "payload": { "preimage": PREIMAGE_HEX },
         });
-        let cred_b64 = b64url(credential_obj.to_string().as_bytes());
-        let auth_header = format!("Payment {}", cred_b64);
+        let auth_header = format!("Payment {}", b64url(credential_obj.to_string().as_bytes()));
 
         let parsed = parse_credential(&auth_header).expect("parse");
         assert_eq!(parsed.payment_hash_hex, ph);
@@ -485,31 +441,9 @@ mod tests {
 
     #[test]
     fn hmac_mismatch_rejects() {
-        let ph = payment_hash_hex();
+        let ph = sha256_hex(PREIMAGE_HEX);
         let c = fixture_challenge(&ph);
-        let request_serialized = b64url(serialize_payment_request_json(&c).as_bytes());
-        // Compute id with a different secret to simulate forgery.
-        let id = compute_challenge_id(
-            b"wrong-secret",
-            c.realm,
-            "charge",
-            &request_serialized,
-            c.expires,
-            None,
-            None,
-        );
-        let cred = ParsedCredential {
-            challenge_id: id,
-            realm: c.realm.to_string(),
-            method: "lightning".into(),
-            intent: "charge".into(),
-            request_serialized,
-            expires: c.expires.map(|s| s.into()),
-            digest: None,
-            opaque: None,
-            preimage_hex: PREIMAGE_HEX.into(),
-            payment_hash_hex: ph,
-        };
+        let cred = make_credential(&c, b"wrong-secret", PREIMAGE_HEX);
         assert_eq!(
             verify_credential(&cred, SECRET, 0),
             Err(CredentialError::HmacMismatch)
@@ -518,33 +452,10 @@ mod tests {
 
     #[test]
     fn preimage_hash_mismatch_rejects() {
-        let ph = payment_hash_hex();
+        let ph = sha256_hex(PREIMAGE_HEX);
         let c = fixture_challenge(&ph);
-        let request_serialized = b64url(serialize_payment_request_json(&c).as_bytes());
-        let id = compute_challenge_id(
-            SECRET,
-            c.realm,
-            "charge",
-            &request_serialized,
-            c.expires,
-            None,
-            None,
-        );
-        let cred = ParsedCredential {
-            challenge_id: id,
-            realm: c.realm.to_string(),
-            method: "lightning".into(),
-            intent: "charge".into(),
-            request_serialized,
-            expires: c.expires.map(|s| s.into()),
-            digest: None,
-            opaque: None,
-            // Wrong preimage (all zeros)
-            preimage_hex:
-                "0000000000000000000000000000000000000000000000000000000000000000"
-                    .into(),
-            payment_hash_hex: ph,
-        };
+        let zeros = "00".repeat(32);
+        let cred = make_credential(&c, SECRET, &zeros);
         assert_eq!(
             verify_credential(&cred, SECRET, 0),
             Err(CredentialError::HashMismatch)
@@ -553,35 +464,12 @@ mod tests {
 
     #[test]
     fn expired_challenge_rejects() {
-        let ph = payment_hash_hex();
+        let ph = sha256_hex(PREIMAGE_HEX);
         let mut c = fixture_challenge(&ph);
-        c.expires = Some("2000-01-01T00:00:00Z"); // long past
-        let request_serialized = b64url(serialize_payment_request_json(&c).as_bytes());
-        let id = compute_challenge_id(
-            SECRET,
-            c.realm,
-            "charge",
-            &request_serialized,
-            c.expires,
-            None,
-            None,
-        );
-        let cred = ParsedCredential {
-            challenge_id: id,
-            realm: c.realm.to_string(),
-            method: "lightning".into(),
-            intent: "charge".into(),
-            request_serialized,
-            expires: c.expires.map(|s| s.into()),
-            digest: None,
-            opaque: None,
-            preimage_hex: PREIMAGE_HEX.into(),
-            payment_hash_hex: ph,
-        };
-        // now_unix_ms past the expiry
-        let now_ms = 1_700_000_000_000;
+        c.expires = Some("2000-01-01T00:00:00Z");
+        let cred = make_credential(&c, SECRET, PREIMAGE_HEX);
         assert_eq!(
-            verify_credential(&cred, SECRET, now_ms),
+            verify_credential(&cred, SECRET, 1_700_000_000_000),
             Err(CredentialError::Expired)
         );
     }
@@ -596,7 +484,6 @@ mod tests {
             parse_credential("Payment !!!not-base64!!!").unwrap_err(),
             CredentialError::InvalidBase64
         );
-        // Valid base64 but not JSON
         let bad = b64url(b"not-json");
         assert_eq!(
             parse_credential(&format!("Payment {}", bad)).unwrap_err(),
@@ -625,10 +512,10 @@ mod tests {
 
     #[test]
     fn receipt_round_trip() {
-        let ph = payment_hash_hex();
+        let ph = sha256_hex(PREIMAGE_HEX);
         let r = format_receipt(&ph, "2026-05-23T12:00:00Z");
-        let json_bytes = URL_SAFE_NO_PAD.decode(&r).unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&json_bytes).unwrap();
+        let bytes = URL_SAFE_NO_PAD.decode(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["method"], "lightning");
         assert_eq!(v["reference"], ph);
         assert_eq!(v["status"], "success");

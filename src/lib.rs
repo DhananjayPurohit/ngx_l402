@@ -665,13 +665,9 @@ impl L402Module {
         Self { middleware }
     }
 
-    /// Generate a Lightning invoice without wrapping it in any auth-scheme
-    /// envelope. Returns `(bolt11_invoice, payment_hash_bytes)`.
-    ///
-    /// Routes through the per-location LNURL client when `lnurl_addr` is
-    /// set, otherwise uses the global ln_client from the middleware. Logs
-    /// and returns `None` on backend failure — callers should treat that
-    /// as a 5xx-equivalent condition.
+    /// Generate a Lightning invoice and return `(bolt11, payment_hash_bytes)`.
+    /// Routes through the per-location LNURL client when `lnurl_addr` is set;
+    /// otherwise uses the global ln_client. `None` signals backend failure.
     pub async fn generate_invoice_only(
         &self,
         amount_msat: i64,
