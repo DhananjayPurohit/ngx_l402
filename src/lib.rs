@@ -41,6 +41,7 @@ mod cashu;
 mod cashu_redemption_logger;
 mod manifest;
 mod metrics;
+mod mpp;
 mod payment_detector;
 mod payment_page;
 
