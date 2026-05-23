@@ -1,4 +1,4 @@
-//! `.well-known/l402` capability manifest.
+//! `.well-known/l402-services` capability manifest.
 //!
 //! Renders a machine-readable JSON description of every L402-protected
 //! location in the running configuration, so agents (and humans) can

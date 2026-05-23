@@ -48,7 +48,7 @@ static INIT: Once = Once::new();
 static mut MODULE: Option<L402Module> = None;
 
 /// Registry of l402-enabled locations, populated at config-parse time and
-/// drained at `.well-known/l402` request time. Each entry holds the
+/// drained at `.well-known/l402-services` request time. Each entry holds the
 /// location's path and a raw pointer to its `ModuleConfig` — the config
 /// lives in nginx's cycle pool, so the pointer remains valid until the
 /// next reload, at which point a fresh worker process is started with a
@@ -820,7 +820,7 @@ impl HttpModule for L402Module {
         // On `nginx -s reload`, the master parses the new config; without
         // this clear we'd accumulate stale (path, conf_ptr) entries from
         // the previous cycle whose pool memory has been freed — reading
-        // them later from /.well-known/l402 is a use-after-free.
+        // them later from /.well-known/l402-services is a use-after-free.
         if let Ok(mut reg) = manifest_registry().lock() {
             reg.clear();
         }
@@ -871,7 +871,7 @@ pub struct ModuleConfig {
     // stops inheritance.
     dry_run: Option<bool>,
     // When set via `l402_manifest_hide;`, this route is excluded from the
-    // `.well-known/l402` capability manifest. The route is still gated as
+    // `.well-known/l402-services` capability manifest. The route is still gated as
     // normal — this just makes it not discoverable.
     manifest_hidden: bool,
 }
@@ -2320,7 +2320,7 @@ pub unsafe extern "C" fn ngx_http_l402_manifest_set(
         }
         (*clcf).handler = Some(l402_manifest_content_handler);
     }
-    info!("⚙️ l402_manifest endpoint registered (.well-known/l402 capability manifest)");
+    info!("⚙️ l402_manifest endpoint registered (.well-known/l402-services capability manifest)");
     std::ptr::null_mut()
 }
 
@@ -2335,12 +2335,12 @@ pub unsafe extern "C" fn ngx_http_l402_manifest_hide_set(
         let conf = &mut *(conf as *mut ModuleConfig);
         conf.manifest_hidden = true;
     }
-    info!("⚙️ l402_manifest_hide: excluding this route from /.well-known/l402");
+    info!("⚙️ l402_manifest_hide: excluding this route from /.well-known/l402-services");
     std::ptr::null_mut()
 }
 
 /// Content-phase handler for `l402_manifest`. Serves the
-/// `.well-known/l402` capability manifest as JSON.
+/// `.well-known/l402-services` capability manifest as JSON.
 ///
 /// Only `GET` and `HEAD` are accepted; anything else returns `405`. The
 /// manifest is rebuilt on every request — cheap because the registry is
@@ -2449,7 +2449,7 @@ pub unsafe extern "C" fn ngx_http_l402_set(
                 conf.enable = true;
                 info!("⚙️ Enabled L402 for this location");
                 // Snapshot the location's path now and remember the conf
-                // pointer; the `.well-known/l402` handler re-reads the conf
+                // pointer; the `.well-known/l402-services` handler re-reads the conf
                 // at request time so post-merge values (amount_msat, etc.)
                 // are picked up correctly.
                 if let Some(path) = location_name_str(cf) {
