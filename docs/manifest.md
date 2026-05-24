@@ -2,11 +2,11 @@
 
 The `l402_manifest` directive turns a location into a discovery endpoint
 that emits a JSON description of every L402-protected route on the
-server. It is intended to live at `/.well-known/l402` ([RFC 8615][well-known]),
+server. It is intended to live at `/.well-known/l402-services` ([RFC 8615][well-known]),
 making this instance self-describing to clients that have only the host.
 
 ```nginx
-location = /.well-known/l402 {
+location = /.well-known/l402-services {
     l402_manifest;
 
     # Optional: restrict who can scrape pricing details.
@@ -107,7 +107,7 @@ on the location:
 location /internal-paid {
     l402 on;
     l402_amount_msat_default 100000;
-    l402_manifest_hide;       # not advertised in /.well-known/l402
+    l402_manifest_hide;       # not advertised in /.well-known/l402-services
 }
 ```
 
@@ -156,7 +156,7 @@ formats out of band. With one, an agent can land on a host and onboard
 itself end-to-end:
 
 ```text
-GET /.well-known/l402         → learn the API surface
+GET /.well-known/l402-services  → learn the API surface
 GET /protected                → receive 402 + bolt11 invoice
 PAY the invoice               → get preimage
 GET /protected with L402 auth → success
