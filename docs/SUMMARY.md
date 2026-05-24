@@ -7,6 +7,7 @@
 # Installation
 
 - [Manual Install](./install-manual.md)
+- [macOS Setup](./macos-setup.md)
 - [Docker](./install-docker.md)
 
 # Configuration
@@ -25,3 +26,4 @@
 - [Building from Source](./building.md)
 - [Logging](./logging.md)
 - [Dry-Run (Shadow) Mode](./dry-run.md)
+- [Capability Manifest](./manifest.md)
