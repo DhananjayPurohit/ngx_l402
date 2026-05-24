@@ -3073,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "ngx_l402"
-version = "1.2.5"
+version = "1.2.6"
 dependencies = [
  "base64 0.22.1",
  "bip39",
