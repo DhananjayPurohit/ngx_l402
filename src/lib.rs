@@ -1125,6 +1125,22 @@ unsafe fn send_html_response(r: *mut ngx_http_request_t, status: u16, body: Stri
 }
 
 
+// Per-worker scratch slot used by `l402_access_handler` to report *which*
+// payment method satisfied a successful verification. The wrapper consumes it
+// only in enforce mode (after the dry-run early return) so shadow traffic
+// doesn't pollute `l402_payments_lightning_total` / `l402_payments_cashu_total`
+// and the invariant `valid = lightning + cashu` holds.
+#[derive(Clone, Copy)]
+enum PaymentMethod {
+    Lightning,
+    Cashu,
+}
+
+thread_local! {
+    static LAST_PAYMENT_METHOD: std::cell::Cell<Option<PaymentMethod>> =
+        const { std::cell::Cell::new(None) };
+}
+
 // SAFETY: This function is an Nginx access-phase handler registered via
 // `postconfiguration`. Nginx guarantees that `request`, `request->connection`,
 // `request->connection->log`, and `request->loc_conf` are valid, non-null
@@ -1309,9 +1325,23 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     }
 
     // Enforce-mode outcome counters. Deliberately skipped above for dry-run
-    // so shadow traffic doesn't pollute enforce-mode SLO dashboards.
+    // so shadow traffic doesn't pollute enforce-mode SLO dashboards. The
+    // per-method counters are consumed from the thread-local set by
+    // `l402_access_handler` so the invariant `valid = lightning + cashu`
+    // holds and shadow traffic never ticks them.
     match result {
-        r if r == NGX_DECLINED as isize => metrics::inc(&metrics::L402_PAYMENTS_VALID_TOTAL),
+        r if r == NGX_DECLINED as isize => {
+            metrics::inc(&metrics::L402_PAYMENTS_VALID_TOTAL);
+            match LAST_PAYMENT_METHOD.with(|m| m.take()) {
+                Some(PaymentMethod::Lightning) => {
+                    metrics::inc(&metrics::L402_PAYMENTS_LIGHTNING_TOTAL)
+                }
+                Some(PaymentMethod::Cashu) => {
+                    metrics::inc(&metrics::L402_PAYMENTS_CASHU_TOTAL)
+                }
+                None => {}
+            }
+        }
         401 => metrics::inc(&metrics::L402_PAYMENTS_INVALID_TOTAL),
         402 => metrics::inc(&metrics::L402_PAYMENTS_MISSING_TOTAL),
         _ => {}
@@ -1423,6 +1453,8 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         match header_result {
             Some(header_value) => {
+                metrics::inc(&metrics::L402_INVOICES_GENERATED_TOTAL);
+
                 // Set WWW-Authenticate header for API clients
                 unsafe {
                     ngx_log_error!(
@@ -1461,6 +1493,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 // Fallback: could not parse header, return plain 402
             }
             None => {
+                metrics::inc(&metrics::L402_INVOICES_GENERATION_ERRORS_TOTAL);
                 ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
                 return 500;
             }
@@ -1488,6 +1521,9 @@ pub fn l402_access_handler(
     lnurl_addr: Option<String>,
     auto_detect_payment: bool,
 ) -> isize {
+    // Reset so the wrapper never reads a stale method from a prior request.
+    LAST_PAYMENT_METHOD.with(|m| m.set(None));
+
     let module = match unsafe { MODULE.as_ref() } {
         Some(m) => m,
         None => {
@@ -1518,6 +1554,7 @@ pub fn l402_access_handler(
 
             match verify_result {
                 Ok(true) => {
+                    LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Cashu)));
                     return NGX_DECLINED as isize;
                 }
                 Ok(false) => {
@@ -1676,6 +1713,7 @@ pub fn l402_access_handler(
                 ) {
                     Ok(_) => {
                         info!("✅ L402 auto-detect verification successful");
+                        LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
                         if let Err(e) = store_preimage_as_used(&preimage_bytes) {
                             error!("⚠️ Failed to store preimage in Redis: {}", e);
                         }
@@ -1742,6 +1780,7 @@ pub fn l402_access_handler(
                     ) {
                         Ok(_) => {
                             info!("✅ L402 verification successful");
+                            LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
                             // Atomic claim. Real replays are filtered by the
                             // pre-check above, so Ok(false) here only happens
                             // for benign concurrent races between workers
