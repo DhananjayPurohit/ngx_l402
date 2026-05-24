@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-957c3dcc.js";
+            window.path_to_searchindex_js = "searchindex-69be7e59.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-7c233cc9.js"></script>
+        <script src="toc-b5966016.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -301,6 +301,48 @@ sudo systemctl reload nginx
 <blockquote>
 <p><strong>Note</strong>: Both <code>restart</code> and <code>reload</code> are needed to ensure the Cashu redemption task starts properly.</p>
 </blockquote>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="macos-local-setup-guide"><a class="header" href="#macos-local-setup-guide">macOS Local Setup Guide</a></h1>
+<p>This guide is for contributors running <code>ngx_l402</code> locally on macOS.</p>
+<h2 id="1-prerequisites"><a class="header" href="#1-prerequisites">1. Prerequisites</a></h2>
+<ul>
+<li><strong>Docker</strong> — make sure the Docker daemon is running.</li>
+<li><strong>Rust</strong> — install via <a href="https://rustup.rs">rustup</a> if not already present:
+<pre><code class="language-bash">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+</code></pre>
+</li>
+</ul>
+<h2 id="2-clone-and-enter-the-repository"><a class="header" href="#2-clone-and-enter-the-repository">2. Clone and enter the repository</a></h2>
+<pre><code class="language-bash">git clone https://github.com/DhananjayPurohit/ngx_l402.git
+cd ngx_l402
+</code></pre>
+<h2 id="3-start-the-stack"><a class="header" href="#3-start-the-stack">3. Start the stack</a></h2>
+<p>Copy the example env file and start the services:</p>
+<pre><code class="language-bash">cp .env.example .env
+docker compose up -d bitcoind lndnode-receiver redis grpc-content-server nginx-lnd
+</code></pre>
+<p>The first run compiles the module inside a Linux container (multi-stage Dockerfile), so it will take a few minutes. Subsequent runs use the Docker build cache.</p>
+<p>Fund the regtest LND node so it can create invoices:</p>
+<pre><code class="language-bash">docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass createwallet miner 2&gt;/dev/null
+docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=miner generatetoaddress 101 \
+  $(docker exec bitcoind bitcoin-cli -regtest -rpcuser=user -rpcpassword=pass -rpcwallet=miner getnewaddress) &gt; /dev/null
+sleep 5
+</code></pre>
+<h2 id="4-verify"><a class="header" href="#4-verify">4. Verify</a></h2>
+<pre><code class="language-bash">curl -i http://localhost:8000/protected
+</code></pre>
+<p>Expected: <code>402 Payment Required</code> with a <code>WWW-Authenticate: L402 ...</code> header. If the request hangs, wait a few seconds for LND to finish syncing and try again.</p>
+<h2 id="5-development-workflow"><a class="header" href="#5-development-workflow">5. Development workflow</a></h2>
+<p>After editing the Rust source, rebuild and restart nginx:</p>
+<pre><code class="language-bash">docker compose build nginx-lnd &amp;&amp; docker compose up -d nginx-lnd
+</code></pre>
+<p>Dependencies are cached, so only the module recompiles (~20 seconds).</p>
+<p>You can also run <code>cargo check</code> locally for fast feedback from your editor without rebuilding the container.</p>
+<h2 id="6-useful-commands"><a class="header" href="#6-useful-commands">6. Useful commands</a></h2>
+<pre><code class="language-bash">docker compose ps                    # container status
+docker logs nginx-lnd -f             # nginx logs
+docker compose down                  # stop stack
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="docker-installation"><a class="header" href="#docker-installation">Docker Installation</a></h1>
 <p>The easiest way to deploy the L402 Nginx module is with our official Docker images.</p>
@@ -1222,6 +1264,150 @@ location now enforces.</li>
 </ol>
 <p>If you ever need to revert, setting <code>l402_dry_run on;</code> again immediately
 disables enforcement without touching upstream code paths.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="capability-manifest"><a class="header" href="#capability-manifest">Capability Manifest</a></h1>
+<p>The <code>l402_manifest</code> directive turns a location into a discovery endpoint
+that emits a JSON description of every L402-protected route on the
+server. It is intended to live at <code>/.well-known/l402-services</code> (<a href="https://datatracker.ietf.org/doc/html/rfc8615">RFC 8615</a>),
+making this instance self-describing to clients that have only the host.</p>
+<pre><code class="language-nginx">location = /.well-known/l402-services {
+    l402_manifest;
+
+    # Optional: restrict who can scrape pricing details.
+    # allow 10.0.0.0/8;
+    # deny  all;
+}
+</code></pre>
+<p>This is the agent-era equivalent of <code>robots.txt</code> or <code>security.txt</code>. An
+autonomous agent (or any client) given only <code>https://example.com</code> can
+fetch the manifest, learn which routes are paid, how much they cost, and
+which payment backends are accepted — without any out-of-band integration.</p>
+<hr>
+<h2 id="example-response"><a class="header" href="#example-response">Example response</a></h2>
+<pre><code class="language-json">{
+  "version": "1",
+  "service": {
+    "name": "Example API",
+    "description": "Stock data API"
+  },
+  "payment_methods": [
+    {
+      "type": "lightning",
+      "backend": "LNURL",
+      "address": "hello@getalby.com"
+    },
+    {
+      "type": "cashu",
+      "mints": ["https://mint.minibits.cash"],
+      "p2pk_supported": true,
+      "challenge_header": "X-Cashu"
+    }
+  ],
+  "routes": [
+    {
+      "path": "/protected",
+      "price": {
+        "type": "static",
+        "amount_msat": 10000
+      },
+      "caveats_required": ["RequestPath = /protected"]
+    },
+    {
+      "path": "/rate-limited",
+      "price": {
+        "type": "static",
+        "amount_msat": 10000
+      },
+      "caveats_required": ["RequestPath = /rate-limited"],
+      "rate_limit": {
+        "max_requests": 2,
+        "window_secs": 60
+      }
+    }
+  ]
+}
+</code></pre>
+<hr>
+<h2 id="what-the-manifest-describes"><a class="header" href="#what-the-manifest-describes">What the manifest describes</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Source</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>version</code></td><td>constant <code>"1"</code></td><td>Schema version. Bumped on breaking changes; agents should reject unknown majors.</td></tr>
+<tr><td><code>service.name</code>, <code>service.description</code>, <code>service.operator</code>, <code>service.contact</code></td><td>env vars <code>L402_SERVICE_NAME</code>, <code>L402_SERVICE_DESCRIPTION</code>, <code>L402_SERVICE_OPERATOR</code>, <code>L402_SERVICE_CONTACT</code></td><td>Optional, omitted when unset.</td></tr>
+<tr><td><code>payment_methods[].type</code></td><td><code>lightning</code> or <code>cashu</code></td><td>Which payment rail this method describes.</td></tr>
+<tr><td><code>payment_methods[].backend</code></td><td>env var <code>LN_CLIENT_TYPE</code></td><td><code>LNURL</code>, <code>LND</code>, <code>CLN</code>, <code>NWC</code>, <code>BOLT12</code>, <code>ECLAIR</code>, <code>LNC</code>.</td></tr>
+<tr><td><code>payment_methods[].address</code></td><td>env var <code>LNURL_ADDRESS</code> (LNURL backends only)</td><td>Server-default LN address. May be overridden per-route via <code>lnurl_addr</code>.</td></tr>
+<tr><td><code>payment_methods[].mints</code></td><td>env var <code>CASHU_WHITELISTED_MINTS</code></td><td>Allowed Cashu mints (when Cashu is enabled).</td></tr>
+<tr><td><code>payment_methods[].p2pk_supported</code></td><td>env var <code>CASHU_P2PK_MODE</code></td><td>Whether NUT-24 P2PK Cashu is enabled.</td></tr>
+<tr><td><code>routes[].path</code></td><td><code>location</code> directive</td><td>URL path served by this route.</td></tr>
+<tr><td><code>routes[].price.amount_msat</code></td><td><code>l402_amount_msat_default</code></td><td>Base price after <code>merge_loc_conf</code>.</td></tr>
+<tr><td><code>routes[].caveats_required</code></td><td>derived</td><td>Caveats the issued macaroon will carry. Today always <code>[RequestPath = &lt;path&gt;]</code>.</td></tr>
+<tr><td><code>routes[].macaroon_timeout_secs</code></td><td><code>l402_macaroon_timeout</code></td><td>Omitted when <code>0</code> (no expiry).</td></tr>
+<tr><td><code>routes[].lnurl_addr</code></td><td><code>l402_lnurl_addr</code></td><td>Per-route LNURL override for multi-tenant deployments.</td></tr>
+<tr><td><code>routes[].rate_limit</code></td><td><code>l402_invoice_rate_limit</code></td><td>Server-side invoice rate limit applied before challenge issuance.</td></tr>
+<tr><td><code>routes[].auto_detect_payment</code></td><td><code>l402_auto_detect_payment</code></td><td>When true, clients can omit the preimage and the server settles via node lookup.</td></tr>
+</tbody>
+</table>
+</div>
+<p>Dynamic (Redis-backed) pricing is <strong>not</strong> reflected in <code>price.amount_msat</code> —
+the manifest emits the static default. Dynamic prices change per request
+and would require a Redis round-trip per route to render accurately;
+that’s out of scope for v1.</p>
+<hr>
+<h2 id="hiding-a-route"><a class="header" href="#hiding-a-route">Hiding a route</a></h2>
+<p>Operators may want certain paid routes to remain undiscoverable — private
+APIs, beta tiers, customer-specific endpoints. Use <code>l402_manifest_hide;</code>
+on the location:</p>
+<pre><code class="language-nginx">location /internal-paid {
+    l402 on;
+    l402_amount_msat_default 100000;
+    l402_manifest_hide;       # not advertised in /.well-known/l402-services
+}
+</code></pre>
+<p>The route still enforces L402 normally. It just doesn’t appear in the
+manifest’s <code>routes[]</code> array.</p>
+<hr>
+<h2 id="service-level-metadata"><a class="header" href="#service-level-metadata">Service-level metadata</a></h2>
+<p>The optional <code>service</code> block is read from environment variables at
+manifest-render time:</p>
+<pre><code class="language-sh">L402_SERVICE_NAME="Example API"
+L402_SERVICE_DESCRIPTION="Premium financial data, paid per request."
+L402_SERVICE_OPERATOR="npub1abcd..."   # Nostr pubkey, DID, or free-form
+L402_SERVICE_CONTACT="ops@example.com"
+</code></pre>
+<p>All four are optional. Unset variables are omitted from the response so
+the manifest stays valid JSON even with no service metadata.</p>
+<hr>
+<h2 id="caveats-and-limitations"><a class="header" href="#caveats-and-limitations">Caveats and limitations</a></h2>
+<ul>
+<li><strong>Per-worker registry.</strong> Like <code>l402_metrics</code>, the manifest registry is
+per-nginx-worker. On a multi-worker deployment, every worker sees the
+same routes (config is shared), so this is a non-issue for the manifest
+itself.</li>
+<li><strong>No authentication by default.</strong> Pricing information is public.
+Restrict the endpoint with <code>allow</code>/<code>deny</code>, an auth subrequest, or a
+firewall if competitors should not see your full pricing matrix.</li>
+<li><strong>Reload behaviour.</strong> On <code>nginx -s reload</code>, new workers start with a
+fresh registry built from the new config. Old workers serve in-flight
+requests with their existing registry until they exit.</li>
+</ul>
+<hr>
+<h2 id="why-this-matters"><a class="header" href="#why-this-matters">Why this matters</a></h2>
+<p>Without a manifest, every L402 integration is a bespoke wiring job: the
+client must be told the routes, prices, payment backends, and caveat
+formats out of band. With one, an agent can land on a host and onboard
+itself end-to-end:</p>
+<pre><code class="language-text">GET /.well-known/l402-services  → learn the API surface
+GET /protected                → receive 402 + bolt11 invoice
+PAY the invoice               → get preimage
+GET /protected with L402 auth → success
+</code></pre>
+<p>For autonomous agents — Claude tools, MCP servers, custom-built — this is
+the difference between L402 being a protocol and L402 being a
+<em>discoverable web standard</em>.</p>
 
                     </main>
 
