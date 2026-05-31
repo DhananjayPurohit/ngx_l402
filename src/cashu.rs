@@ -254,15 +254,26 @@ pub async fn restore_wallets_state() {
         // We restore for the Sat unit primarily (or Msat as well)
         let unit = cdk::nuts::CurrencyUnit::Sat;
 
-        match cdk::wallet::Wallet::new(mint_url, unit, db.clone(), seed, None) {
-            Ok(wallet) => match wallet.restore().await {
-                Ok(amount) => {
-                    let amount_val: u64 = amount.into();
-                    info!("✅ Restored {} sats state from {}", amount_val, mint_url);
+        // Use a short timeout so an unreachable mint at startup doesn't
+        // block the nginx worker process or produce alarming ERROR logs.
+        // Restoration is best-effort — missed proofs will be recovered
+        // on the next redemption or sweep cycle.
+        let restore_result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            async {
+                match cdk::wallet::Wallet::new(mint_url, unit, db.clone(), seed, None) {
+                    Ok(wallet) => wallet.restore().await
+                        .map(|amount| { let v: u64 = amount.into(); v })
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
                 }
-                Err(e) => warn!("⚠️ Failed to restore {}: {}", mint_url, e),
-            },
-            Err(e) => warn!("⚠️ Failed to create wallet for restore {}: {}", mint_url, e),
+            }
+        ).await;
+
+        match restore_result {
+            Ok(Ok(amount)) => info!("✅ Restored {} sats state from {}", amount, mint_url),
+            Ok(Err(e))     => warn!("⚠️ Skipping restore for {} (mint error): {}", mint_url, e),
+            Err(_)         => warn!("⚠️ Skipping restore for {} (unreachable, timed out after 5s)", mint_url),
         }
     }
 }
