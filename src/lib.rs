@@ -45,24 +45,34 @@ mod payment_page;
 
 static MODULE: OnceLock<L402Module> = OnceLock::new();
 
-/// Read ROOT_KEY from the environment and return its bytes.
+/// Cached root key — populated once in the master process during init_module.
+/// Workers read from here rather than from the environment, because nginx
+/// strips all environment variables from worker processes by default.
+static ROOT_KEY_CACHE: OnceLock<Vec<u8>> = OnceLock::new();
+
+/// Read ROOT_KEY from the environment (first call) or from the in-process
+/// cache (all subsequent calls, including from worker processes).
 /// Panics at startup if the variable is missing or shorter than 32 bytes,
 /// preventing silent use of a weak / hardcoded key.
 fn require_root_key() -> Vec<u8> {
-    let key = std::env::var("ROOT_KEY").unwrap_or_else(|_| {
-        panic!(
-            "ROOT_KEY environment variable is not set. \
-             Generate one with: openssl rand -hex 32"
-        )
-    });
-    if key.len() < 32 {
-        panic!(
-            "ROOT_KEY must be at least 32 characters long (got {}). \
-             Generate one with: openssl rand -hex 32",
-            key.len()
-        );
-    }
-    key.into_bytes()
+    ROOT_KEY_CACHE
+        .get_or_init(|| {
+            let key = std::env::var("ROOT_KEY").unwrap_or_else(|_| {
+                panic!(
+                    "ROOT_KEY environment variable is not set. \
+                     Generate one with: openssl rand -hex 32"
+                )
+            });
+            if key.len() < 32 {
+                panic!(
+                    "ROOT_KEY must be at least 32 characters long (got {}). \
+                     Generate one with: openssl rand -hex 32",
+                    key.len()
+                );
+            }
+            key.into_bytes()
+        })
+        .clone()
 }
 
 /// Registry of l402-enabled locations, populated at config-parse time and
