@@ -1068,9 +1068,10 @@ jobs:
           cred_invoice=$(echo "$cred_resp" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
           cred_macaroon=$(echo "$cred_resp" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
           echo "Paying invoice via lndnode..."
+          cred_payment_hash=$(docker exec lndnode lncli -n regtest decodepayreq "$cred_invoice" | jq -r '.payment_hash')
           docker exec lndnode lncli -n regtest payinvoice -f "$cred_invoice"
           sleep 5
-          cred_preimage=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1].payment_preimage')
+          cred_preimage=$(docker exec lndnode lncli -n regtest listpayments | jq -r --arg h "$cred_payment_hash" '.payments[] | select(.payment_hash == $h) | .payment_preimage')
 
           echo "Testing with valid L402 credentials..."
           response=$(curl -s -w "\n%{http_code}" --max-time 30 \
@@ -1396,9 +1397,10 @@ jobs:
           replay_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/protected)
           replay_invoice=$(echo "$replay_resp" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
           replay_macaroon=$(echo "$replay_resp" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          replay_payment_hash=$(docker exec lndnode lncli -n regtest decodepayreq "$replay_invoice" | jq -r '.payment_hash')
           docker exec lndnode lncli -n regtest payinvoice -f "$replay_invoice"
           sleep 5
-          replay_preimage=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1].payment_preimage')
+          replay_preimage=$(docker exec lndnode lncli -n regtest listpayments | jq -r --arg h "$replay_payment_hash" '.payments[] | select(.payment_hash == $h) | .payment_preimage')
 
           # First request with valid L402 credentials should succeed
           response=$(curl -s -w "\n%{http_code}" --max-time 30 \
