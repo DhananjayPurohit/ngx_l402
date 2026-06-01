@@ -111,11 +111,14 @@ static PERF_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// Single shared tokio runtime for the request handler path.
 /// Used by both the 402 challenge generation and Cashu verification code paths.
+/// Must be multi-threaded: per-tenant LNURL client creation (get_or_create_lnurl_client)
+/// makes HTTPS requests via reqwest which uses spawn_blocking for TLS/DNS operations.
+/// A single-threaded runtime has no blocking thread pool, causing those calls to panic.
 static HANDLER_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 fn get_handler_runtime() -> &'static Runtime {
     HANDLER_RUNTIME.get_or_init(|| {
-        match tokio::runtime::Builder::new_current_thread()
+        match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
         {
@@ -1608,7 +1611,7 @@ pub fn l402_access_handler(
                         // Use a lazily initialized static runtime
                         static AUTODETECT_RUNTIME: OnceLock<Runtime> = OnceLock::new();
                         let rt = AUTODETECT_RUNTIME.get_or_init(|| {
-                            match tokio::runtime::Builder::new_current_thread()
+                            match tokio::runtime::Builder::new_multi_thread()
                                 .enable_all()
                                 .build()
                             {
@@ -2182,7 +2185,7 @@ fn handle_dry_run_passthrough(
 fn dry_run_runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
-        match tokio::runtime::Builder::new_current_thread()
+        match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
         {
