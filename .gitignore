@@ -7,3 +7,4 @@ docs/mermaid.min.js
 docs/mermaid-init.js
 .DS_Store
 .cargo/config.toml
+.claude/
