@@ -248,6 +248,7 @@ services:
     environment:
       - LN_CLIENT_TYPE=LNURL
       - LNURL_ADDRESS=${LNURL_ADDRESS}
+      - ROOT_KEY=${ROOT_KEY}
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_tokens.db
       - CASHU_WALLET_SECRET=${CASHU_WALLET_SECRET}
@@ -274,6 +275,7 @@ services:
     environment:
       - LN_CLIENT_TYPE=CLN
       - CLN_LIGHTNING_RPC_FILE_PATH=/root/.lightning/regtest/lightning-rpc
+      - ROOT_KEY=${ROOT_KEY}
     volumes:
       - cln-data:/root/.lightning/regtest:rw
     depends_on:
@@ -293,6 +295,7 @@ services:
     environment:
       - LN_CLIENT_TYPE=NWC
       - NWC_URI=${NWC_URI}
+      - ROOT_KEY=${ROOT_KEY}
     depends_on:
       - cln
       - redis
@@ -334,6 +337,7 @@ services:
       - MACAROON_FILE_PATH=/root/.lnd/data/chain/bitcoin/regtest/admin.macaroon
       - CERT_FILE_PATH=/root/.lnd/tls.cert
       - LND_ADDRESS=lndnode-receiver:10010
+      - ROOT_KEY=${ROOT_KEY}
       - CASHU_ECASH_SUPPORT=true
       - CASHU_DB_PATH=/app/data/cashu_tokens.db
       - CASHU_WALLET_SECRET=${CASHU_WALLET_SECRET}
@@ -362,6 +366,7 @@ services:
       - LN_CLIENT_TYPE=LND
       - LNC_PAIRING_PHRASE=${LNC_PAIRING_PHRASE}
       - LNC_MAILBOX_SERVER=${LNC_MAILBOX_SERVER:-mailbox.terminal.lightning.today:443}
+      - ROOT_KEY=${ROOT_KEY}
     depends_on:
       - litd
       - redis
@@ -406,6 +411,7 @@ services:
       - LN_CLIENT_TYPE=ECLAIR
       - ECLAIR_ADDRESS=http://eclair:8282
       - ECLAIR_PASSWORD=eclairpass
+      - ROOT_KEY=${ROOT_KEY}
     depends_on:
       - eclair
       - redis
