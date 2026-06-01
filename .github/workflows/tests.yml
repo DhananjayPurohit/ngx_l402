@@ -47,7 +47,7 @@ jobs:
 
       - name: Set up Docker Compose
         env:
-          ROOT_KEY: ABDEGHKLMPTC
+          ROOT_KEY: a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
           CURRENCY: USD
           AMOUNT: 0.01
         run: |
@@ -58,7 +58,7 @@ jobs:
       - name: Create env file
         run: |
           touch .env
-          echo ROOT_KEY=ABDEGHKLMPTC >> .env
+          echo ROOT_KEY=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 >> .env
           cat .env
 
       - name: Start LNURL service
