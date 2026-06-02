@@ -75,6 +75,20 @@ fn require_root_key() -> Vec<u8> {
         .clone()
 }
 
+/// Redact any credentials embedded in a Redis URL before logging.
+/// `redis://:secret@host:6379` and `redis://user:secret@host:6379`
+/// both become `redis://***@host:6379`. URLs without userinfo are
+/// returned unchanged.
+fn redact_redis_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    match rest.split_once('@') {
+        Some((_userinfo, host)) => format!("{}://***@{}", scheme, host),
+        None => url.to_string(),
+    }
+}
+
 /// Registry of l402-enabled locations, populated at config-parse time and
 /// drained at `.well-known/l402-services` request time. Each entry holds the
 /// location's path and a raw pointer to its `ModuleConfig` — the config
@@ -458,7 +472,8 @@ impl L402Module {
                         if REDIS_POOL.set(pool).is_ok() {
                             info!(
                                 "✅ Redis connection pool ready (max_size={}) at {}",
-                                pool_size, redis_url
+                                pool_size,
+                                redact_redis_url(&redis_url)
                             );
                         } else {
                             error!("❌ Failed to register Redis pool in OnceLock");

@@ -27,9 +27,12 @@ static CASHU_DB: OnceLock<Arc<cdk_sqlite::WalletSqliteDatabase>> = OnceLock::new
 // Whitelisted mints singleton
 static WHITELISTED_MINTS: OnceLock<HashSet<String>> = OnceLock::new();
 
-// P2PK mode flag and keys
+// P2PK mode flag and keys.
+// The private key is stored as a parsed SecretKey (not the raw hex string) so
+// the plaintext hex does not live for the lifetime of the process and cannot
+// be leaked via a Debug/Display of the OnceLock contents.
 static P2PK_MODE_ENABLED: OnceLock<bool> = OnceLock::new();
-static P2PK_PRIVATE_KEY: OnceLock<String> = OnceLock::new();
+static P2PK_PRIVATE_KEY: OnceLock<cdk::nuts::SecretKey> = OnceLock::new();
 static P2PK_PUBLIC_KEY: OnceLock<String> = OnceLock::new();
 
 // Cashu eCash support flag
@@ -438,9 +441,9 @@ pub fn initialize_p2pk_mode() -> Result<(), String> {
 
     info!("🔑 P2PK public key: {}", public_key);
 
-    // Store keys as hex strings for later use
+    // Store the parsed private key (not the raw hex) and the public key hex.
     P2PK_PRIVATE_KEY
-        .set(private_key_hex)
+        .set(private_key)
         .map_err(|_| "Failed to set private key".to_string())?;
     P2PK_PUBLIC_KEY
         .set(public_key.to_string())
@@ -749,17 +752,12 @@ pub async fn verify_cashu_token_p2pk(
         .proofs(&keysets_info)
         .map_err(|e| format!("Failed to extract proofs: {}", e))?;
 
-    // Get our keys for P2PK verification
-    let private_key_hex = P2PK_PRIVATE_KEY
-        .get()
-        .ok_or("P2PK private key not initialized")?;
+    // Get our public key for P2PK verification (the private key is not needed
+    // on the verify path — only for signing during melt/redemption).
     let public_key_str = P2PK_PUBLIC_KEY
         .get()
         .ok_or("P2PK public key not initialized")?;
 
-    // Reconstruct keys from hex strings
-    let _private_key = cdk::nuts::SecretKey::from_hex(private_key_hex)
-        .map_err(|e| format!("Failed to parse private key: {:?}", e))?;
     let public_key = cdk::nuts::PublicKey::from_hex(public_key_str)
         .map_err(|e| format!("Failed to parse public key: {:?}", e))?;
 
@@ -1379,25 +1377,21 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
 
             // Melt the proofs
             let melt_result = if is_p2pk_mode_enabled() {
-                if let Some(private_key_hex) = P2PK_PRIVATE_KEY.get() {
-                    if let Ok(private_key) = cdk::nuts::SecretKey::from_hex(private_key_hex) {
-                        info!(
-                            "🔓 Melting {} P2PK-locked proofs for {}",
-                            proofs_to_melt.len(),
-                            client_id
-                        );
+                if let Some(private_key) = P2PK_PRIVATE_KEY.get() {
+                    info!(
+                        "🔓 Melting {} P2PK-locked proofs for {}",
+                        proofs_to_melt.len(),
+                        client_id
+                    );
 
-                        let mut signed_proofs = proofs_to_melt.clone();
-                        for proof in &mut signed_proofs {
-                            if let Err(e) = proof.sign_p2pk(private_key.clone()) {
-                                error!("❌ Failed to sign proof: {:?}", e);
-                            }
+                    let mut signed_proofs = proofs_to_melt.clone();
+                    for proof in &mut signed_proofs {
+                        if let Err(e) = proof.sign_p2pk(private_key.clone()) {
+                            error!("❌ Failed to sign proof: {:?}", e);
                         }
-
-                        wallet_clone.melt_proofs(&quote.id, signed_proofs).await
-                    } else {
-                        wallet_clone.melt(&quote.id).await
                     }
+
+                    wallet_clone.melt_proofs(&quote.id, signed_proofs).await
                 } else {
                     wallet_clone.melt(&quote.id).await
                 }
