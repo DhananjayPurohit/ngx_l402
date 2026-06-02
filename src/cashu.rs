@@ -101,6 +101,10 @@ fn get_wallet_secret() -> String {
 fn get_cached_seed() -> [u8; 64] {
     *CACHED_WALLET_SEED.get_or_init(|| {
         let wallet_secret = get_wallet_secret();
+
+        // Derive a deterministic seed from CASHU_WALLET_SECRET using blake3.
+        // The first 32 bytes are the blake3 hash; the remaining 32 bytes are
+        // left as zero to preserve compatibility with existing wallets.
         let seed_hash = blake3::hash(wallet_secret.as_bytes());
         let mut seed = [0u8; 64];
         seed[..32].copy_from_slice(seed_hash.as_bytes());
@@ -514,8 +518,8 @@ pub async fn verify_cashu_token(
     });
 
     if token_already_processed {
-        debug!("✅ Cashu token already processed (memory cache)");
-        return Ok(true);
+        warn!("🚨 Replay attack detected: Cashu token already used (memory cache)");
+        return Err("Cashu token already used".to_string());
     }
 
     // Check Redis for replay (read-only check — store happens after successful verification)
@@ -657,8 +661,8 @@ pub async fn verify_cashu_token_p2pk(
     });
 
     if token_seen {
-        info!("✅ Token already accepted (memory cache)");
-        return Ok(true);
+        warn!("🚨 Replay attack detected: Cashu token already used (memory cache)");
+        return Err("Cashu token already used".to_string());
     }
 
     // Check Redis for replay (read-only — store happens after successful verification)

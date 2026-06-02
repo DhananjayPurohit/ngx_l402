@@ -31,7 +31,6 @@ use std::ffi::c_char;
 use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::sync::Arc;
-use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
@@ -44,8 +43,37 @@ mod metrics;
 mod payment_detector;
 mod payment_page;
 
-static INIT: Once = Once::new();
-static mut MODULE: Option<L402Module> = None;
+static MODULE: OnceLock<L402Module> = OnceLock::new();
+
+/// Cached root key — populated once in the master process during init_module.
+/// Workers read from here rather than from the environment, because nginx
+/// strips all environment variables from worker processes by default.
+static ROOT_KEY_CACHE: OnceLock<Vec<u8>> = OnceLock::new();
+
+/// Read ROOT_KEY from the environment (first call) or from the in-process
+/// cache (all subsequent calls, including from worker processes).
+/// Panics at startup if the variable is missing or shorter than 32 bytes,
+/// preventing silent use of a weak / hardcoded key.
+fn require_root_key() -> Vec<u8> {
+    ROOT_KEY_CACHE
+        .get_or_init(|| {
+            let key = std::env::var("ROOT_KEY").unwrap_or_else(|_| {
+                panic!(
+                    "ROOT_KEY environment variable is not set. \
+                     Generate one with: openssl rand -hex 32"
+                )
+            });
+            if key.len() < 32 {
+                panic!(
+                    "ROOT_KEY must be at least 32 characters long (got {}). \
+                     Generate one with: openssl rand -hex 32",
+                    key.len()
+                );
+            }
+            key.into_bytes()
+        })
+        .clone()
+}
 
 /// Registry of l402-enabled locations, populated at config-parse time and
 /// drained at `.well-known/l402-services` request time. Each entry holds the
@@ -83,11 +111,14 @@ static PERF_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// Single shared tokio runtime for the request handler path.
 /// Used by both the 402 challenge generation and Cashu verification code paths.
+/// Must be multi-threaded: per-tenant LNURL client creation (get_or_create_lnurl_client)
+/// makes HTTPS requests via reqwest which uses spawn_blocking for TLS/DNS operations.
+/// A single-threaded runtime has no blocking thread pool, causing those calls to panic.
 static HANDLER_RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 fn get_handler_runtime() -> &'static Runtime {
     HANDLER_RUNTIME.get_or_init(|| {
-        match tokio::runtime::Builder::new_current_thread()
+        match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
         {
@@ -164,10 +195,7 @@ pub async fn get_or_create_lnurl_client(
         cln_config: None,
         bolt12_config: None,
         eclair_config: None,
-        root_key: std::env::var("ROOT_KEY")
-            .unwrap_or_else(|_| "root_key".to_string())
-            .as_bytes()
-            .to_vec(),
+        root_key: require_root_key(),
     };
 
     match lnurl::LnAddressUrlResJson::new_client(&ln_client_config).await {
@@ -461,10 +489,7 @@ impl L402Module {
                     cln_config: None,
                     bolt12_config: None,
                     eclair_config: None,
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
+                    root_key: require_root_key(),
                 }
             }
             "LND" => {
@@ -529,10 +554,7 @@ impl L402Module {
                     cln_config: None,
                     bolt12_config: None,
                     eclair_config: None,
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
+                    root_key: require_root_key(),
                 }
             }
             "NWC" => {
@@ -547,10 +569,7 @@ impl L402Module {
                     nwc_config: Some(nwc::NWCOptions { uri }),
                     bolt12_config: None,
                     eclair_config: None,
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
+                    root_key: require_root_key(),
                 }
             }
             "CLN" => {
@@ -566,10 +585,7 @@ impl L402Module {
                     cln_config: Some(cln::CLNOptions { lightning_dir }),
                     bolt12_config: None,
                     eclair_config: None,
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
+                    root_key: require_root_key(),
                 }
             }
             "BOLT12" => {
@@ -597,10 +613,7 @@ impl L402Module {
                         lightning_dir,
                     }),
                     eclair_config: None,
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
+                    root_key: require_root_key(),
                 }
             }
             "ECLAIR" => {
@@ -621,10 +634,7 @@ impl L402Module {
                         api_url: address,
                         password,
                     }),
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
+                    root_key: require_root_key(),
                 }
             }
             _ => {
@@ -640,10 +650,7 @@ impl L402Module {
                     cln_config: None,
                     bolt12_config: None,
                     eclair_config: None,
-                    root_key: std::env::var("ROOT_KEY")
-                        .unwrap_or_else(|_| "root_key".to_string())
-                        .as_bytes()
-                        .to_vec(),
+                    root_key: require_root_key(),
                 }
             }
         };
@@ -1246,7 +1253,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         format!("RequestMethod = {}", request_method),
     ];
 
-    let module = match unsafe { MODULE.as_ref() } {
+    let module = match MODULE.get() {
         Some(m) => m,
         None => {
             error!("Module not initialized — returning 500");
@@ -1524,7 +1531,7 @@ pub fn l402_access_handler(
     // Reset so the wrapper never reads a stale method from a prior request.
     LAST_PAYMENT_METHOD.with(|m| m.set(None));
 
-    let module = match unsafe { MODULE.as_ref() } {
+    let module = match MODULE.get() {
         Some(m) => m,
         None => {
             error!("Module not initialized — returning 500");
@@ -1604,7 +1611,7 @@ pub fn l402_access_handler(
                         // Use a lazily initialized static runtime
                         static AUTODETECT_RUNTIME: OnceLock<Runtime> = OnceLock::new();
                         let rt = AUTODETECT_RUNTIME.get_or_init(|| {
-                            match tokio::runtime::Builder::new_current_thread()
+                            match tokio::runtime::Builder::new_multi_thread()
                                 .enable_all()
                                 .build()
                             {
@@ -1896,40 +1903,28 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
         info!("ℹ️ Cashu eCash support is disabled");
     }
 
-    INIT.call_once(|| {
+    MODULE.get_or_init(|| {
         info!("🔄 Initializing runtime and L402Module");
         openssl_probe::init_openssl_env_vars();
-        match std::panic::catch_unwind(|| {
-            let rt = Runtime::new().expect("Failed to create runtime");
-            let module = rt.block_on(async {
-                let m = L402Module::new().await;
-                if cashu_ecash_support {
-                    cashu::restore_wallets_state().await;
-                }
-                m
-            });
+        let rt = Runtime::new().expect("Failed to create runtime");
+        let module = rt.block_on(async {
+            let m = L402Module::new().await;
+            if cashu_ecash_support {
+                cashu::restore_wallets_state().await;
+            }
+            m
+        });
 
-            // Initialize LN client for cashu redemption
-            let ln_client = module.middleware.ln_client.clone();
-            let ln_client_type =
-                std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
-            if let Err(e) = cashu::initialize_ln_client(ln_client, ln_client_type) {
-                error!("⚠️ Failed to initialize LN client for cashu: {}", e);
-            }
-
-            unsafe {
-                MODULE = Some(module);
-            }
-            info!("✅ L402Module initialized successfully");
-        }) {
-            Ok(_) => (),
-            Err(e) => {
-                error!("💥 Panic during initialization: {:?}", e);
-                unsafe {
-                    MODULE = None;
-                }
-            }
+        // Initialize LN client for cashu redemption
+        let ln_client = module.middleware.ln_client.clone();
+        let ln_client_type =
+            std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
+        if let Err(e) = cashu::initialize_ln_client(ln_client, ln_client_type) {
+            error!("⚠️ Failed to initialize LN client for cashu: {}", e);
         }
+
+        info!("✅ L402Module initialized successfully");
+        module
     });
 
     info!("✅ L402 module initialization complete");
@@ -1949,7 +1944,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             .parse::<u64>()
             .unwrap_or(3600);
 
-        let Some(_module) = (unsafe { MODULE.as_ref() }) else {
+        let Some(_module) = MODULE.get() else {
             error!("Module not initialized — skipping Cashu redemption");
             return 0;
         };
@@ -2190,7 +2185,7 @@ fn handle_dry_run_passthrough(
 fn dry_run_runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
-        match tokio::runtime::Builder::new_current_thread()
+        match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
         {

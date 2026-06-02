@@ -36,6 +36,7 @@ jobs:
             --add-host=grpc-content-server:127.0.0.1 \
             -e LN_CLIENT_TYPE=LNURL \
             -e LNURL_ADDRESS=hello@getalby.com \
+            -e ROOT_KEY=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 \
             ngx_l402:nginx-${{ matrix.nginx_version }} \
             nginx -t
           echo "✅ Module loaded successfully on Nginx ${{ matrix.nginx_version }}"
@@ -56,6 +57,7 @@ jobs:
             -p 8000:8000 \
             -e LN_CLIENT_TYPE=LNURL \
             -e LNURL_ADDRESS=hello@getalby.com \
+            -e ROOT_KEY=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 \
             ngx_l402:nginx-${{ matrix.nginx_version }}
 
           echo "Waiting for nginx to start..."
