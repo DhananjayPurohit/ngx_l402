@@ -577,7 +577,9 @@ impl L402Module {
             "NWC" => {
                 info!("🔧 Configuring NWC client");
                 let uri = std::env::var("NWC_URI").unwrap_or_else(|_| "nwc_uri".to_string());
-                info!("🔗 Using NWC URI: {}", uri);
+                // NOTE: never log the full NWC URI — it contains `secret=<hex>`,
+                // the wallet connection secret. Log only the scheme/relay shape.
+                info!("🔗 NWC client configured (URI redacted)");
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: None,
@@ -2737,7 +2739,13 @@ fn check_invoice_rate_limit(ip: &str, path: &str, max_requests: u32, window_secs
         return true;
     };
 
-    let key = format!("l402:invoice_rate:{}:{}", ip, path);
+    // Hash the request path so the Redis key has a bounded length and an
+    // attacker cannot exhaust Redis memory or cause key collisions by sending
+    // arbitrarily long / crafted paths. Mirrors preimage_redis_key().
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    let path_hash = hex::encode(hasher.finalize());
+    let key = format!("l402:invoice_rate:{}:{}", ip, &path_hash[..16]);
 
     let count: u64 = match redis::Script::new(
         r#"

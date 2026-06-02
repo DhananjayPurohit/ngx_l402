@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
 COPY . .
 ARG NGX_VERSION
 ENV NGX_VERSION=${NGX_VERSION}
-RUN curl -fsSL http://nginx.org/download/nginx-${NGX_VERSION}.tar.gz -o nginx.tar.gz \
+RUN curl -fsSL https://nginx.org/download/nginx-${NGX_VERSION}.tar.gz -o nginx.tar.gz \
     && tar -xzf nginx.tar.gz \
     && rm nginx.tar.gz \
     && cd nginx-${NGX_VERSION} \
