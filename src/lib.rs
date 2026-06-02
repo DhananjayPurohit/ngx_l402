@@ -1545,8 +1545,10 @@ pub fn l402_access_handler(
     );
 
     if let Some(auth_str) = auth_header {
-        debug!("🔑 Found authorization header");
-        debug!("🔑 Authorization header: {}", auth_str);
+        // NOTE: never log the raw Authorization header — it contains the
+        // macaroon and the one-time-use preimage, which are replayable
+        // payment credentials. Log only that a header was present.
+        debug!("🔑 Found authorization header (len={})", auth_str.len());
 
         if auth_str.starts_with("Cashu ") {
             let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
