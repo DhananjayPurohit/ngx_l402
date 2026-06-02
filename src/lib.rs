@@ -217,8 +217,10 @@ pub async fn get_or_create_lnurl_client(
     }
 }
 
-/// Check if a preimage has already been claimed.
-/// Fast-fail before macaroon verification to avoid wasted CPU on known replays.
+/// Fast-fail pre-check: returns true if the preimage is already known-used.
+/// This is NOT the authoritative admission gate — it only avoids wasted CPU
+/// on obvious replays. The atomic SET NX EX in store_preimage_as_used() is
+/// the true gate and closes the TOCTOU window between concurrent workers.
 /// Fails open (returns false) if Redis is unavailable.
 fn is_preimage_used(preimage: &[u8]) -> bool {
     let Some(pool) = REDIS_POOL.get() else {
@@ -1723,10 +1725,22 @@ pub fn l402_access_handler(
                     Ok(_) => {
                         info!("✅ L402 auto-detect verification successful");
                         LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
-                        if let Err(e) = store_preimage_as_used(&preimage_bytes) {
-                            error!("⚠️ Failed to store preimage in Redis: {}", e);
+                        // SET NX EX is the authoritative atomic admission gate.
+                        // Ok(false) means another worker already claimed this
+                        // preimage — treat as replay and reject.
+                        match store_preimage_as_used(&preimage_bytes) {
+                            Ok(true) => return NGX_DECLINED as isize,
+                            Ok(false) => {
+                                warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
+                                return 401;
+                            }
+                            Err(e) => {
+                                // Redis unavailable — fail-open (consistent with
+                                // the rest of the codebase's Redis-down policy).
+                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                                return NGX_DECLINED as isize;
+                            }
                         }
-                        return NGX_DECLINED as isize;
                     }
                     Err(e) => {
                         warn!("⚠️ L402 auto-detect verification failed: {:?}", e);
@@ -1790,15 +1804,22 @@ pub fn l402_access_handler(
                         Ok(_) => {
                             info!("✅ L402 verification successful");
                             LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
-                            // Atomic claim. Real replays are filtered by the
-                            // pre-check above, so Ok(false) here only happens
-                            // for benign concurrent races between workers
-                            // serving the same legitimate request — admit them.
-                            // Err is fail-open, matching the policy elsewhere.
-                            if let Err(e) = store_preimage_as_used(&preimage.0) {
-                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                            // SET NX EX is the authoritative atomic admission gate.
+                            // Ok(false) means another worker already claimed this
+                            // preimage — treat as replay and reject.
+                            match store_preimage_as_used(&preimage.0) {
+                                Ok(true) => return NGX_DECLINED as isize,
+                                Ok(false) => {
+                                    warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
+                                    return 401;
+                                }
+                                Err(e) => {
+                                    // Redis unavailable — fail-open (consistent with
+                                    // the rest of the codebase's Redis-down policy).
+                                    warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                                    return NGX_DECLINED as isize;
+                                }
                             }
-                            return NGX_DECLINED as isize;
                         }
                         Err(e) => {
                             warn!("⚠️ L402 verification failed: {:?}", e);
