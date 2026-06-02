@@ -546,16 +546,16 @@ pub async fn verify_cashu_token(
         .map_err(|e| format!("Failed to get token value: {}", e))?;
 
     // Check if the token unit is in millisatoshis or satoshis
-    let total_amount_msat: u64 = if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Sat {
+    let unit = token_decoded
+        .unit()
+        .ok_or_else(|| "Token has no currency unit".to_string())?;
+    let total_amount_msat: u64 = if unit == cdk::nuts::CurrencyUnit::Sat {
         u64::from(total_amount) * MSAT_PER_SAT
-    } else if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Msat {
+    } else if unit == cdk::nuts::CurrencyUnit::Msat {
         u64::from(total_amount)
     } else {
         // Other units not supported
-        return Err(format!(
-            "Unsupported token unit: {:?}",
-            token_decoded.unit().unwrap()
-        ));
+        return Err(format!("Unsupported token unit: {:?}", unit));
     };
 
     // Check if the token amount is sufficient
@@ -590,8 +590,6 @@ pub async fn verify_cashu_token(
     }
 
     info!("✅ Cashu token from whitelisted mint: {}", mint_url);
-
-    let unit = token_decoded.unit().unwrap();
 
     // Reuse a cached wallet for this (mint, unit). Avoids per-request construction
     // and keeps the keysets cache warm.
@@ -703,15 +701,15 @@ pub async fn verify_cashu_token_p2pk(
         .value()
         .map_err(|e| format!("Failed to get value: {}", e))?;
 
-    let total_amount_msat: u64 = if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Sat {
+    let unit = token_decoded
+        .unit()
+        .ok_or_else(|| "Token has no currency unit".to_string())?;
+    let total_amount_msat: u64 = if unit == cdk::nuts::CurrencyUnit::Sat {
         u64::from(total_amount) * MSAT_PER_SAT
-    } else if token_decoded.unit().unwrap() == cdk::nuts::CurrencyUnit::Msat {
+    } else if unit == cdk::nuts::CurrencyUnit::Msat {
         u64::from(total_amount)
     } else {
-        return Err(format!(
-            "Unsupported unit: {:?}",
-            token_decoded.unit().unwrap()
-        ));
+        return Err(format!("Unsupported unit: {:?}", unit));
     };
 
     if total_amount_msat < amount_msat as u64 {
@@ -725,8 +723,6 @@ pub async fn verify_cashu_token_p2pk(
         "✅ Validated: {} msat from {}",
         total_amount_msat, mint_url_str
     );
-
-    let unit = token_decoded.unit().unwrap();
 
     // Reuse a cached wallet for this (mint, unit). Same instance used by the
     // non-P2PK path; keysets cache is shared.
@@ -783,15 +779,20 @@ pub async fn verify_cashu_token_p2pk(
     // Create ProofInfo objects for direct database storage
     let proof_infos: Vec<ProofInfo> = proofs
         .iter()
-        .map(|proof| ProofInfo {
-            proof: proof.clone(),
-            y: proof.y().unwrap(),
-            mint_url: mint_url.clone(),
-            state: State::Unspent,
-            unit: unit.clone(),
-            spending_condition: Some(spending_condition.clone()),
+        .map(|proof| {
+            let y = proof
+                .y()
+                .map_err(|e| format!("Failed to compute proof y-coordinate: {:?}", e))?;
+            Ok(ProofInfo {
+                proof: proof.clone(),
+                y,
+                mint_url: mint_url.clone(),
+                state: State::Unspent,
+                unit: unit.clone(),
+                spending_condition: Some(spending_condition.clone()),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
 
     info!(
         "💾 Storing {} P2PK-locked proofs directly in database (NO swap call)",
@@ -929,7 +930,18 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
         let wallet_clone = wallet.clone();
 
         // Calculate total amount
-        let total_amount: u64 = wallet_clone.total_balance().await.unwrap().into();
+        let total_amount: u64 = match wallet_clone.total_balance().await {
+            Ok(balance) => balance.into(),
+            Err(e) => {
+                let msg = format!(
+                    "⚠️ Failed to get total balance for {}: {}",
+                    mint_url_str, e
+                );
+                warn!("{}", msg);
+                cashu_redemption_logger::log_redemption(&msg);
+                continue;
+            }
+        };
 
         if total_amount == 0 {
             debug!("ℹ️ Total amount is 0 for mint {}", wallet.mint_url);
