@@ -75,6 +75,20 @@ fn require_root_key() -> Vec<u8> {
         .clone()
 }
 
+/// Redact any credentials embedded in a Redis URL before logging.
+/// `redis://:secret@host:6379` and `redis://user:secret@host:6379`
+/// both become `redis://***@host:6379`. URLs without userinfo are
+/// returned unchanged.
+fn redact_redis_url(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    match rest.split_once('@') {
+        Some((_userinfo, host)) => format!("{}://***@{}", scheme, host),
+        None => url.to_string(),
+    }
+}
+
 /// Registry of l402-enabled locations, populated at config-parse time and
 /// drained at `.well-known/l402-services` request time. Each entry holds the
 /// location's path and a raw pointer to its `ModuleConfig` — the config
@@ -217,8 +231,10 @@ pub async fn get_or_create_lnurl_client(
     }
 }
 
-/// Check if a preimage has already been claimed.
-/// Fast-fail before macaroon verification to avoid wasted CPU on known replays.
+/// Fast-fail pre-check: returns true if the preimage is already known-used.
+/// This is NOT the authoritative admission gate — it only avoids wasted CPU
+/// on obvious replays. The atomic SET NX EX in store_preimage_as_used() is
+/// the true gate and closes the TOCTOU window between concurrent workers.
 /// Fails open (returns false) if Redis is unavailable.
 fn is_preimage_used(preimage: &[u8]) -> bool {
     let Some(pool) = REDIS_POOL.get() else {
@@ -456,7 +472,8 @@ impl L402Module {
                         if REDIS_POOL.set(pool).is_ok() {
                             info!(
                                 "✅ Redis connection pool ready (max_size={}) at {}",
-                                pool_size, redis_url
+                                pool_size,
+                                redact_redis_url(&redis_url)
                             );
                         } else {
                             error!("❌ Failed to register Redis pool in OnceLock");
@@ -560,7 +577,9 @@ impl L402Module {
             "NWC" => {
                 info!("🔧 Configuring NWC client");
                 let uri = std::env::var("NWC_URI").unwrap_or_else(|_| "nwc_uri".to_string());
-                info!("🔗 Using NWC URI: {}", uri);
+                // NOTE: never log the full NWC URI — it contains `secret=<hex>`,
+                // the wallet connection secret. Log only the scheme/relay shape.
+                info!("🔗 NWC client configured (URI redacted)");
                 lnclient::LNClientConfig {
                     ln_client_type,
                     lnd_config: None,
@@ -1545,8 +1564,10 @@ pub fn l402_access_handler(
     );
 
     if let Some(auth_str) = auth_header {
-        debug!("🔑 Found authorization header");
-        debug!("🔑 Authorization header: {}", auth_str);
+        // NOTE: never log the raw Authorization header — it contains the
+        // macaroon and the one-time-use preimage, which are replayable
+        // payment credentials. Log only that a header was present.
+        debug!("🔑 Found authorization header (len={})", auth_str.len());
 
         if auth_str.starts_with("Cashu ") {
             let token = auth_str.trim_start_matches("Cashu ").trim().to_string();
@@ -1721,10 +1742,22 @@ pub fn l402_access_handler(
                     Ok(_) => {
                         info!("✅ L402 auto-detect verification successful");
                         LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
-                        if let Err(e) = store_preimage_as_used(&preimage_bytes) {
-                            error!("⚠️ Failed to store preimage in Redis: {}", e);
+                        // SET NX EX is the authoritative atomic admission gate.
+                        // Ok(false) means another worker already claimed this
+                        // preimage — treat as replay and reject.
+                        match store_preimage_as_used(&preimage_bytes) {
+                            Ok(true) => return NGX_DECLINED as isize,
+                            Ok(false) => {
+                                warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
+                                return 401;
+                            }
+                            Err(e) => {
+                                // Redis unavailable — fail-open (consistent with
+                                // the rest of the codebase's Redis-down policy).
+                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                                return NGX_DECLINED as isize;
+                            }
                         }
-                        return NGX_DECLINED as isize;
                     }
                     Err(e) => {
                         warn!("⚠️ L402 auto-detect verification failed: {:?}", e);
@@ -1788,15 +1821,22 @@ pub fn l402_access_handler(
                         Ok(_) => {
                             info!("✅ L402 verification successful");
                             LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
-                            // Atomic claim. Real replays are filtered by the
-                            // pre-check above, so Ok(false) here only happens
-                            // for benign concurrent races between workers
-                            // serving the same legitimate request — admit them.
-                            // Err is fail-open, matching the policy elsewhere.
-                            if let Err(e) = store_preimage_as_used(&preimage.0) {
-                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                            // SET NX EX is the authoritative atomic admission gate.
+                            // Ok(false) means another worker already claimed this
+                            // preimage — treat as replay and reject.
+                            match store_preimage_as_used(&preimage.0) {
+                                Ok(true) => return NGX_DECLINED as isize,
+                                Ok(false) => {
+                                    warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
+                                    return 401;
+                                }
+                                Err(e) => {
+                                    // Redis unavailable — fail-open (consistent with
+                                    // the rest of the codebase's Redis-down policy).
+                                    warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                                    return NGX_DECLINED as isize;
+                                }
                             }
-                            return NGX_DECLINED as isize;
                         }
                         Err(e) => {
                             warn!("⚠️ L402 verification failed: {:?}", e);
@@ -2699,7 +2739,13 @@ fn check_invoice_rate_limit(ip: &str, path: &str, max_requests: u32, window_secs
         return true;
     };
 
-    let key = format!("l402:invoice_rate:{}:{}", ip, path);
+    // Hash the request path so the Redis key has a bounded length and an
+    // attacker cannot exhaust Redis memory or cause key collisions by sending
+    // arbitrarily long / crafted paths. Mirrors preimage_redis_key().
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    let path_hash = hex::encode(hasher.finalize());
+    let key = format!("l402:invoice_rate:{}:{}", ip, &path_hash[..16]);
 
     let count: u64 = match redis::Script::new(
         r#"

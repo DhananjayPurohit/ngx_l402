@@ -1,0 +1,31 @@
+name: Security Audit
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Re-run weekly so newly-disclosed advisories are caught even without a push.
+    - cron: '0 6 * * 1'
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        # Audit the dependency tree against the RustSec advisory database.
+        # `lightning 0.0.125` and `tonic 0.7` are known-outdated; once they are
+        # upgraded, drop the corresponding --ignore flags so regressions fail CI.
+        run: cargo audit
