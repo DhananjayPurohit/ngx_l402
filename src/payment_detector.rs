@@ -148,11 +148,23 @@ impl LndDetector {
             ..Default::default()
         };
 
-        let response: tonic::Response<lnrpc::Invoice> = client
+        let response: tonic::Response<lnrpc::Invoice> = match client
             .lightning()
             .lookup_invoice(tonic::Request::new(request))
             .await
-            .map_err(|e| format!("LookupInvoice gRPC error: {}", e))?;
+        {
+            Ok(resp) => resp,
+            Err(status) => {
+                if status.code() == tonic::Code::NotFound {
+                    warn!(
+                        "⚠️  LND: invoice not found for payment_hash {}",
+                        &hex::encode(payment_hash)[..16]
+                    );
+                    return Ok(None);
+                }
+                return Err(format!("LookupInvoice gRPC error: {}", status));
+            }
+        };
 
         let invoice = response.into_inner();
 
