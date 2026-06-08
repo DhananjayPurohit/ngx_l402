@@ -565,7 +565,9 @@ pub async fn verify_cashu_token(
         .unit()
         .ok_or_else(|| "Token has no currency unit".to_string())?;
     let total_amount_msat: u64 = if unit == cdk::nuts::CurrencyUnit::Sat {
-        u64::from(total_amount) * MSAT_PER_SAT
+        u64::from(total_amount)
+            .checked_mul(MSAT_PER_SAT)
+            .ok_or_else(|| "Token amount overflows u64 sat→msat conversion".to_string())?
     } else if unit == cdk::nuts::CurrencyUnit::Msat {
         u64::from(total_amount)
     } else {
@@ -720,7 +722,9 @@ pub async fn verify_cashu_token_p2pk(
         .unit()
         .ok_or_else(|| "Token has no currency unit".to_string())?;
     let total_amount_msat: u64 = if unit == cdk::nuts::CurrencyUnit::Sat {
-        u64::from(total_amount) * MSAT_PER_SAT
+        u64::from(total_amount)
+            .checked_mul(MSAT_PER_SAT)
+            .ok_or_else(|| "Token amount overflows u64 sat→msat conversion".to_string())?
     } else if unit == cdk::nuts::CurrencyUnit::Msat {
         u64::from(total_amount)
     } else {

@@ -55,12 +55,11 @@ pub fn render_payment_page(
 
     // ── Amounts ──────────────────────────────────────────────────────────────
     let amount_sats = amount_msat / 1000;
-    let invoice_short = if invoice.len() > 40 {
-        html_escape(&format!(
-            "{}\u{2026}{}",
-            &invoice[..20],
-            &invoice[invoice.len() - 10..]
-        ))
+    let invoice_short = if invoice.chars().count() > 40 {
+        let head: String = invoice.chars().take(20).collect();
+        let tail: String = invoice.chars().rev().take(10).collect::<String>()
+            .chars().rev().collect();
+        html_escape(&format!("{}\u{2026}{}", head, tail))
     } else {
         html_escape(invoice)
     };
@@ -69,7 +68,7 @@ pub fn render_payment_page(
     let cashu_tab_html = if cashu_enabled {
         let payment_req_hint = cashu_payment_request
             .map(|r| {
-                let preview = html_escape(&r[..r.len().min(60)]);
+                let preview = html_escape(&r.chars().take(60).collect::<String>());
                 format!(
                     "<div class=\"payment-req-box\">\
 <span class=\"payment-req-label\">Payment Request</span>\
