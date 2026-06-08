@@ -4,6 +4,15 @@
 //! This module owns all HTML, CSS, and JavaScript that is sent to the browser
 //! when a protected resource requires payment.
 
+/// Escape a string for safe interpolation into HTML text/attribute contexts.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 /// Render the full 402 payment page as an HTML string.
 ///
 /// # Arguments
@@ -56,7 +65,7 @@ pub fn render_payment_page(
     let cashu_tab_html = if cashu_enabled {
         let payment_req_hint = cashu_payment_request
             .map(|r| {
-                let preview = &r[..r.len().min(60)];
+                let preview = html_escape(&r[..r.len().min(60)]);
                 format!(
                     "<div class=\"payment-req-box\">\
 <span class=\"payment-req-label\">Payment Request</span>\
