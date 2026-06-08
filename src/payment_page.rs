@@ -110,7 +110,7 @@ pub fn render_payment_page(
             return;
         }}
         fetch(window.location.href, {{
-            headers: {{'Authorization': 'L402 {mac}'}},
+            headers: {{'Authorization': 'L402 ' + {mac}}},
             redirect: 'follow',
             credentials: 'same-origin'
         }}).then(r => {{
@@ -125,7 +125,8 @@ pub fn render_payment_page(
     }}
     startPolling();
 "#,
-            mac = macaroon_b64
+            mac = serde_json::to_string(macaroon_b64)
+                .unwrap_or_else(|_| "\"\"".to_string())
         )
     } else {
         String::new()
