@@ -70,26 +70,68 @@ Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
 Environment=ROOT_KEY=your-root-key
 ```
 
+> **How it works**: When a client requests a protected resource, the module
+> connects to your **CLN node** via the Unix socket at `CLN_LIGHTNING_RPC_FILE_PATH`
+> and calls `fetchinvoice` to derive a fresh single-use **BOLT11 invoice** from
+> the reusable BOLT12 offer. The node resolves the offer's embedded node ID and
+> negotiates the payment parameters over the Lightning network automatically.
+> `CLN_LIGHTNING_RPC_FILE_PATH` is therefore **required** alongside `BOLT12_OFFER`.
+
 ## Eclair
 
 ```bash
 Environment=LN_CLIENT_TYPE=ECLAIR
 Environment=ECLAIR_ADDRESS=http://127.0.0.1:8282
-Environment=ECLAIR_PASSWORD=eclairpass
+Environment=ECLAIR_PASSWORD=eclairpass   # REQUIRED — no default; module disables auto-detect if unset
 Environment=ROOT_KEY=your-root-key
 ```
+
+> **⚠️ Security**: `ECLAIR_PASSWORD` is **required** and has no default value.
+> If it is not set the Eclair payment-detector is disabled at startup and an
+> error is logged. Never use a well-known or placeholder password in production.
 
 ---
 
 ## Redis (Dynamic Pricing & Replay Protection)
 
+> **Strongly recommended in production.** Without Redis, replay protection uses
+> in-process caching only — it is lost on restart and does not work across
+> multiple nginx workers. Multi-worker deployments **require** Redis.
+
 ```bash
 Environment=REDIS_URL=redis://127.0.0.1:6379
 
-# TTL for replay attack prevention (default: 86400 = 24 hours)
+# Connection pool size (default: 4)
+Environment=REDIS_POOL_SIZE=4
+
+# TTL for spent Lightning preimages (default: 86400 = 24 hours)
 Environment=L402_PREIMAGE_TTL_SECONDS=86400
+
+# TTL for spent Cashu tokens (default: 86400 = 24 hours)
 Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400
 ```
+
+### Setting TTL to "infinite" (permanent replay protection)
+
+The module stores spent preimages and Cashu tokens in Redis using
+`SET NX EX <seconds>`. Redis requires a positive integer for `EX` — there is
+no built-in "never expire" option via this command.
+
+To achieve **permanent** replay protection (strongly recommended in production),
+set the TTL to a very large value:
+
+```bash
+# ~68 years — effectively permanent
+Environment=L402_PREIMAGE_TTL_SECONDS=2147483647
+Environment=L402_CASHU_TOKEN_TTL_SECONDS=2147483647
+```
+
+> **Trade-off**: Permanent keys accumulate in Redis indefinitely. For a busy
+> API with many unique tokens this will grow Redis memory over time. Size each
+> key at ~100 bytes; 1 million spent tokens ≈ 100 MB.
+>
+> **Do not set `0`** — Redis rejects `EX 0` with an error, which causes the
+> module to fail-open and skip the replay check entirely.
 
 ---
 
@@ -152,12 +194,40 @@ See [Cashu eCash](./cashu.md) for a full explanation of Standard vs P2PK mode an
 
 ---
 
+## LND via SOCKS5 / Tor proxy
+
+```bash
+# [Optional] Route LND gRPC through a SOCKS5 proxy
+Environment=SOCKS5_PROXY=socks5://127.0.0.1:9050
+```
+
+---
+
+## Capability Manifest Metadata
+
+These optional variables populate the `service` block in `/.well-known/l402-services`.
+All are omitted from the manifest JSON when unset.
+
+```bash
+Environment=L402_SERVICE_NAME=My API
+Environment=L402_SERVICE_DESCRIPTION=Premium data, paid per request.
+Environment=L402_SERVICE_OPERATOR=npub1...   # Nostr pubkey, DID, or free-form
+Environment=L402_SERVICE_CONTACT=ops@example.com
+```
+
+See [Capability Manifest](./manifest.md) for the full manifest spec.
+
+---
+
 ## Logging
 
 ```bash
 Environment=RUST_LOG=info
 # For module-specific debug logs:
 Environment=RUST_LOG=ngx_l402_lib=debug,info
+
+# Log per-request performance timing (set to any non-empty value to enable)
+Environment=L402_PERF_LOG=1
 ```
 
 ---
