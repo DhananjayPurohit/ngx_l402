@@ -1749,10 +1749,16 @@ pub fn l402_access_handler(
                                 warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
                                 return 401;
                             }
+                            Err(e) if e.contains("Redis not configured") => {
+                                // Redis was never set up — fall back to in-process
+                                // cache (single-worker protection only). This is an
+                                // explicit operator choice, not an outage.
+                                warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
+                                return NGX_DECLINED as isize;
+                            }
                             Err(e) => {
-                                // Redis unavailable — fail-closed to prevent preimage
-                                // replay attacks during outages (CWE-362 / CWE-693).
-                                // Return 503 so the client knows to retry later.
+                                // Redis was configured but is currently unreachable —
+                                // fail-closed to prevent replay during outages (CWE-362).
                                 error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
                                 return 503;
                             }
@@ -1829,10 +1835,16 @@ pub fn l402_access_handler(
                                     warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
                                     return 401;
                                 }
+                                Err(e) if e.contains("Redis not configured") => {
+                                    // Redis was never set up — fall back to in-process
+                                    // cache (single-worker protection only). This is an
+                                    // explicit operator choice, not an outage.
+                                    warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
+                                    return NGX_DECLINED as isize;
+                                }
                                 Err(e) => {
-                                    // Redis unavailable — fail-closed to prevent preimage
-                                    // replay attacks during outages (CWE-362 / CWE-693).
-                                    // Return 503 so the client knows to retry later.
+                                    // Redis was configured but is currently unreachable —
+                                    // fail-closed to prevent replay during outages (CWE-362).
                                     error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
                                     return 503;
                                 }
