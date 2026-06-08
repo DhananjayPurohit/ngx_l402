@@ -204,7 +204,22 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
 /// - strip trailing slashes
 /// - lowercase the scheme and host
 fn normalize_mint_url(url: &str) -> String {
-    url.trim().trim_end_matches('/').to_string()
+    // RFC 3986: scheme and host are case-insensitive.  Lowercase them so that
+    // "HTTPS://Mint.example.com/v1" and "https://mint.example.com/v1" are
+    // treated as the same mint and whitelist comparisons are reliable.
+    let trimmed = url.trim().trim_end_matches('/');
+    if let Some(sep) = trimmed.find("://") {
+        let scheme = trimmed[..sep].to_lowercase();
+        // Host ends at the next '/' after the authority, or at end-of-string.
+        let after_scheme = &trimmed[sep + 3..];
+        let (host_part, path_part) = match after_scheme.find('/') {
+            Some(p) => (&after_scheme[..p], &after_scheme[p..]),
+            None => (after_scheme, ""),
+        };
+        format!("{}://{}{}", scheme, host_part.to_lowercase(), path_part)
+    } else {
+        trimmed.to_lowercase()
+    }
 }
 
 pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), String> {
