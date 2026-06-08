@@ -56,9 +56,13 @@ pub fn render_payment_page(
     // ── Amounts ──────────────────────────────────────────────────────────────
     let amount_sats = amount_msat / 1000;
     let invoice_short = if invoice.len() > 40 {
-        format!("{}\u{2026}{}", &invoice[..20], &invoice[invoice.len() - 10..])
+        html_escape(&format!(
+            "{}\u{2026}{}",
+            &invoice[..20],
+            &invoice[invoice.len() - 10..]
+        ))
     } else {
-        invoice.to_string()
+        html_escape(invoice)
     };
 
     // ── Cashu tab ────────────────────────────────────────────────────────────
