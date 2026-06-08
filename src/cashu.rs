@@ -814,6 +814,21 @@ pub async fn verify_cashu_token_p2pk(
         proof_infos.len()
     );
 
+    // Atomic Redis claim BEFORE writing to the database.
+    // This closes the TOCTOU window: the loser of a concurrent replay race
+    // is rejected here and never reaches update_proofs(), so the SQLite
+    // database is only written once per token.
+    match crate::store_cashu_token_as_used(token) {
+        Ok(false) => {
+            warn!("🚨 Concurrent Cashu replay detected: token already claimed");
+            return Ok(false);
+        }
+        Err(e) => {
+            warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
+        }
+        Ok(true) => { /* won the race — proceed to persist proofs */ }
+    }
+
     // Store directly in database using update_proofs (same as receive_proofs does internally)
     // Pass empty vec for second parameter (no proofs to delete)
     wallet
@@ -828,31 +843,12 @@ pub async fn verify_cashu_token_p2pk(
         }
     }
 
-    // Atomic claim: Ok(true) = first claim (admit), Ok(false) = concurrent
-    // replay detected (reject), Err = Redis outage (admit, fail-open).
-    match crate::store_cashu_token_as_used(token) {
-        Ok(true) => {
-            cache_processed_token(token);
-            info!(
-                "✅ ACCEPTED ({} msat stored in CDK database)",
-                total_amount_msat
-            );
-            Ok(true)
-        }
-        Ok(false) => {
-            warn!("🚨 Concurrent Cashu replay detected: token already claimed");
-            Ok(false)
-        }
-        Err(e) => {
-            warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
-            cache_processed_token(token);
-            info!(
-                "✅ ACCEPTED ({} msat stored in CDK database)",
-                total_amount_msat
-            );
-            Ok(true)
-        }
-    }
+    cache_processed_token(token);
+    info!(
+        "✅ ACCEPTED ({} msat stored in CDK database)",
+        total_amount_msat
+    );
+    Ok(true)
 }
 
 pub async fn redeem_to_lightning() -> Result<bool, String> {
