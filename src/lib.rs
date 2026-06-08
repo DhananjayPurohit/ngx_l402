@@ -1750,10 +1750,11 @@ pub fn l402_access_handler(
                                 return 401;
                             }
                             Err(e) => {
-                                // Redis unavailable — fail-open (consistent with
-                                // the rest of the codebase's Redis-down policy).
-                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
-                                return NGX_DECLINED as isize;
+                                // Redis unavailable — fail-closed to prevent preimage
+                                // replay attacks during outages (CWE-362 / CWE-693).
+                                // Return 503 so the client knows to retry later.
+                                error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
+                                return 503;
                             }
                         }
                     }
@@ -1829,10 +1830,11 @@ pub fn l402_access_handler(
                                     return 401;
                                 }
                                 Err(e) => {
-                                    // Redis unavailable — fail-open (consistent with
-                                    // the rest of the codebase's Redis-down policy).
-                                    warn!("⚠️ Redis claim failed, admitting request: {}", e);
-                                    return NGX_DECLINED as isize;
+                                    // Redis unavailable — fail-closed to prevent preimage
+                                    // replay attacks during outages (CWE-362 / CWE-693).
+                                    // Return 503 so the client knows to retry later.
+                                    error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
+                                    return 503;
                                 }
                             }
                         }
