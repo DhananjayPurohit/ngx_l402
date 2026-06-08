@@ -769,6 +769,21 @@ pub async fn verify_cashu_token_p2pk(
 
     info!("✅ Token verified as P2PK-locked to our public key");
 
+    // NUT-07: check proof state with the mint before accepting.
+    // Without this call, a proof that has already been spent at the mint would
+    // pass the local P2PK signature check and be accepted again (double-spend).
+    info!("🔍 Checking proof state with mint (NUT-07 double-spend check)...");
+    let proof_states = wallet
+        .check_proofs_spent(proofs.clone())
+        .await
+        .map_err(|e| format!("Failed to verify proof state with mint: {:?}", e))?;
+
+    if proof_states.iter().any(|s| s.state == cdk::nuts::State::Spent) {
+        warn!("🚨 P2PK double-spend attempt: one or more proofs already spent at the mint");
+        return Err("Token contains already-spent proofs".to_string());
+    }
+    info!("✅ Mint confirmed all proofs are unspent");
+
     // IMPORTANT: receive_proofs() calls the mint to swap proofs (post_swap), which we want to avoid!
     // Instead, we store the P2PK-locked proofs directly in the database as UNSPENT
     // without swapping them. They can be spent later using our private key.
