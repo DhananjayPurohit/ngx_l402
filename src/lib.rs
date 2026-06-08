@@ -1258,14 +1258,12 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         )
     };
 
-    let mut request_path = uri.clone();
-    if request_path.contains(".html") || request_path.ends_with('/') {
-        if let Some(pos) = request_path.rfind('/') {
-            request_path = request_path[..pos].to_string();
-        }
-    }
-    // Bind the macaroon to both the normalized path and the HTTP method so a
+    // Bind the macaroon to the exact request URI and HTTP method so a
     // token paid for `GET /v1/data` can't be replayed against `POST /v1/data`.
+    // NOTE: no path normalization — stripping .html / trailing-slash suffixes
+    // would widen the macaroon scope to the parent directory, allowing a token
+    // issued for /docs/page.html to be reused against /docs/secret (CWE-285).
+    let request_path = uri.clone();
     let request_method = method_caveat_value(method);
     let caveats = vec![
         format!("RequestPath = {}", request_path),
