@@ -623,12 +623,23 @@ pub async fn verify_cashu_token(
             );
 
             if is_multi_tenant_enabled() {
-                let proofs = wallet
-                    .get_unspent_proofs()
+                // Use only the proofs from this specific token, not all wallet
+                // proofs. The wallet is shared across tenants, so
+                // get_unspent_proofs() would return other tenants' proofs and
+                // overwrite their LNURL mappings (CWE-284).
+                let keysets_info = wallet
+                    .get_mint_keysets()
                     .await
-                    .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
-                if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
-                    warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                    .map_err(|e| format!("Failed to get keysets for proof extraction: {}", e))?;
+                match token_decoded.proofs(&keysets_info) {
+                    Ok(proofs) => {
+                        if let Err(e) = set_proof_to_lnurl(proofs, lnurl_addr) {
+                            warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to extract proofs from token for lnurl mapping: {}", e);
+                    }
                 }
             }
 
