@@ -855,6 +855,16 @@ jobs:
             exit 1
           fi
 
+          # Replaying the same valid preimage on a non-indefinite route must be rejected
+          echo "Testing protected route with reused preimage (should be rejected)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon:$preimage" http://0.0.0.0:8000/protected-timeout)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Reused preimage returned status $status_code, expected 401"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
           # Wait for macaroon to expire (10 seconds)
           echo "Waiting for macaroon to expire..."
           sleep 15
@@ -865,6 +875,57 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 401 ]; then
             echo "Error: Protected route with expired macaroon returned status $status_code, expected 401"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          # Test indefinite-access: same preimage can be reused for the macaroon lifetime
+          echo "Testing indefinite-access route..."
+          response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected-indefinite)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 402 ]; then
+            echo "Error: Indefinite-access route without header returned status $status_code, expected 402"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          invoice_indef=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'invoice="[^"]*"' | cut -d'"' -f2)
+          macaroon_indef=$(echo "$response" | grep -i "WWW-Authenticate: L402" | grep -o 'macaroon="[^"]*"' | cut -d'"' -f2)
+          if [ -z "$invoice_indef" ] || [ -z "$macaroon_indef" ]; then
+            echo "Error: Missing invoice or macaroon for indefinite-access route"
+            echo "$response"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          echo "Paying indefinite-access invoice through LND..."
+          payment_result=$(docker exec lndnode lncli -n regtest payinvoice -f $invoice_indef 2>&1)
+          sleep 5
+
+          payment_result=$(docker exec lndnode lncli -n regtest listpayments | jq -r '.payments[-1]')
+          payment_status=$(echo "$payment_result" | jq -r '.status')
+          if [ "$payment_status" != "SUCCEEDED" ]; then
+            echo "Error: Indefinite-access payment failed or timed out"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          preimage_indef=$(echo "$payment_result" | jq -r '.payment_preimage')
+
+          echo "Testing indefinite-access route with valid preimage (first reuse)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon_indef:$preimage_indef" http://0.0.0.0:8000/protected-indefinite)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Indefinite-access route first reuse returned status $status_code, expected 200"
+            docker logs nginx-nwc
+            exit 1
+          fi
+
+          echo "Testing indefinite-access route with same preimage (second reuse - should still pass)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon_indef:$preimage_indef" http://0.0.0.0:8000/protected-indefinite)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 200 ]; then
+            echo "Error: Indefinite-access route second reuse returned status $status_code, expected 200"
             docker logs nginx-nwc
             exit 1
           fi

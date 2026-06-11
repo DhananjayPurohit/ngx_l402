@@ -174,6 +174,7 @@ These are set inside `location {}` blocks in `nginx.conf` (not environment varia
 | `l402_lnurl_addr` | string | — | Per-location LNURL address for multi-tenant setups |
 | `l402_invoice_rate_limit` | `<N>r/m` or `<N>r/s` | disabled | Max invoice generation rate per IP per route |
 | `l402_auto_detect_payment` | boolean¹ | `off` | Server-side payment detection — queries the Lightning node instead of requiring the client to supply the preimage |
+| `l402_indefinite_access` | boolean¹ | `off` | Skip the single-use preimage replay check — a single payment stays valid for the macaroon lifetime |
 
 > ¹ **Boolean directives** accept: `on` / `off` / `true` / `false` / `1` / `0` / `yes` / `no` (case-insensitive).
 
@@ -189,6 +190,23 @@ location /protected {
     try_files /index.html =404;
 }
 ```
+
+### Example: subscription-style (indefinite) access
+
+```nginx
+location /subscriber-only {
+    l402                         on;
+    l402_amount_msat_default     100000;
+    l402_macaroon_timeout        2592000;  # 30 days
+    l402_indefinite_access       on;       # single payment stays valid until macaroon expires
+
+    try_files /index.html =404;
+}
+```
+
+> **Warning**: `l402_indefinite_access on` should always be paired with a non-zero
+> `l402_macaroon_timeout`. Without an expiry, the macaroon never expires and the
+> same preimage grants access forever.
 
 > **Backends that support auto-detect**: `LND`, `CLN`, `BOLT12`, `ECLAIR`.
 > `LNC`, `NWC`, and `LNURL` do **not** support server-side lookup.

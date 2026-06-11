@@ -896,13 +896,16 @@ pub struct ModuleConfig {
     // (inherit from parent scope); `Some(false)` explicitly turns it off and
     // stops inheritance.
     dry_run: Option<bool>,
+    // Skip single-use preimage replay check; one payment stays valid for the
+    // macaroon lifetime (pair with l402_macaroon_timeout). Defaults to false.
+    indefinite_access: bool,
     // When set via `l402_manifest_hide;`, this route is excluded from the
     // `.well-known/l402-services` capability manifest. The route is still gated as
     // normal — this just makes it not discoverable.
     manifest_hidden: bool,
 }
 
-pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
+pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 12] = [
     ngx_command_t {
         name: ngx_string!("l402"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -979,6 +982,14 @@ pub static mut NGX_HTTP_L402_COMMANDS: [ngx_command_t; 11] = [
         name: ngx_string!("l402_manifest_hide"),
         type_: (NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS) as ngx_uint_t,
         set: Some(ngx_http_l402_manifest_hide_set),
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("l402_indefinite_access"),
+        type_: (NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_l402_indefinite_access_set),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -1063,6 +1074,9 @@ impl Merge for ModuleConfig {
         }
         if prev.manifest_hidden {
             self.manifest_hidden = true;
+        }
+        if prev.indefinite_access {
+            self.indefinite_access = true;
         }
         Ok(())
     }
@@ -1193,6 +1207,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         invoice_rate_limit,
         auto_detect_payment,
         dry_run,
+        indefinite_access,
     ) = unsafe {
         // NOTE: `authorization` can be null — not every request carries the header.
         let auth_header = if !r.headers_in.authorization.is_null() {
@@ -1244,6 +1259,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         let invoice_rate_limit = conf.invoice_rate_limit;
         let auto_detect_payment = conf.auto_detect_payment;
         let dry_run = conf.dry_run.unwrap_or(false);
+        let indefinite_access = conf.indefinite_access;
 
         (
             auth_header,
@@ -1255,6 +1271,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             invoice_rate_limit,
             auto_detect_payment,
             dry_run,
+            indefinite_access,
         )
     };
 
@@ -1322,6 +1339,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         caveats.clone(),
         final_lnurl_addr.clone(),
         auto_detect_payment,
+        indefinite_access,
     );
     let auth_duration = auth_start.elapsed();
 
@@ -1546,6 +1564,7 @@ pub fn l402_access_handler(
     caveats: Vec<String>,
     lnurl_addr: Option<String>,
     auto_detect_payment: bool,
+    indefinite_access: bool,
 ) -> isize {
     // Reset so the wrapper never reads a stale method from a prior request.
     LAST_PAYMENT_METHOD.with(|m| m.set(None));
@@ -1686,8 +1705,8 @@ pub fn l402_access_handler(
                         }
                     };
 
-                // 4. Check replay
-                if is_preimage_used(&preimage_bytes) {
+                // 4. Check replay (skipped when indefinite access is enabled).
+                if !indefinite_access && is_preimage_used(&preimage_bytes) {
                     error!("🚨 Replay attack detected: preimage already used");
                     return 401;
                 }
@@ -1742,6 +1761,10 @@ pub fn l402_access_handler(
                     Ok(_) => {
                         info!("✅ L402 auto-detect verification successful");
                         LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
+                        if indefinite_access {
+                            // Subscription mode: allow preimage reuse.
+                            return NGX_DECLINED as isize;
+                        }
                         // SET NX EX is the authoritative atomic admission gate.
                         // Ok(false) means another worker already claimed this
                         // preimage — treat as replay and reject.
@@ -1770,9 +1793,8 @@ pub fn l402_access_handler(
             match utils::parse_l402_header(&auth_str) {
                 Ok((mac, preimage)) => {
                     // Fast-fail: known-replayed preimages are rejected before
-                    // running macaroon verification. The SET NX EX below is the
-                    // authoritative cross-worker admission gate.
-                    if is_preimage_used(&preimage.0) {
+                    // macaroon verification. Skipped when indefinite access is enabled.
+                    if !indefinite_access && is_preimage_used(&preimage.0) {
                         warn!("🚨 Replay attack detected: preimage already used");
                         return 401;
                     }
@@ -1821,6 +1843,10 @@ pub fn l402_access_handler(
                         Ok(_) => {
                             info!("✅ L402 verification successful");
                             LAST_PAYMENT_METHOD.with(|m| m.set(Some(PaymentMethod::Lightning)));
+                            if indefinite_access {
+                                // Subscription mode: allow preimage reuse.
+                                return NGX_DECLINED as isize;
+                            }
                             // SET NX EX is the authoritative atomic admission gate.
                             // Ok(false) means another worker already claimed this
                             // preimage — treat as replay and reject.
@@ -2338,6 +2364,40 @@ pub unsafe extern "C" fn ngx_http_l402_dry_run_set(
         } else {
             error!("Invalid l402_dry_run value: '{}' (expected on/off)", val);
             return b"l402_dry_run: expected 'on' or 'off'\0".as_ptr() as *mut c_char;
+        }
+    }
+    std::ptr::null_mut()
+}
+
+pub unsafe extern "C" fn ngx_http_l402_indefinite_access_set(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    // SAFETY: `cf`, `conf`, and `(*cf).args` are guaranteed valid by Nginx
+    // during config-parsing callbacks. `args.add(1)` is safe because
+    // NGX_CONF_TAKE1 ensures exactly one argument is present.
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args = (*(*cf).args).elts as *mut ngx_str_t;
+        let val = (*args.add(1)).to_str().unwrap_or_default();
+
+        if val.eq_ignore_ascii_case("on")
+            || val.eq_ignore_ascii_case("true")
+            || val.eq_ignore_ascii_case("1")
+            || val.eq_ignore_ascii_case("yes")
+        {
+            conf.indefinite_access = true;
+            info!("⚙️ l402_indefinite_access enabled — preimage replay check disabled for this location");
+        } else if val.eq_ignore_ascii_case("off")
+            || val.eq_ignore_ascii_case("false")
+            || val.eq_ignore_ascii_case("0")
+            || val.eq_ignore_ascii_case("no")
+        {
+            conf.indefinite_access = false;
+        } else {
+            error!("Invalid l402_indefinite_access value: '{}' (expected on/off)", val);
+            return b"l402_indefinite_access: expected 'on' or 'off'\0".as_ptr() as *mut c_char;
         }
     }
     std::ptr::null_mut()
