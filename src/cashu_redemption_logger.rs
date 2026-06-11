@@ -9,8 +9,15 @@ const LOG_FILE_PATH: &str = "/var/log/nginx/cashu_redemption.log";
 /// `msg` is sanitised before writing: newline and carriage-return characters
 /// are stripped to prevent log-injection attacks (CWE-117).
 pub fn log_redemption(msg: &str) {
-    // Strip CR/LF so a crafted message cannot inject fake log lines.
-    let sanitised = msg.replace(['\n', '\r'], "");
+    // Strip characters that could be used for log injection (CWE-117):
+    // - CR/LF: inject new log lines
+    // - NUL: truncate log entries in some parsers
+    // - ESC (0x1b): ANSI escape sequences that corrupt terminal/log viewers
+    // - TAB: column-injection in tab-delimited log parsers
+    let sanitised: String = msg
+        .chars()
+        .filter(|&c| c != '\n' && c != '\r' && c != '\0' && c != '\x1b' && c != '\t')
+        .collect();
 
     match std::fs::OpenOptions::new()
         .create(true)
