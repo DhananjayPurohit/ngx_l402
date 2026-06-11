@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
-use tonic_openssl_lnd::lnrpc;
+use l402_middleware::lndrpc::lnrpc;
 
 // Thread-local storage to track processed tokens
 thread_local! {

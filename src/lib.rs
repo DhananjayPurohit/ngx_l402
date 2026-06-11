@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
-use tonic_openssl_lnd::lnrpc;
+use l402_middleware::lndrpc::lnrpc;
 
 mod cashu;
 mod cashu_redemption_logger;
@@ -1731,7 +1731,7 @@ pub fn l402_access_handler(
                 }
                 let mut preimage_arr = [0u8; 32];
                 preimage_arr.copy_from_slice(&preimage_bytes);
-                let preimage = lightning::ln::PaymentPreimage(preimage_arr);
+                let preimage = lightning::types::payment::PaymentPreimage(preimage_arr);
 
                 match l402::verify_l402_with_verifier(
                     &mac,
