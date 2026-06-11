@@ -855,16 +855,6 @@ jobs:
             exit 1
           fi
 
-          # Replaying the same valid preimage on a non-indefinite route must be rejected
-          echo "Testing protected route with reused preimage (should be rejected)..."
-          response=$(curl -s -w "\n%{http_code}" --max-time 30 -H "Authorization: L402 $macaroon:$preimage" http://0.0.0.0:8000/protected-timeout)
-          status_code=$(echo "$response" | tail -n1)
-          if [ "$status_code" -ne 401 ]; then
-            echo "Error: Reused preimage returned status $status_code, expected 401"
-            docker logs nginx-nwc
-            exit 1
-          fi
-
           # Wait for macaroon to expire (10 seconds)
           echo "Waiting for macaroon to expire..."
           sleep 15
@@ -1141,6 +1131,18 @@ jobs:
           status_code=$(echo "$response" | tail -n1)
           if [ "$status_code" -ne 200 ]; then
             echo "Error: Protected route with valid L402 returned status $status_code, expected 200"
+            docker logs nginx-lnd
+            exit 1
+          fi
+
+          # Replaying the same valid preimage on a non-indefinite route must be rejected
+          echo "Testing protected route with reused preimage (should be rejected)..."
+          response=$(curl -s -w "\n%{http_code}" --max-time 30 \
+            -H "Authorization: L402 $cred_macaroon:$cred_preimage" \
+            http://0.0.0.0:8000/protected)
+          status_code=$(echo "$response" | tail -n1)
+          if [ "$status_code" -ne 401 ]; then
+            echo "Error: Reused preimage returned status $status_code, expected 401"
             docker logs nginx-lnd
             exit 1
           fi
