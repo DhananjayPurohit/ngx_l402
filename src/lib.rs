@@ -1706,12 +1706,14 @@ pub fn l402_access_handler(
                             return current_time <= ts;
                         }
                     }
-                    // `RequestMethod = …` must be satisfied by the exact set
-                    // (populated from the current request's method). Falling
-                    // through to `true` would let a GET-bound token verify
-                    // against a HEAD/POST/PUT/… request and defeat HTTP method
-                    // binding on the macaroon.
-                    if predicate_str.starts_with("RequestMethod = ") {
+                    // `RequestMethod = …` and `RequestPath = …` must be
+                    // satisfied by the exact set only. Falling through to
+                    // `true` would let a token issued for one route or method
+                    // verify against any other, defeating the per-route and
+                    // per-method binding on the macaroon (CWE-863).
+                    if predicate_str.starts_with("RequestMethod = ")
+                        || predicate_str.starts_with("RequestPath = ")
+                    {
                         return false;
                     }
                     true
@@ -1799,12 +1801,14 @@ pub fn l402_access_handler(
                                 return is_valid;
                             }
                         }
-                        // `RequestMethod = …` must be satisfied by the exact
-                        // set (populated from the current request's method).
-                        // Falling through to `true` would let a GET-bound
-                        // token verify against a HEAD/POST/PUT/… request and
-                        // defeat HTTP method binding on the macaroon.
-                        if predicate_str.starts_with("RequestMethod = ") {
+                        // `RequestMethod = …` and `RequestPath = …` must be
+                        // satisfied by the exact set only. Falling through to
+                        // `true` would let a token issued for one route or
+                        // method verify against any other, defeating the
+                        // per-route and per-method binding (CWE-863).
+                        if predicate_str.starts_with("RequestMethod = ")
+                            || predicate_str.starts_with("RequestPath = ")
+                        {
                             return false;
                         }
                         true
