@@ -778,6 +778,27 @@ pub async fn verify_cashu_token_p2pk(
         .proofs(&keysets_info)
         .map_err(|e| format!("Failed to extract proofs: {}", e))?;
 
+    // Compute a canonical replay key from sorted proof Y-values so that
+    // re-encoding the same proofs into a different token string cannot bypass
+    // the replay check (CWE-294: Authentication Bypass by Capture-replay).
+    let proof_replay_key: String = {
+        let mut y_values: Vec<String> = proofs
+            .iter()
+            .filter_map(|p| p.y().ok().map(|y| y.to_hex()))
+            .collect();
+        y_values.sort_unstable();
+        let mut hasher = Sha256::new();
+        hasher.update(y_values.join(",").as_bytes());
+        hex::encode(hasher.finalize())
+    };
+
+    // Secondary replay check by proof identity — catches the same proofs
+    // re-submitted under a different token serialization.
+    if crate::is_cashu_token_used(&proof_replay_key) {
+        error!("🚨 Replay attack detected: proof set already used (proof-key check)");
+        return Err("Cashu token already used".to_string());
+    }
+
     // Get our public key for P2PK verification (the private key is not needed
     // on the verify path — only for signing during melt/redemption).
     let public_key_str = P2PK_PUBLIC_KEY
@@ -848,9 +869,11 @@ pub async fn verify_cashu_token_p2pk(
     // This closes the TOCTOU window: the loser of a concurrent replay race
     // is rejected here and never reaches update_proofs(), so the SQLite
     // database is only written once per token.
-    match crate::store_cashu_token_as_used(token) {
+    // Claim by proof key (not raw token string) so re-encoded tokens with the
+    // same proofs are rejected by the same atomic SET NX EX slot.
+    match crate::store_cashu_token_as_used(&proof_replay_key) {
         Ok(false) => {
-            warn!("🚨 Concurrent Cashu replay detected: token already claimed");
+            warn!("🚨 Concurrent Cashu replay detected: proof set already claimed");
             return Ok(false);
         }
         Err(e) => {
@@ -873,6 +896,10 @@ pub async fn verify_cashu_token_p2pk(
         }
     }
 
+    // Cache both the raw token string and the proof-based key so that both
+    // exact-string and re-encoded replay attempts are caught on the fast
+    // thread-local path without a Redis round-trip.
+    cache_processed_token(&proof_replay_key);
     cache_processed_token(token);
     info!(
         "✅ ACCEPTED ({} msat stored in CDK database)",
