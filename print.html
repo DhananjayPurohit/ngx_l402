@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-69be7e59.js";
+            window.path_to_searchindex_js = "searchindex-b85a5ec5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b5966016.js"></script>
@@ -627,6 +627,7 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
 <tr><td><code>l402_lnurl_addr</code></td><td>string</td><td>—</td><td>Per-location LNURL address for multi-tenant setups</td></tr>
 <tr><td><code>l402_invoice_rate_limit</code></td><td><code>&lt;N&gt;r/m</code> or <code>&lt;N&gt;r/s</code></td><td>disabled</td><td>Max invoice generation rate per IP per route</td></tr>
 <tr><td><code>l402_auto_detect_payment</code></td><td>boolean¹</td><td><code>off</code></td><td>Server-side payment detection — queries the Lightning node instead of requiring the client to supply the preimage</td></tr>
+<tr><td><code>l402_indefinite_access</code></td><td>boolean¹</td><td><code>off</code></td><td>Skip the single-use preimage replay check — a single payment stays valid for the macaroon lifetime</td></tr>
 </tbody>
 </table>
 </div>
@@ -643,6 +644,21 @@ Environment=RUST_LOG=ngx_l402_lib=debug,info
     try_files /index.html =404;
 }
 </code></pre>
+<h3 id="example-subscription-style-indefinite-access"><a class="header" href="#example-subscription-style-indefinite-access">Example: subscription-style (indefinite) access</a></h3>
+<pre><code class="language-nginx">location /subscriber-only {
+    l402                         on;
+    l402_amount_msat_default     100000;
+    l402_macaroon_timeout        2592000;  # 30 days
+    l402_indefinite_access       on;       # single payment stays valid until macaroon expires
+
+    try_files /index.html =404;
+}
+</code></pre>
+<blockquote>
+<p><strong>Warning</strong>: <code>l402_indefinite_access on</code> should always be paired with a non-zero
+<code>l402_macaroon_timeout</code>. Without an expiry, the macaroon never expires and the
+same preimage grants access forever.</p>
+</blockquote>
 <blockquote>
 <p><strong>Backends that support auto-detect</strong>: <code>LND</code>, <code>CLN</code>, <code>BOLT12</code>, <code>ECLAIR</code>.
 <code>LNC</code>, <code>NWC</code>, and <code>LNURL</code> do <strong>not</strong> support server-side lookup.</p>
