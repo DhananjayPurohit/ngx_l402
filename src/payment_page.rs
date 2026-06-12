@@ -377,8 +377,8 @@ document.getElementById('preimage-section').classList.remove('hidden')\">Enter p
         auto_detect_section = auto_detect_section,
         preimage_hidden_class = preimage_hidden_class,
         cashu_tab_html = cashu_tab_html,
-        invoice_json = serde_json::to_string(invoice).unwrap_or_else(|_| "\"\"".to_string()),
-        macaroon_json = serde_json::to_string(macaroon_b64).unwrap_or_else(|_| "\"\"".to_string()),
+        invoice_json = serde_json::to_string(invoice).unwrap_or_else(|_| "\"\"".to_string()).replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026"),
+        macaroon_json = serde_json::to_string(macaroon_b64).unwrap_or_else(|_| "\"\"".to_string()).replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026"),
         auto_detect_js = auto_detect_js,
     )
 }
