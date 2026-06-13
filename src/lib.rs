@@ -1456,15 +1456,25 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             format!("RequestPath = {}", request_path),
             format!("RequestMethod = {}", request_method),
         ];
-        let header_result = rt.block_on(async {
-            module
-                .get_l402_header(
-                    challenge_caveats,
-                    final_amount,
-                    macaroon_timeout,
-                    final_lnurl_addr.clone(),
-                )
-                .await
+        // Catch any panic from the LNURL library (bare .unwrap() calls in
+        // l402_middleware's lnurl.rs can panic on network errors). Without this
+        // guard a panic would unwind through nginx's C stack — undefined
+        // behaviour in a cdylib that crashes the worker process (curl exit 52).
+        let header_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(async {
+                module
+                    .get_l402_header(
+                        challenge_caveats,
+                        final_amount,
+                        macaroon_timeout,
+                        final_lnurl_addr.clone(),
+                    )
+                    .await
+            })
+        }))
+        .unwrap_or_else(|_| {
+            error!("❌ Panic in get_l402_header (LNURL resolution failure); returning 500");
+            None
         });
 
         if perf_log_enabled() {
@@ -1968,6 +1978,21 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             if cashu_ecash_support {
                 cashu::restore_wallets_state().await;
             }
+
+            // Pre-warm the per-location LNURL client cache for the primary LNURL
+            // address. This runs in the master process so workers inherit the
+            // populated cache after fork(), avoiding HTTP requests inside
+            // worker request handlers where spawn_blocking can race with the
+            // multi-thread runtime startup and cause a panic.
+            if std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string()) == "LNURL" {
+                if let Ok(addr) = std::env::var("LNURL_ADDRESS") {
+                    match get_or_create_lnurl_client(&addr).await {
+                        Ok(_) => info!("✅ Pre-warmed LNURL client cache for: {}", addr),
+                        Err(e) => warn!("⚠️ Failed to pre-warm LNURL cache for {}: {}", addr, e),
+                    }
+                }
+            }
+
             m
         });
 
