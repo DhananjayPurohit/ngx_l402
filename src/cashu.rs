@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
-use tonic_openssl_lnd::lnrpc;
+use l402_middleware::lndrpc::lnrpc;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -204,7 +204,22 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
 /// - strip trailing slashes
 /// - lowercase the scheme and host
 fn normalize_mint_url(url: &str) -> String {
-    url.trim().trim_end_matches('/').to_string()
+    // RFC 3986: scheme and host are case-insensitive.  Lowercase them so that
+    // "HTTPS://Mint.example.com/v1" and "https://mint.example.com/v1" are
+    // treated as the same mint and whitelist comparisons are reliable.
+    let trimmed = url.trim().trim_end_matches('/');
+    if let Some(sep) = trimmed.find("://") {
+        let scheme = trimmed[..sep].to_lowercase();
+        // Host ends at the next '/' after the authority, or at end-of-string.
+        let after_scheme = &trimmed[sep + 3..];
+        let (host_part, path_part) = match after_scheme.find('/') {
+            Some(p) => (&after_scheme[..p], &after_scheme[p..]),
+            None => (after_scheme, ""),
+        };
+        format!("{}://{}{}", scheme, host_part.to_lowercase(), path_part)
+    } else {
+        trimmed.to_lowercase()
+    }
 }
 
 pub fn initialize_whitelisted_mints(whitelisted_mints_str: &str) -> Result<(), String> {
@@ -550,7 +565,9 @@ pub async fn verify_cashu_token(
         .unit()
         .ok_or_else(|| "Token has no currency unit".to_string())?;
     let total_amount_msat: u64 = if unit == cdk::nuts::CurrencyUnit::Sat {
-        u64::from(total_amount) * MSAT_PER_SAT
+        u64::from(total_amount)
+            .checked_mul(MSAT_PER_SAT)
+            .ok_or_else(|| "Token amount overflows u64 sat→msat conversion".to_string())?
     } else if unit == cdk::nuts::CurrencyUnit::Msat {
         u64::from(total_amount)
     } else {
@@ -606,12 +623,23 @@ pub async fn verify_cashu_token(
             );
 
             if is_multi_tenant_enabled() {
-                let proofs = wallet
-                    .get_unspent_proofs()
+                // Use only the proofs from this specific token, not all wallet
+                // proofs. The wallet is shared across tenants, so
+                // get_unspent_proofs() would return other tenants' proofs and
+                // overwrite their LNURL mappings (CWE-284).
+                let keysets_info = wallet
+                    .get_mint_keysets()
                     .await
-                    .map_err(|e| format!("Failed to get unspent proofs: {}", e))?;
-                if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
-                    warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                    .map_err(|e| format!("Failed to get keysets for proof extraction: {}", e))?;
+                match token_decoded.proofs(&keysets_info) {
+                    Ok(proofs) => {
+                        if let Err(e) = set_proof_to_lnurl(proofs, lnurl_addr) {
+                            warn!("⚠️ Failed to set proof-to-lnurl mapping: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to extract proofs from token for lnurl mapping: {}", e);
+                    }
                 }
             }
 
@@ -705,7 +733,9 @@ pub async fn verify_cashu_token_p2pk(
         .unit()
         .ok_or_else(|| "Token has no currency unit".to_string())?;
     let total_amount_msat: u64 = if unit == cdk::nuts::CurrencyUnit::Sat {
-        u64::from(total_amount) * MSAT_PER_SAT
+        u64::from(total_amount)
+            .checked_mul(MSAT_PER_SAT)
+            .ok_or_else(|| "Token amount overflows u64 sat→msat conversion".to_string())?
     } else if unit == cdk::nuts::CurrencyUnit::Msat {
         u64::from(total_amount)
     } else {
@@ -748,6 +778,27 @@ pub async fn verify_cashu_token_p2pk(
         .proofs(&keysets_info)
         .map_err(|e| format!("Failed to extract proofs: {}", e))?;
 
+    // Compute a canonical replay key from sorted proof Y-values so that
+    // re-encoding the same proofs into a different token string cannot bypass
+    // the replay check (CWE-294: Authentication Bypass by Capture-replay).
+    let proof_replay_key: String = {
+        let mut y_values: Vec<String> = proofs
+            .iter()
+            .filter_map(|p| p.y().ok().map(|y| y.to_hex()))
+            .collect();
+        y_values.sort_unstable();
+        let mut hasher = Sha256::new();
+        hasher.update(y_values.join(",").as_bytes());
+        hex::encode(hasher.finalize())
+    };
+
+    // Secondary replay check by proof identity — catches the same proofs
+    // re-submitted under a different token serialization.
+    if crate::is_cashu_token_used(&proof_replay_key) {
+        error!("🚨 Replay attack detected: proof set already used (proof-key check)");
+        return Err("Cashu token already used".to_string());
+    }
+
     // Get our public key for P2PK verification (the private key is not needed
     // on the verify path — only for signing during melt/redemption).
     let public_key_str = P2PK_PUBLIC_KEY
@@ -768,6 +819,21 @@ pub async fn verify_cashu_token_p2pk(
         .map_err(|e| format!("Token not locked to our public key: {:?}", e))?;
 
     info!("✅ Token verified as P2PK-locked to our public key");
+
+    // NUT-07: check proof state with the mint before accepting.
+    // Without this call, a proof that has already been spent at the mint would
+    // pass the local P2PK signature check and be accepted again (double-spend).
+    info!("🔍 Checking proof state with mint (NUT-07 double-spend check)...");
+    let proof_states = wallet
+        .check_proofs_spent(proofs.clone())
+        .await
+        .map_err(|e| format!("Failed to verify proof state with mint: {:?}", e))?;
+
+    if proof_states.iter().any(|s| s.state == cdk::nuts::State::Spent) {
+        warn!("🚨 P2PK double-spend attempt: one or more proofs already spent at the mint");
+        return Err("Token contains already-spent proofs".to_string());
+    }
+    info!("✅ Mint confirmed all proofs are unspent");
 
     // IMPORTANT: receive_proofs() calls the mint to swap proofs (post_swap), which we want to avoid!
     // Instead, we store the P2PK-locked proofs directly in the database as UNSPENT
@@ -799,6 +865,23 @@ pub async fn verify_cashu_token_p2pk(
         proof_infos.len()
     );
 
+    // Atomic Redis claim BEFORE writing to the database.
+    // This closes the TOCTOU window: the loser of a concurrent replay race
+    // is rejected here and never reaches update_proofs(), so the SQLite
+    // database is only written once per token.
+    // Claim by proof key (not raw token string) so re-encoded tokens with the
+    // same proofs are rejected by the same atomic SET NX EX slot.
+    match crate::store_cashu_token_as_used(&proof_replay_key) {
+        Ok(false) => {
+            warn!("🚨 Concurrent Cashu replay detected: proof set already claimed");
+            return Ok(false);
+        }
+        Err(e) => {
+            warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
+        }
+        Ok(true) => { /* won the race — proceed to persist proofs */ }
+    }
+
     // Store directly in database using update_proofs (same as receive_proofs does internally)
     // Pass empty vec for second parameter (no proofs to delete)
     wallet
@@ -813,31 +896,16 @@ pub async fn verify_cashu_token_p2pk(
         }
     }
 
-    // Atomic claim: Ok(true) = first claim (admit), Ok(false) = concurrent
-    // replay detected (reject), Err = Redis outage (admit, fail-open).
-    match crate::store_cashu_token_as_used(token) {
-        Ok(true) => {
-            cache_processed_token(token);
-            info!(
-                "✅ ACCEPTED ({} msat stored in CDK database)",
-                total_amount_msat
-            );
-            Ok(true)
-        }
-        Ok(false) => {
-            warn!("🚨 Concurrent Cashu replay detected: token already claimed");
-            Ok(false)
-        }
-        Err(e) => {
-            warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
-            cache_processed_token(token);
-            info!(
-                "✅ ACCEPTED ({} msat stored in CDK database)",
-                total_amount_msat
-            );
-            Ok(true)
-        }
-    }
+    // Cache both the raw token string and the proof-based key so that both
+    // exact-string and re-encoded replay attempts are caught on the fast
+    // thread-local path without a Redis round-trip.
+    cache_processed_token(&proof_replay_key);
+    cache_processed_token(token);
+    info!(
+        "✅ ACCEPTED ({} msat stored in CDK database)",
+        total_amount_msat
+    );
+    Ok(true)
 }
 
 pub async fn redeem_to_lightning() -> Result<bool, String> {

@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
-use tonic_openssl_lnd::lnrpc;
+use l402_middleware::lndrpc::lnrpc;
 
 mod cashu;
 mod cashu_redemption_logger;
@@ -1275,14 +1275,12 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         )
     };
 
-    let mut request_path = uri.clone();
-    if request_path.contains(".html") || request_path.ends_with('/') {
-        if let Some(pos) = request_path.rfind('/') {
-            request_path = request_path[..pos].to_string();
-        }
-    }
-    // Bind the macaroon to both the normalized path and the HTTP method so a
+    // Bind the macaroon to the exact request URI and HTTP method so a
     // token paid for `GET /v1/data` can't be replayed against `POST /v1/data`.
+    // NOTE: no path normalization — stripping .html / trailing-slash suffixes
+    // would widen the macaroon scope to the parent directory, allowing a token
+    // issued for /docs/page.html to be reused against /docs/secret (CWE-285).
+    let request_path = uri.clone();
     let request_method = method_caveat_value(method);
     let caveats = vec![
         format!("RequestPath = {}", request_path),
@@ -1476,15 +1474,25 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             format!("RequestPath = {}", request_path),
             format!("RequestMethod = {}", request_method),
         ];
-        let header_result = rt.block_on(async {
-            module
-                .get_l402_header(
-                    challenge_caveats,
-                    final_amount,
-                    macaroon_timeout,
-                    final_lnurl_addr.clone(),
-                )
-                .await
+        // Catch any panic from the LNURL library (bare .unwrap() calls in
+        // l402_middleware's lnurl.rs can panic on network errors). Without this
+        // guard a panic would unwind through nginx's C stack — undefined
+        // behaviour in a cdylib that crashes the worker process (curl exit 52).
+        let header_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(async {
+                module
+                    .get_l402_header(
+                        challenge_caveats,
+                        final_amount,
+                        macaroon_timeout,
+                        final_lnurl_addr.clone(),
+                    )
+                    .await
+            })
+        }))
+        .unwrap_or_else(|_| {
+            error!("❌ Panic in get_l402_header (LNURL resolution failure); returning 500");
+            None
         });
 
         if perf_log_enabled() {
@@ -1727,12 +1735,14 @@ pub fn l402_access_handler(
                             return current_time <= ts;
                         }
                     }
-                    // `RequestMethod = …` must be satisfied by the exact set
-                    // (populated from the current request's method). Falling
-                    // through to `true` would let a GET-bound token verify
-                    // against a HEAD/POST/PUT/… request and defeat HTTP method
-                    // binding on the macaroon.
-                    if predicate_str.starts_with("RequestMethod = ") {
+                    // `RequestMethod = …` and `RequestPath = …` must be
+                    // satisfied by the exact set only. Falling through to
+                    // `true` would let a token issued for one route or method
+                    // verify against any other, defeating the per-route and
+                    // per-method binding on the macaroon (CWE-863).
+                    if predicate_str.starts_with("RequestMethod = ")
+                        || predicate_str.starts_with("RequestPath = ")
+                    {
                         return false;
                     }
                     true
@@ -1750,7 +1760,7 @@ pub fn l402_access_handler(
                 }
                 let mut preimage_arr = [0u8; 32];
                 preimage_arr.copy_from_slice(&preimage_bytes);
-                let preimage = lightning::ln::PaymentPreimage(preimage_arr);
+                let preimage = lightning::types::payment::PaymentPreimage(preimage_arr);
 
                 match l402::verify_l402_with_verifier(
                     &mac,
@@ -1774,11 +1784,18 @@ pub fn l402_access_handler(
                                 warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
                                 return 401;
                             }
-                            Err(e) => {
-                                // Redis unavailable — fail-open (consistent with
-                                // the rest of the codebase's Redis-down policy).
-                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                            Err(e) if e.contains("Redis not configured") => {
+                                // Redis was never set up — fall back to in-process
+                                // cache (single-worker protection only). This is an
+                                // explicit operator choice, not an outage.
+                                warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
                                 return NGX_DECLINED as isize;
+                            }
+                            Err(e) => {
+                                // Redis was configured but is currently unreachable —
+                                // fail-closed to prevent replay during outages (CWE-362).
+                                error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
+                                return 503;
                             }
                         }
                     }
@@ -1816,12 +1833,14 @@ pub fn l402_access_handler(
                                 return is_valid;
                             }
                         }
-                        // `RequestMethod = …` must be satisfied by the exact
-                        // set (populated from the current request's method).
-                        // Falling through to `true` would let a GET-bound
-                        // token verify against a HEAD/POST/PUT/… request and
-                        // defeat HTTP method binding on the macaroon.
-                        if predicate_str.starts_with("RequestMethod = ") {
+                        // `RequestMethod = …` and `RequestPath = …` must be
+                        // satisfied by the exact set only. Falling through to
+                        // `true` would let a token issued for one route or
+                        // method verify against any other, defeating the
+                        // per-route and per-method binding (CWE-863).
+                        if predicate_str.starts_with("RequestMethod = ")
+                            || predicate_str.starts_with("RequestPath = ")
+                        {
                             return false;
                         }
                         true
@@ -1856,11 +1875,18 @@ pub fn l402_access_handler(
                                     warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
                                     return 401;
                                 }
-                                Err(e) => {
-                                    // Redis unavailable — fail-open (consistent with
-                                    // the rest of the codebase's Redis-down policy).
-                                    warn!("⚠️ Redis claim failed, admitting request: {}", e);
+                                Err(e) if e.contains("Redis not configured") => {
+                                    // Redis was never set up — fall back to in-process
+                                    // cache (single-worker protection only). This is an
+                                    // explicit operator choice, not an outage.
+                                    warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
                                     return NGX_DECLINED as isize;
+                                }
+                                Err(e) => {
+                                    // Redis was configured but is currently unreachable —
+                                    // fail-closed to prevent replay during outages (CWE-362).
+                                    error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
+                                    return 503;
                                 }
                             }
                         }
@@ -1978,6 +2004,21 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             if cashu_ecash_support {
                 cashu::restore_wallets_state().await;
             }
+
+            // Pre-warm the per-location LNURL client cache for the primary LNURL
+            // address. This runs in the master process so workers inherit the
+            // populated cache after fork(), avoiding HTTP requests inside
+            // worker request handlers where spawn_blocking can race with the
+            // multi-thread runtime startup and cause a panic.
+            if std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string()) == "LNURL" {
+                if let Ok(addr) = std::env::var("LNURL_ADDRESS") {
+                    match get_or_create_lnurl_client(&addr).await {
+                        Ok(_) => info!("✅ Pre-warmed LNURL client cache for: {}", addr),
+                        Err(e) => warn!("⚠️ Failed to pre-warm LNURL cache for {}: {}", addr, e),
+                    }
+                }
+            }
+
             m
         });
 

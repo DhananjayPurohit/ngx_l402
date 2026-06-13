@@ -92,10 +92,18 @@ pub fn init_payment_detector() {
         "ECLAIR" => {
             let api_url = std::env::var("ECLAIR_ADDRESS")
                 .unwrap_or_else(|_| "http://localhost:8080".to_string());
-            let password = std::env::var("ECLAIR_PASSWORD")
-                .unwrap_or_else(|_| "password".to_string());
-            info!("✅ Eclair payment detector initialised ({})", api_url);
-            PaymentDetector::Eclair(EclairDetector { api_url, password })
+            match std::env::var("ECLAIR_PASSWORD") {
+                Ok(password) => {
+                    info!("✅ Eclair payment detector initialised ({})", api_url);
+                    PaymentDetector::Eclair(EclairDetector { api_url, password })
+                }
+                Err(_) => {
+                    error!("❌ ECLAIR_PASSWORD env var is not set — Eclair auto-detect disabled");
+                    PaymentDetector::Unsupported {
+                        reason: "ECLAIR_PASSWORD is required but not set".into(),
+                    }
+                }
+            }
         }
         "NWC" => {
             warn!("⚠️  NWC backend — lookup_invoice is optional in NIP-47 and not universally supported; disabling auto-detect");
