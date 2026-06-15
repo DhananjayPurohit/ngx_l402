@@ -376,8 +376,8 @@ services:
     build:
       context: ./grpc-server
       dockerfile: Dockerfile
-    expose:
-      - "50051"
+    ports:
+      - "127.0.0.1:50051:50051"
     environment:
       - RUST_LOG=info
     restart: unless-stopped
