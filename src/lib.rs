@@ -2030,12 +2030,13 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             m
         });
 
-        // Initialize LN client for cashu redemption
-        let ln_client = module.middleware.ln_client.clone();
+        // Record LN client type for cashu redemption. The actual client
+        // connection is created lazily inside the redemption thread to avoid
+        // inheriting a broken tonic Channel after fork().
         let ln_client_type =
             std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
-        if let Err(e) = cashu::initialize_ln_client(ln_client, ln_client_type) {
-            error!("⚠️ Failed to initialize LN client for cashu: {}", e);
+        if let Err(e) = cashu::initialize_ln_client(ln_client_type) {
+            error!("⚠️ Failed to initialize LN client type for cashu: {}", e);
         }
 
         info!("✅ L402Module initialized successfully");

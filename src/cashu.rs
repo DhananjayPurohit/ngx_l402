@@ -38,8 +38,11 @@ static P2PK_PUBLIC_KEY: OnceLock<String> = OnceLock::new();
 // Cashu eCash support flag
 static CASHU_ECASH_ENABLED: OnceLock<bool> = OnceLock::new();
 
-static LN_CLIENT: OnceLock<Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>> =
-    OnceLock::new();
+// Lazily initialised inside the redemption thread's own runtime so we never
+// inherit a tonic Channel whose epoll registrations were created in the nginx
+// master process (they do not survive fork()).
+static LN_CLIENT: tokio::sync::OnceCell<Arc<tokio::sync::Mutex<dyn lnclient::LNClient>>> =
+    tokio::sync::OnceCell::const_new();
 static LN_CLIENT_TYPE: OnceLock<String> = OnceLock::new();
 
 // Dynamically generated secret for when CASHU_WALLET_SECRET is not provided
@@ -144,18 +147,14 @@ pub fn is_multi_tenant_enabled() -> bool {
     LN_CLIENT_TYPE.get().map_or(false, |t| t == "LNURL")
 }
 
-/// Initialize the LN client for cashu redemption (called from lib.rs)
-pub fn initialize_ln_client(
-    ln_client: Arc<tokio::sync::Mutex<dyn lnclient::LNClient + Send>>,
-    client_type: String,
-) -> Result<(), String> {
+/// Initialize the LN client type for cashu redemption (called from lib.rs).
+/// The actual LN client connection is created lazily inside the redemption
+/// thread's runtime via `LN_CLIENT` to avoid inheriting broken tonic Channels
+/// from the nginx master process after fork().
+pub fn initialize_ln_client(client_type: String) -> Result<(), String> {
     LN_CLIENT_TYPE
         .set(client_type.clone())
         .map_err(|_| "LN_CLIENT_TYPE already initialized".to_string())?;
-
-    LN_CLIENT
-        .set(ln_client)
-        .map_err(|_| "LN_CLIENT already initialized".to_string())?;
 
     if is_multi_tenant_enabled() {
         info!("🏢 Multi-tenant LNURL mode enabled for Cashu redemption");
@@ -1370,13 +1369,27 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     }
                 }
             } else {
-                // Single-tenant mode: Use the configured LN client (LND, CLN, NWC, or default LNURL)
-                let ln_client = match LN_CLIENT.get() {
-                    Some(client) => client.clone(),
-                    None => {
-                        let msg = "❌ LN client not initialized for single-tenant redemption";
+                // Single-tenant mode: lazily create (or reuse) an LN client connection
+                // within this redemption thread's runtime. We cannot use a client
+                // created in the nginx master process because tonic Channels lose their
+                // epoll registrations after fork(), leading to "Service was not ready"
+                // errors. LN_CLIENT_CONFIG was saved by the master before forking.
+                let ln_client = match LN_CLIENT
+                    .get_or_try_init(|| async {
+                        let config = crate::LN_CLIENT_CONFIG.get().ok_or_else(
+                            || -> Box<dyn std::error::Error + Send + Sync> {
+                                "LN client config not available for cashu redemption".into()
+                            },
+                        )?;
+                        lnclient::LNClientConn::init(config).await
+                    })
+                    .await
+                {
+                    Ok(c) => Arc::clone(c),
+                    Err(e) => {
+                        let msg = format!("❌ Failed to initialize LN client for cashu: {}", e);
                         error!("{}", msg);
-                        cashu_redemption_logger::log_redemption(msg);
+                        cashu_redemption_logger::log_redemption(&msg);
                         continue;
                     }
                 };
