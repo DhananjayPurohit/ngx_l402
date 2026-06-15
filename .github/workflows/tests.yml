@@ -174,10 +174,19 @@ jobs:
         run: |
           echo "Testing l402_dry_run shadow mode and l402_metrics endpoint..."
 
+          # nginx runs worker_processes auto, so the Rust static AtomicU64
+          # counters are per-process. Hit /shadow several times and poll
+          # /metrics until we find a worker that has handled dry-run traffic.
+
+          # Warm up — spread dry-run requests across workers.
+          for i in 1 2 3 4 5; do
+            curl -s -o /dev/null --max-time 30 -H "Connection: close" http://0.0.0.0:8000/shadow || true
+          done
+
           # Shadow mode must always pass through — same request that returns
           # 402 on /protected must return 200 on /shadow.
           echo "Request to /shadow without Authorization (expect 200, no 402)..."
-          shadow_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/shadow)
+          shadow_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 -H "Connection: close" http://0.0.0.0:8000/shadow)
           shadow_code=$(echo "$shadow_resp" | tail -n1)
           if [ "$shadow_code" -ne 200 ]; then
             echo "FAIL: /shadow returned $shadow_code, expected 200 (dry-run must not block)"
@@ -211,9 +220,23 @@ jobs:
           fi
 
           # Metrics endpoint — must serve text/plain Prometheus exposition.
+          # Poll multiple times to handle per-worker counter copies.
           echo "Scraping /metrics endpoint..."
-          metrics_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/metrics)
-          metrics_code=$(echo "$metrics_resp" | tail -n1)
+          metrics_code=0
+          metrics_resp=""
+          dry_run_total=""
+          for i in {1..10}; do
+            metrics_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 -H "Connection: close" http://0.0.0.0:8000/metrics)
+            metrics_code=$(echo "$metrics_resp" | tail -n1)
+            if [ "$metrics_code" -eq 200 ]; then
+              dry_run_total=$(echo "$metrics_resp" | awk '/^l402_dry_run_requests_total / {print $2}')
+              if [ -n "$dry_run_total" ] && [ "$dry_run_total" -ge 1 ]; then
+                break
+              fi
+            fi
+            sleep 0.5
+          done
+
           if [ "$metrics_code" -ne 200 ]; then
             echo "FAIL: /metrics returned $metrics_code, expected 200"
             echo "$metrics_resp"
@@ -238,8 +261,7 @@ jobs:
             echo "PASS: counter ${counter} exposed"
           done
 
-          # After the /shadow hit above, dry_run_requests_total must be >= 1.
-          dry_run_total=$(echo "$metrics_resp" | awk '/^l402_dry_run_requests_total / {print $2}')
+          # After the /shadow hits above, dry_run_requests_total must be >= 1.
           if [ -z "$dry_run_total" ] || [ "$dry_run_total" -lt 1 ]; then
             echo "FAIL: l402_dry_run_requests_total=$dry_run_total, expected >= 1"
             echo "$metrics_resp"
