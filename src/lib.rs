@@ -181,6 +181,19 @@ static LNURL_CLIENT_CACHE: OnceLock<
 /// init for use in structured dry-run log lines.
 static LN_BACKEND_LABEL: OnceLock<String> = OnceLock::new();
 
+/// LNClientConfig saved by the master process so each worker can re-create its
+/// own LN client connection within the worker's own tokio runtime.
+static LN_CLIENT_CONFIG: OnceLock<lnclient::LNClientConfig> = OnceLock::new();
+
+/// Per-worker LN client, lazily initialized on the first request in each nginx
+/// worker process within HANDLER_RUNTIME. A tonic Channel established in the
+/// master process loses its epoll registrations after fork(), causing
+/// "Service was not ready: transport error" on the first RPC. Creating the
+/// client inside the worker avoids this.
+static WORKER_LN_CLIENT: tokio::sync::OnceCell<
+    Arc<tokio::sync::Mutex<dyn lnclient::LNClient>>,
+> = tokio::sync::OnceCell::const_new();
+
 /// Get or create a cached LNURL client for the given address
 /// This function is also used by cashu.rs for multi-tenant redemption
 pub async fn get_or_create_lnurl_client(
@@ -687,6 +700,7 @@ impl L402Module {
         .await
         .expect("Failed to create middleware");
 
+        let _ = LN_CLIENT_CONFIG.set(ln_client_config);
         Self { middleware }
     }
 
@@ -727,9 +741,29 @@ impl L402Module {
                 }
             }
         } else {
-            let ln_client_conn = lnclient::LNClientConn {
-                ln_client: self.middleware.ln_client.clone(),
+            // The LN client embedded in the module was created in the nginx
+            // master process. After fork(), the tonic Channel's epoll I/O
+            // registrations are absent from the worker's event loop, causing
+            // "Service was not ready: transport error" on the first RPC.
+            // Use a per-worker client lazily created within HANDLER_RUNTIME.
+            let ln_client = match WORKER_LN_CLIENT
+                .get_or_try_init(|| async {
+                    let config = LN_CLIENT_CONFIG.get().ok_or_else(
+                        || -> Box<dyn std::error::Error + Send + Sync> {
+                            "LN client config not available in worker".into()
+                        },
+                    )?;
+                    lnclient::LNClientConn::init(config).await
+                })
+                .await
+            {
+                Ok(c) => Arc::clone(c),
+                Err(e) => {
+                    error!("❌ Error initializing worker LN client: {}", e);
+                    return None;
+                }
             };
+            let ln_client_conn = lnclient::LNClientConn { ln_client };
             match ln_client_conn.generate_invoice(ln_invoice).await {
                 Ok(result) => result,
                 Err(e) => {
