@@ -625,7 +625,7 @@ pub async fn verify_cashu_token(
                 // Use only the proofs from this specific token, not all wallet
                 // proofs. The wallet is shared across tenants, so
                 // get_unspent_proofs() would return other tenants' proofs and
-                // overwrite their LNURL mappings (CWE-284).
+                // overwrite their LNURL mappings.
                 let keysets_info = wallet
                     .get_mint_keysets()
                     .await
@@ -779,7 +779,7 @@ pub async fn verify_cashu_token_p2pk(
 
     // Compute a canonical replay key from sorted proof Y-values so that
     // re-encoding the same proofs into a different token string cannot bypass
-    // the replay check (CWE-294: Authentication Bypass by Capture-replay).
+    // the replay check.
     let proof_replay_key: String = {
         let mut y_values: Vec<String> = proofs
             .iter()
@@ -828,9 +828,20 @@ pub async fn verify_cashu_token_p2pk(
         .await
         .map_err(|e| format!("Failed to verify proof state with mint: {:?}", e))?;
 
-    if proof_states.iter().any(|s| s.state == cdk::nuts::State::Spent) {
-        warn!("🚨 P2PK double-spend attempt: one or more proofs already spent at the mint");
-        return Err("Token contains already-spent proofs".to_string());
+    // Only Unspent is acceptable. Pending / Reserved / PendingSpent all mean the
+    // mint already has the proof locked in an in-flight melt or swap; if we
+    // accepted such a proof and stored it as Unspent, that pending transaction
+    // could settle and leave us holding a spent proof. Reject anything that is
+    // not Unspent rather than only rejecting Spent.
+    if let Some(bad) = proof_states
+        .iter()
+        .find(|s| s.state != cdk::nuts::State::Unspent)
+    {
+        warn!(
+            "🚨 P2PK: rejecting token — mint reports a proof in state {:?} (only Unspent is accepted)",
+            bad.state
+        );
+        return Err("Token contains proofs that are not unspent at the mint".to_string());
     }
     info!("✅ Mint confirmed all proofs are unspent");
 
@@ -870,24 +881,31 @@ pub async fn verify_cashu_token_p2pk(
     // database is only written once per token.
     // Claim by proof key (not raw token string) so re-encoded tokens with the
     // same proofs are rejected by the same atomic SET NX EX slot.
-    match crate::store_cashu_token_as_used(&proof_replay_key) {
+    let claimed = match crate::store_cashu_token_as_used(&proof_replay_key) {
         Ok(false) => {
             warn!("🚨 Concurrent Cashu replay detected: proof set already claimed");
             return Ok(false);
         }
         Err(e) => {
             warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
+            false
         }
-        Ok(true) => { /* won the race — proceed to persist proofs */ }
-    }
+        Ok(true) => true, // won the race — proceed to persist proofs
+    };
 
     // Store directly in database using update_proofs (same as receive_proofs does internally)
     // Pass empty vec for second parameter (no proofs to delete)
-    wallet
-        .localstore
-        .update_proofs(proof_infos, vec![])
-        .await
-        .map_err(|e| format!("Failed to store proofs in database: {:?}", e))?;
+    if let Err(e) = wallet.localstore.update_proofs(proof_infos, vec![]).await {
+        // The DB write failed after we took the replay claim. Release the claim
+        // so the token isn't stuck "used" — otherwise a legitimate retry would
+        // be rejected until the Redis TTL expires even though no proofs were
+        // ever persisted. (Only release if we actually claimed; the fail-open
+        // branch above holds no claim to release.)
+        if claimed {
+            crate::release_cashu_token(&proof_replay_key);
+        }
+        return Err(format!("Failed to store proofs in database: {:?}", e));
+    }
 
     if is_multi_tenant_enabled() {
         if let Err(e) = set_proof_to_lnurl(proofs.clone(), lnurl_addr) {
