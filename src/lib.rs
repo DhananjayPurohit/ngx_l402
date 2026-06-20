@@ -190,9 +190,8 @@ static LN_CLIENT_CONFIG: OnceLock<lnclient::LNClientConfig> = OnceLock::new();
 /// master process loses its epoll registrations after fork(), causing
 /// "Service was not ready: transport error" on the first RPC. Creating the
 /// client inside the worker avoids this.
-static WORKER_LN_CLIENT: tokio::sync::OnceCell<
-    Arc<tokio::sync::Mutex<dyn lnclient::LNClient>>,
-> = tokio::sync::OnceCell::const_new();
+static WORKER_LN_CLIENT: tokio::sync::OnceCell<Arc<tokio::sync::Mutex<dyn lnclient::LNClient>>> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get or create a cached LNURL client for the given address
 /// This function is also used by cashu.rs for multi-tenant redemption
@@ -364,6 +363,29 @@ pub fn store_cashu_token_as_used(token: &str) -> Result<bool, String> {
         }
         Ok(None) => Ok(false),
         Err(e) => Err(format!("Redis SET NX failed: {}", e)),
+    }
+}
+
+/// Release a Cashu replay claim previously taken by `store_cashu_token_as_used`.
+///
+/// Used to compensate when a step *after* the atomic claim fails (e.g. the
+/// database write): without this, the Redis key would stay set and a legitimate
+/// retry would be rejected until the TTL expired even though the proofs were
+/// never persisted. Best-effort — failures are logged, not propagated.
+pub fn release_cashu_token(token: &str) {
+    let Some(pool) = REDIS_POOL.get() else {
+        return;
+    };
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("⚠️ Could not release Cashu replay claim (no Redis conn): {}", e);
+            return;
+        }
+    };
+    let redis_key = cashu_token_redis_key(token);
+    if let Err(e) = redis::cmd("DEL").arg(&redis_key).query::<i64>(&mut *conn) {
+        warn!("⚠️ Failed to release Cashu replay claim {}: {}", redis_key, e);
     }
 }
 
@@ -652,8 +674,14 @@ impl L402Module {
                 info!("🔧 Configuring ECLAIR client");
                 let address = std::env::var("ECLAIR_ADDRESS")
                     .unwrap_or_else(|_| "http://localhost:8080".to_string());
-                let password =
-                    std::env::var("ECLAIR_PASSWORD").unwrap_or_else(|_| "password".to_string());
+                // No hardcoded fallback: a default credential is a security
+                // hole. If ECLAIR_PASSWORD is unset we use an empty password so
+                // the connection fails to authenticate loudly rather than
+                // silently trying a well-known default.
+                let password = std::env::var("ECLAIR_PASSWORD").unwrap_or_else(|_| {
+                    error!("❌ ECLAIR_PASSWORD is not set — Eclair requests will fail to authenticate. There is no default credential.");
+                    String::new()
+                });
                 info!("🔗 Using ECLAIR address: {}", address);
                 lnclient::LNClientConfig {
                     ln_client_type,
@@ -1296,7 +1324,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     // token paid for `GET /v1/data` can't be replayed against `POST /v1/data`.
     // NOTE: no path normalization — stripping .html / trailing-slash suffixes
     // would widen the macaroon scope to the parent directory, allowing a token
-    // issued for /docs/page.html to be reused against /docs/secret (CWE-285).
+    // issued for /docs/page.html to be reused against /docs/secret.
     let request_path = uri.clone();
     let request_method = method_caveat_value(method);
     let caveats = vec![
@@ -1754,7 +1782,7 @@ pub fn l402_access_handler(
                     // satisfied by the exact set only. Falling through to
                     // `true` would let a token issued for one route or method
                     // verify against any other, defeating the per-route and
-                    // per-method binding on the macaroon (CWE-863).
+                    // per-method binding on the macaroon.
                     if predicate_str.starts_with("RequestMethod = ")
                         || predicate_str.starts_with("RequestPath = ")
                     {
@@ -1804,7 +1832,7 @@ pub fn l402_access_handler(
                             }
                             Err(e) => {
                                 // Redis was configured but is currently unreachable —
-                                // fail-closed to prevent replay during outages (CWE-362).
+                                // fail-closed to prevent replay during outages.
                                 error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
                                 return 503;
                             }
@@ -1849,7 +1877,7 @@ pub fn l402_access_handler(
                         // satisfied by the exact set only. Falling through to
                         // `true` would let a token issued for one route or
                         // method verify against any other, defeating the
-                        // per-route and per-method binding (CWE-863).
+                        // per-route and per-method binding.
                         if predicate_str.starts_with("RequestMethod = ")
                             || predicate_str.starts_with("RequestPath = ")
                         {
@@ -1892,7 +1920,7 @@ pub fn l402_access_handler(
                                 }
                                 Err(e) => {
                                     // Redis was configured but is currently unreachable —
-                                    // fail-closed to prevent replay during outages (CWE-362).
+                                    // fail-closed to prevent replay during outages.
                                     error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
                                     return 503;
                                 }
@@ -2013,17 +2041,41 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
                 cashu::restore_wallets_state().await;
             }
 
-            // Pre-warm the per-location LNURL client cache for the primary LNURL
-            // address. This runs in the master process so workers inherit the
-            // populated cache after fork(), avoiding HTTP requests inside
-            // worker request handlers where spawn_blocking can race with the
-            // multi-thread runtime startup and cause a panic.
+            // Pre-warm the LNURL client cache in the master process so workers
+            // inherit the populated cache after fork(), avoiding HTTP requests
+            // inside worker request handlers where spawn_blocking can race with
+            // the multi-thread runtime startup and cause a panic.
+            //
+            // Warm every address workers might use: the global LNURL_ADDRESS
+            // (when LN_CLIENT_TYPE=LNURL) AND every per-location `l402_lnurl_addr`
+            // directive value, since a location can use LNURL regardless of the
+            // global backend type.
+            let mut lnurl_addrs: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             if std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string()) == "LNURL" {
                 if let Ok(addr) = std::env::var("LNURL_ADDRESS") {
-                    match get_or_create_lnurl_client(&addr).await {
-                        Ok(_) => info!("✅ Pre-warmed LNURL client cache for: {}", addr),
-                        Err(e) => warn!("⚠️ Failed to pre-warm LNURL cache for {}: {}", addr, e),
-                    }
+                    lnurl_addrs.insert(addr);
+                }
+            }
+            for snap in collect_route_snapshots() {
+                if let Some(addr) = snap.lnurl_addr {
+                    lnurl_addrs.insert(addr);
+                }
+            }
+            for addr in lnurl_addrs {
+                // Pre-warming is purely an optimization (workers create the
+                // client lazily anyway), so a transient LNURL outage must never
+                // be fatal. Upstream client creation can panic (it unwraps the
+                // HTTP response); catch it so the panic cannot unwind across the
+                // FFI boundary and abort the master.
+                let prewarm = std::panic::AssertUnwindSafe(get_or_create_lnurl_client(&addr));
+                match futures::FutureExt::catch_unwind(prewarm).await {
+                    Ok(Ok(_)) => info!("✅ Pre-warmed LNURL client cache for: {}", addr),
+                    Ok(Err(e)) => warn!("⚠️ Failed to pre-warm LNURL cache for {}: {}", addr, e),
+                    Err(_) => warn!(
+                        "⚠️ LNURL pre-warm panicked for {} (non-fatal); workers will create the client lazily",
+                        addr
+                    ),
                 }
             }
 
