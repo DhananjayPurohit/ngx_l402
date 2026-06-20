@@ -7,9 +7,9 @@ const LOG_FILE_PATH: &str = "/var/log/nginx/cashu_redemption.log";
 /// If file logging fails, errors are logged to the nginx error log.
 ///
 /// `msg` is sanitised before writing: newline and carriage-return characters
-/// are stripped to prevent log-injection attacks (CWE-117).
+/// are stripped to prevent log-injection attacks.
 pub fn log_redemption(msg: &str) {
-    // Strip characters that could be used for log injection (CWE-117):
+    // Strip characters that could be used for log injection:
     // - CR/LF: inject new log lines
     // - NUL: truncate log entries in some parsers
     // - ESC (0x1b): ANSI escape sequences that corrupt terminal/log viewers
