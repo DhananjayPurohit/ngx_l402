@@ -9,6 +9,7 @@ use ngx::ffi::{
     nginx_version, ngx_array_push, ngx_chain_t, ngx_command_t, ngx_conf_t, ngx_cycle_s,
     ngx_http_discard_request_body, ngx_http_handler_pt, ngx_http_module_t,
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_http_request_t, ngx_int_t, ngx_log_s, ngx_module_t,
+    ngx_shared_memory_add, ngx_shm_zone_t, ngx_slab_alloc, ngx_slab_pool_t,
     ngx_str_t, ngx_uint_t, NGX_CONF_NOARGS, NGX_CONF_TAKE1, NGX_DECLINED, NGX_ERROR, NGX_HTTP_COPY,
     NGX_HTTP_DELETE, NGX_HTTP_GET, NGX_HTTP_HEAD, NGX_HTTP_INTERNAL_SERVER_ERROR, NGX_HTTP_LOCK,
     NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MAIN_CONF, NGX_HTTP_MKCOL, NGX_HTTP_MODULE, NGX_HTTP_MOVE,
@@ -865,8 +866,113 @@ impl HttpModule for L402Module {
         }
         // set an access phase handler for l402 (after location matching and rewrite)
         *h = Some(l402_access_handler_wrapper);
+
+        // Register the cross-worker metrics shared-memory zone. Failure is
+        // non-fatal: metrics fall back to per-worker counters (issue #105).
+        register_metrics_shm(cf);
+
         NGX_OK as ngx_int_t
     }
+}
+
+/// Name of the metrics shared-memory zone. nginx stores the pointer, so it must
+/// have `'static` lifetime; `ngx_string!` points at a NUL-terminated literal.
+static mut METRICS_SHM_NAME: ngx_str_t = ngx_string!("l402_metrics");
+
+/// Size of the metrics shared-memory zone. The block itself is tiny (a magic
+/// header + a fixed array of counters), but nginx needs room for the slab
+/// pool's own bookkeeping; 32 KiB is comfortably above the minimum on any page
+/// size while staying negligible.
+const METRICS_SHM_SIZE: usize = 32 * 1024;
+
+/// Register the metrics shared-memory zone during HTTP postconfiguration so its
+/// counters are shared across all worker processes (issue #105).
+///
+/// nginx allocates the zone in the master *before* it forks workers and maps it
+/// at the same address in every worker, so a single counter block is visible to
+/// all of them. The actual block is allocated and installed in
+/// [`metrics_shm_init`], which nginx invokes once the segment exists.
+///
+/// On any failure we log and return without installing a shared block; the
+/// `metrics` module then keeps using its process-local fallback, preserving the
+/// pre-existing per-worker behaviour rather than crashing.
+unsafe fn register_metrics_shm(cf: *mut ngx_conf_t) {
+    let tag = ::core::ptr::addr_of!(ngx_http_l402_module) as *mut c_void;
+    let zone = ngx_shared_memory_add(
+        cf,
+        ::core::ptr::addr_of_mut!(METRICS_SHM_NAME),
+        METRICS_SHM_SIZE,
+        tag,
+    );
+    if zone.is_null() {
+        error!("⚠️ l402_metrics: could not add shared memory zone; metrics will be per-worker");
+        return;
+    }
+    // nginx calls this once the segment is created (master, before fork).
+    (*zone).init = Some(metrics_shm_init);
+    // Leave `noreuse` at 0 so counters survive `nginx -s reload`.
+}
+
+/// Shared-memory zone init callback. Runs single-threaded in the master process
+/// before workers fork. Allocates (or reuses) the counter block from the zone's
+/// slab pool and installs it as the active store via [`metrics::install_shared`],
+/// so every forked worker inherits the pointer.
+unsafe extern "C" fn metrics_shm_init(zone: *mut ngx_shm_zone_t, data: *mut c_void) -> ngx_int_t {
+    // Reload carry-over: nginx passes the previous cycle's zone data so counters
+    // persist across `nginx -s reload`.
+    if !data.is_null() {
+        let block = data as *mut metrics::MetricsBlock;
+        if !metrics::magic_matches(block) {
+            metrics::init_in_place(block);
+        }
+        (*zone).data = data;
+        metrics::install_shared(block);
+        return NGX_OK as ngx_int_t;
+    }
+
+    let shpool = (*zone).shm.addr as *mut ngx_slab_pool_t;
+    if shpool.is_null() {
+        error!("⚠️ l402_metrics: shared zone has no slab pool; metrics will be per-worker");
+        return NGX_ERROR as ngx_int_t;
+    }
+
+    // Segment inherited from a prior process image (e.g. binary upgrade): the
+    // slab pool already holds our block via its `data` pointer.
+    if (*zone).shm.exists != 0 {
+        let block = (*shpool).data as *mut metrics::MetricsBlock;
+        if block.is_null() {
+            error!("⚠️ l402_metrics: inherited zone missing counter block");
+            return NGX_ERROR as ngx_int_t;
+        }
+        if !metrics::magic_matches(block) {
+            metrics::init_in_place(block);
+        }
+        (*zone).data = block as *mut c_void;
+        metrics::install_shared(block);
+        return NGX_OK as ngx_int_t;
+    }
+
+    // Fresh zone: allocate the counter block from the slab pool. `ngx_slab_alloc`
+    // takes the pool mutex internally — correct here (and the same call
+    // `ngx_http_limit_req` uses in its init_zone), even though this runs
+    // single-threaded in the master before fork.
+    let raw = ngx_slab_alloc(shpool, metrics::BLOCK_SIZE);
+    if raw.is_null() {
+        error!("⚠️ l402_metrics: slab allocation failed; metrics will be per-worker");
+        return NGX_ERROR as ngx_int_t;
+    }
+    if (raw as usize) % metrics::BLOCK_ALIGN != 0 {
+        // Should not happen (slab slots are at least word-aligned), but writing
+        // an AtomicU64 array through a misaligned pointer would be UB.
+        error!("⚠️ l402_metrics: slab allocation misaligned; metrics will be per-worker");
+        return NGX_ERROR as ngx_int_t;
+    }
+    let block = raw as *mut metrics::MetricsBlock;
+    metrics::init_in_place(block);
+    (*shpool).data = block as *mut c_void;
+    (*zone).data = block as *mut c_void;
+    metrics::install_shared(block);
+    NGX_OK as ngx_int_t
 }
 
 unsafe impl HttpModuleLocationConf for L402Module {
@@ -1328,7 +1434,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         (amount_msat, lnurl_addr, "static")
     };
 
-    metrics::inc(&metrics::L402_REQUESTS_TOTAL);
+    metrics::inc(metrics::Metric::RequestsTotal);
     let auth_present = auth_header.is_some();
     let auth_start = Instant::now();
     let result = l402_access_handler(
@@ -1375,19 +1481,19 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
     // holds and shadow traffic never ticks them.
     match result {
         r if r == NGX_DECLINED as isize => {
-            metrics::inc(&metrics::L402_PAYMENTS_VALID_TOTAL);
+            metrics::inc(metrics::Metric::PaymentsValidTotal);
             match LAST_PAYMENT_METHOD.with(|m| m.take()) {
                 Some(PaymentMethod::Lightning) => {
-                    metrics::inc(&metrics::L402_PAYMENTS_LIGHTNING_TOTAL)
+                    metrics::inc(metrics::Metric::PaymentsLightningTotal)
                 }
                 Some(PaymentMethod::Cashu) => {
-                    metrics::inc(&metrics::L402_PAYMENTS_CASHU_TOTAL)
+                    metrics::inc(metrics::Metric::PaymentsCashuTotal)
                 }
                 None => {}
             }
         }
-        401 => metrics::inc(&metrics::L402_PAYMENTS_INVALID_TOTAL),
-        402 => metrics::inc(&metrics::L402_PAYMENTS_MISSING_TOTAL),
+        401 => metrics::inc(metrics::Metric::PaymentsInvalidTotal),
+        402 => metrics::inc(metrics::Metric::PaymentsMissingTotal),
         _ => {}
     }
 
@@ -1396,7 +1502,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         if let Some((max_requests, window_secs)) = invoice_rate_limit {
             let client_ip = get_client_ip(request);
             if !check_invoice_rate_limit(&client_ip, &request_path, max_requests, window_secs) {
-                metrics::inc(&metrics::L402_RATE_LIMITED_TOTAL);
+                metrics::inc(metrics::Metric::RateLimitedTotal);
                 ngx_log_error!(
                     NGX_LOG_WARN,
                     log_ref,
@@ -1414,7 +1520,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             }
         }
         // Only count as "issued" once we're past the rate-limit gate.
-        metrics::inc(&metrics::L402_CHALLENGES_ISSUED_TOTAL);
+        metrics::inc(metrics::Metric::ChallengesIssuedTotal);
 
         let rt = get_handler_runtime();
 
@@ -1497,7 +1603,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
 
         match header_result {
             Some(header_value) => {
-                metrics::inc(&metrics::L402_INVOICES_GENERATED_TOTAL);
+                metrics::inc(metrics::Metric::InvoicesGeneratedTotal);
 
                 // Set WWW-Authenticate header for API clients
                 unsafe {
@@ -1537,7 +1643,7 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 // Fallback: could not parse header, return plain 402
             }
             None => {
-                metrics::inc(&metrics::L402_INVOICES_GENERATION_ERRORS_TOTAL);
+                metrics::inc(metrics::Metric::InvoicesGenerationErrorsTotal);
                 ngx_log_error!(NGX_LOG_ERR, log_ref, "Failed to get L402 header");
                 return 500;
             }
@@ -2112,9 +2218,9 @@ fn handle_dry_run_passthrough(
     auth_present: bool,
     invoice_rate_limit: Option<(u32, u64)>,
 ) -> isize {
-    metrics::inc(&metrics::L402_DRY_RUN_REQUESTS_TOTAL);
+    metrics::inc(metrics::Metric::DryRunRequestsTotal);
     if final_amount > 0 {
-        metrics::add(&metrics::L402_DRY_RUN_PRICE_MSAT_SUM, final_amount as u64);
+        metrics::add(metrics::Metric::DryRunPriceMsatSum, final_amount as u64);
     }
 
     let would_return: u16 = match result {
@@ -2141,12 +2247,12 @@ fn handle_dry_run_passthrough(
     };
 
     match would_return {
-        200 => metrics::inc(&metrics::L402_DRY_RUN_WOULD_ALLOW_TOTAL),
-        401 | 402 => metrics::inc(&metrics::L402_DRY_RUN_WOULD_BLOCK_TOTAL),
+        200 => metrics::inc(metrics::Metric::DryRunWouldAllowTotal),
+        401 | 402 => metrics::inc(metrics::Metric::DryRunWouldBlockTotal),
         _ => {}
     }
     if rate_limited {
-        metrics::inc(&metrics::L402_DRY_RUN_RATE_LIMITED_TOTAL);
+        metrics::inc(metrics::Metric::DryRunRateLimitedTotal);
     }
 
     let auth_state = match (auth_present, result) {
@@ -2208,7 +2314,7 @@ fn handle_dry_run_passthrough(
                 req.add_header_out("X-L402-Dry-Run-Challenge", &header_value);
             }
             Ok(None) => {
-                metrics::inc(&metrics::L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL);
+                metrics::inc(metrics::Metric::DryRunChallengeErrorsTotal);
                 ngx_log_error!(
                     NGX_LOG_WARN,
                     log_ref,
@@ -2217,7 +2323,7 @@ fn handle_dry_run_passthrough(
                 );
             }
             Err(_) => {
-                metrics::inc(&metrics::L402_DRY_RUN_CHALLENGE_ERRORS_TOTAL);
+                metrics::inc(metrics::Metric::DryRunChallengeErrorsTotal);
                 ngx_log_error!(
                     NGX_LOG_WARN,
                     log_ref,
