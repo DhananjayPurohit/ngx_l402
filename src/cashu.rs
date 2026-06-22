@@ -785,10 +785,18 @@ pub async fn verify_cashu_token_p2pk(
     // re-encoding the same proofs into a different token string cannot bypass
     // the replay check.
     let proof_replay_key: String = {
+        // Fail closed if any proof's Y-value can't be computed. Silently
+        // dropping it (filter_map(... .ok())) would weaken the key's binding to
+        // the full proof set — an all-error set would hash to a constant — and
+        // let a crafted token slip past the replay check.
         let mut y_values: Vec<String> = proofs
             .iter()
-            .filter_map(|p| p.y().ok().map(|y| y.to_hex()))
-            .collect();
+            .map(|p| {
+                p.y()
+                    .map(|y| y.to_hex())
+                    .map_err(|e| format!("Failed to compute proof Y-value for replay key: {:?}", e))
+            })
+            .collect::<Result<Vec<String>, String>>()?;
         y_values.sort_unstable();
         let mut hasher = Sha256::new();
         hasher.update(y_values.join(",").as_bytes());
