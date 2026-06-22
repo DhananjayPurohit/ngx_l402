@@ -139,6 +139,9 @@ pub fn render_payment_page(
 "#,
             mac = serde_json::to_string(macaroon_b64)
                 .unwrap_or_else(|_| "\"\"".to_string())
+                .replace('<', "\\u003c")
+                .replace('>', "\\u003e")
+                .replace('&', "\\u0026")
         )
     } else {
         String::new()
