@@ -642,9 +642,13 @@ pub async fn verify_cashu_token(
                 }
             }
 
-            // Atomic claim: Ok(true) = first claim (admit), Ok(false) =
-            // concurrent replay detected (reject), Err = Redis outage
-            // (admit, matches fail-open policy elsewhere).
+            // Atomic claim outcomes: Ok(true) = first claim (admit),
+            // Ok(false) = concurrent replay (reject), Err = Redis unconfigured
+            // or unavailable. Unlike the P2PK path, this path already swapped the
+            // proofs at the mint (wallet.receive above), so a replayed token's
+            // proofs are spent and the mint rejects a second receive even during
+            // a Redis outage. The mint is the backstop here, so failing open is
+            // safe regardless of whether Redis is unconfigured or down.
             match crate::store_cashu_token_as_used(token) {
                 Ok(true) => {
                     cache_processed_token(token);
@@ -655,7 +659,7 @@ pub async fn verify_cashu_token(
                     Ok(false)
                 }
                 Err(e) => {
-                    warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
+                    warn!("⚠️ Redis claim failed, admitting (fail-open, mint-backstopped): {}", e);
                     cache_processed_token(token);
                     Ok(true)
                 }
@@ -886,11 +890,26 @@ pub async fn verify_cashu_token_p2pk(
             warn!("🚨 Concurrent Cashu replay detected: proof set already claimed");
             return Ok(false);
         }
-        Err(e) => {
-            warn!("⚠️ Redis claim failed, admitting (fail-open): {}", e);
+        Ok(true) => true, // won the race — proceed to persist proofs
+        Err(crate::ReplayClaimError::NotConfigured) => {
+            // Redis was never configured — an explicit operator choice. Fall
+            // back to the in-process memory cache (single-worker protection).
+            warn!("⚠️ Redis not configured — Cashu replay protection is in-process only (single-worker)");
             false
         }
-        Ok(true) => true, // won the race — proceed to persist proofs
+        Err(crate::ReplayClaimError::Unavailable(e)) => {
+            // Redis is configured but unreachable. Unlike the swap path, P2PK
+            // proofs are stored locally without a mint swap, so NUT-07 reports
+            // Unspent for every resubmission and the mint cannot catch a replay.
+            // Fail closed — refuse the token until Redis recovers — matching the
+            // preimage path's outage policy. The proofs are not stored, so a
+            // legitimate retry after recovery still succeeds.
+            error!("❌ Redis unavailable for Cashu P2PK claim — rejecting to prevent replay: {}", e);
+            return Err(format!(
+                "Redis unavailable; refusing Cashu token to prevent replay: {}",
+                e
+            ));
+        }
     };
 
     // Store directly in database using update_proofs (same as receive_proofs does internally)

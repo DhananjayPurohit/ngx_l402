@@ -260,15 +260,65 @@ fn is_preimage_used(preimage: &[u8]) -> bool {
     conn.exists::<_, bool>(&redis_key).unwrap_or(false)
 }
 
+/// Why an atomic replay-claim (`store_*_as_used`) did not produce a definitive
+/// stored / already-stored result.
+///
+/// A *typed* distinction — rather than matching on an error-message substring —
+/// keeps the "Redis intentionally absent" vs "Redis down" decision robust
+/// against message rewording, and lets every caller apply a consistent
+/// fail-open (unconfigured) vs fail-closed (outage) policy.
+pub enum ReplayClaimError {
+    /// `REDIS_POOL` is not set — Redis was never configured. Callers may fall
+    /// back to in-process (single-worker) replay protection.
+    NotConfigured,
+    /// Redis is configured but the pool/connection/command failed. Callers
+    /// should fail closed to prevent replay during the outage.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for ReplayClaimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplayClaimError::NotConfigured => write!(f, "Redis not configured"),
+            ReplayClaimError::Unavailable(e) => write!(f, "Redis unavailable: {}", e),
+        }
+    }
+}
+
+/// Map an atomic preimage replay-claim to the nginx access-phase return code.
+/// Centralizes the configured-vs-unreachable Redis policy so the auto-detect and
+/// classic verification paths stay consistent:
+///   - claimed (first use)       -> admit (NGX_DECLINED)
+///   - already claimed (race)    -> reject as replay (401)
+///   - Redis not configured      -> admit; in-process protection only
+///   - Redis configured but down -> fail closed (503) to prevent replay
+fn handle_preimage_claim(result: Result<bool, ReplayClaimError>) -> isize {
+    match result {
+        Ok(true) => NGX_DECLINED as isize,
+        Ok(false) => {
+            warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
+            401
+        }
+        Err(ReplayClaimError::NotConfigured) => {
+            warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
+            NGX_DECLINED as isize
+        }
+        Err(ReplayClaimError::Unavailable(e)) => {
+            error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
+            503
+        }
+    }
+}
+
 /// Atomically store a preimage as used via SET NX EX (single round-trip).
 /// Returns Ok(true) if stored successfully (first use), Ok(false) if already existed (race with another worker).
 /// Called ONLY after successful verification to avoid burning preimages on transient failures.
-fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, String> {
-    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
+fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, ReplayClaimError> {
+    let pool = REDIS_POOL.get().ok_or(ReplayClaimError::NotConfigured)?;
 
     let mut conn = pool
         .get()
-        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+        .map_err(|e| ReplayClaimError::Unavailable(format!("connection: {}", e)))?;
 
     let redis_key = preimage_redis_key(preimage);
     let ttl = get_preimage_ttl();
@@ -290,7 +340,7 @@ fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, String> {
             // Another worker stored it between our EXISTS check and this SET NX — that's fine
             Ok(false)
         }
-        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
+        Err(e) => Err(ReplayClaimError::Unavailable(format!("SET NX: {}", e))),
     }
 }
 
@@ -339,12 +389,12 @@ pub fn is_cashu_token_used(token: &str) -> bool {
 
 /// Atomically store a Cashu token as used via SET NX EX (single round-trip).
 /// Called ONLY after successful verification to avoid burning tokens on transient failures.
-pub fn store_cashu_token_as_used(token: &str) -> Result<bool, String> {
-    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
+pub fn store_cashu_token_as_used(token: &str) -> Result<bool, ReplayClaimError> {
+    let pool = REDIS_POOL.get().ok_or(ReplayClaimError::NotConfigured)?;
 
     let mut conn = pool
         .get()
-        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+        .map_err(|e| ReplayClaimError::Unavailable(format!("connection: {}", e)))?;
 
     let redis_key = cashu_token_redis_key(token);
     let ttl = get_cashu_token_ttl();
@@ -362,7 +412,7 @@ pub fn store_cashu_token_as_used(token: &str) -> Result<bool, String> {
             Ok(true)
         }
         Ok(None) => Ok(false),
-        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
+        Err(e) => Err(ReplayClaimError::Unavailable(format!("SET NX: {}", e))),
     }
 }
 
@@ -1817,26 +1867,7 @@ pub fn l402_access_handler(
                         // SET NX EX is the authoritative atomic admission gate.
                         // Ok(false) means another worker already claimed this
                         // preimage — treat as replay and reject.
-                        match store_preimage_as_used(&preimage_bytes) {
-                            Ok(true) => return NGX_DECLINED as isize,
-                            Ok(false) => {
-                                warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
-                                return 401;
-                            }
-                            Err(e) if e.contains("Redis not configured") => {
-                                // Redis was never set up — fall back to in-process
-                                // cache (single-worker protection only). This is an
-                                // explicit operator choice, not an outage.
-                                warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
-                                return NGX_DECLINED as isize;
-                            }
-                            Err(e) => {
-                                // Redis was configured but is currently unreachable —
-                                // fail-closed to prevent replay during outages.
-                                error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
-                                return 503;
-                            }
-                        }
+                        return handle_preimage_claim(store_preimage_as_used(&preimage_bytes));
                     }
                     Err(e) => {
                         warn!("⚠️ L402 auto-detect verification failed: {:?}", e);
@@ -1905,26 +1936,7 @@ pub fn l402_access_handler(
                             // SET NX EX is the authoritative atomic admission gate.
                             // Ok(false) means another worker already claimed this
                             // preimage — treat as replay and reject.
-                            match store_preimage_as_used(&preimage.0) {
-                                Ok(true) => return NGX_DECLINED as isize,
-                                Ok(false) => {
-                                    warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
-                                    return 401;
-                                }
-                                Err(e) if e.contains("Redis not configured") => {
-                                    // Redis was never set up — fall back to in-process
-                                    // cache (single-worker protection only). This is an
-                                    // explicit operator choice, not an outage.
-                                    warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
-                                    return NGX_DECLINED as isize;
-                                }
-                                Err(e) => {
-                                    // Redis was configured but is currently unreachable —
-                                    // fail-closed to prevent replay during outages.
-                                    error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
-                                    return 503;
-                                }
-                            }
+                            return handle_preimage_claim(store_preimage_as_used(&preimage.0));
                         }
                         Err(e) => {
                             warn!("⚠️ L402 verification failed: {:?}", e);
