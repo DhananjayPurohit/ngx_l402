@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b85a5ec5.js";
+            window.path_to_searchindex_js = "searchindex-15ee1fd4.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b5966016.js"></script>
@@ -233,20 +233,60 @@ Environment=BOLT12_OFFER=lno1...
 Environment=CLN_LIGHTNING_RPC_FILE_PATH=/path/to/lightning-rpc
 Environment=ROOT_KEY=your-root-key
 </code></pre>
+<blockquote>
+<p><strong>How it works</strong>: When a client requests a protected resource, the module
+connects to your <strong>CLN node</strong> via the Unix socket at <code>CLN_LIGHTNING_RPC_FILE_PATH</code>
+and calls <code>fetchinvoice</code> to derive a fresh single-use <strong>BOLT11 invoice</strong> from
+the reusable BOLT12 offer. The node resolves the offer’s embedded node ID and
+negotiates the payment parameters over the Lightning network automatically.
+<code>CLN_LIGHTNING_RPC_FILE_PATH</code> is therefore <strong>required</strong> alongside <code>BOLT12_OFFER</code>.</p>
+</blockquote>
 <h2 id="eclair"><a class="header" href="#eclair">Eclair</a></h2>
 <pre><code class="language-bash">Environment=LN_CLIENT_TYPE=ECLAIR
 Environment=ECLAIR_ADDRESS=http://127.0.0.1:8282
-Environment=ECLAIR_PASSWORD=eclairpass
+Environment=ECLAIR_PASSWORD=eclairpass   # REQUIRED — no default; module disables auto-detect if unset
 Environment=ROOT_KEY=your-root-key
 </code></pre>
+<blockquote>
+<p><strong>⚠️ Security</strong>: <code>ECLAIR_PASSWORD</code> is <strong>required</strong> and has no default value.
+If it is not set the Eclair payment-detector is disabled at startup and an
+error is logged. Never use a well-known or placeholder password in production.</p>
+</blockquote>
 <hr>
 <h2 id="redis-dynamic-pricing--replay-protection"><a class="header" href="#redis-dynamic-pricing--replay-protection">Redis (Dynamic Pricing &amp; Replay Protection)</a></h2>
+<blockquote>
+<p><strong>Strongly recommended in production.</strong> Without Redis, replay protection uses
+in-process caching only — it is lost on restart and does not work across
+multiple nginx workers. Multi-worker deployments <strong>require</strong> Redis.</p>
+</blockquote>
 <pre><code class="language-bash">Environment=REDIS_URL=redis://127.0.0.1:6379
 
-# TTL for replay attack prevention (default: 86400 = 24 hours)
+# Connection pool size (default: 4)
+Environment=REDIS_POOL_SIZE=4
+
+# TTL for spent Lightning preimages (default: 86400 = 24 hours)
 Environment=L402_PREIMAGE_TTL_SECONDS=86400
+
+# TTL for spent Cashu tokens (default: 86400 = 24 hours)
 Environment=L402_CASHU_TOKEN_TTL_SECONDS=86400
 </code></pre>
+<h3 id="setting-ttl-to-infinite-permanent-replay-protection"><a class="header" href="#setting-ttl-to-infinite-permanent-replay-protection">Setting TTL to “infinite” (permanent replay protection)</a></h3>
+<p>The module stores spent preimages and Cashu tokens in Redis using
+<code>SET NX EX &lt;seconds&gt;</code>. Redis requires a positive integer for <code>EX</code> — there is
+no built-in “never expire” option via this command.</p>
+<p>To achieve <strong>permanent</strong> replay protection (strongly recommended in production),
+set the TTL to a very large value:</p>
+<pre><code class="language-bash"># ~68 years — effectively permanent
+Environment=L402_PREIMAGE_TTL_SECONDS=2147483647
+Environment=L402_CASHU_TOKEN_TTL_SECONDS=2147483647
+</code></pre>
+<blockquote>
+<p><strong>Trade-off</strong>: Permanent keys accumulate in Redis indefinitely. For a busy
+API with many unique tokens this will grow Redis memory over time. Size each
+key at ~100 bytes; 1 million spent tokens ≈ 100 MB.</p>
+<p><strong>Do not set <code>0</code></strong> — Redis rejects <code>EX 0</code> with an error, which causes the
+module to fail-open and skip the replay check entirely.</p>
+</blockquote>
 <hr>
 <h2 id="cashu-ecash"><a class="header" href="#cashu-ecash">Cashu eCash</a></h2>
 <pre><code class="language-bash">Environment=CASHU_ECASH_SUPPORT=true
@@ -302,10 +342,28 @@ Environment=CASHU_P2PK_PRIVATE_KEY=&lt;your-private-key-hex&gt;
 </blockquote>
 <p>See <a href="./cashu.html">Cashu eCash</a> for a full explanation of Standard vs P2PK mode and redemption fee examples.</p>
 <hr>
+<h2 id="lnd-via-socks5--tor-proxy"><a class="header" href="#lnd-via-socks5--tor-proxy">LND via SOCKS5 / Tor proxy</a></h2>
+<pre><code class="language-bash"># [Optional] Route LND gRPC through a SOCKS5 proxy
+Environment=SOCKS5_PROXY=socks5://127.0.0.1:9050
+</code></pre>
+<hr>
+<h2 id="capability-manifest-metadata"><a class="header" href="#capability-manifest-metadata">Capability Manifest Metadata</a></h2>
+<p>These optional variables populate the <code>service</code> block in <code>/.well-known/l402-services</code>.
+All are omitted from the manifest JSON when unset.</p>
+<pre><code class="language-bash">Environment=L402_SERVICE_NAME=My API
+Environment=L402_SERVICE_DESCRIPTION=Premium data, paid per request.
+Environment=L402_SERVICE_OPERATOR=npub1...   # Nostr pubkey, DID, or free-form
+Environment=L402_SERVICE_CONTACT=ops@example.com
+</code></pre>
+<p>See <a href="./manifest.html">Capability Manifest</a> for the full manifest spec.</p>
+<hr>
 <h2 id="logging"><a class="header" href="#logging">Logging</a></h2>
 <pre><code class="language-bash">Environment=RUST_LOG=info
 # For module-specific debug logs:
 Environment=RUST_LOG=ngx_l402_lib=debug,info
+
+# Log per-request performance timing (set to any non-empty value to enable)
+Environment=L402_PERF_LOG=1
 </code></pre>
 <hr>
 <h2 id="nginx-location-directives"><a class="header" href="#nginx-location-directives">Nginx Location Directives</a></h2>
