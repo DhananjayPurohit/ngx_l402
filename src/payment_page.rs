@@ -4,6 +4,15 @@
 //! This module owns all HTML, CSS, and JavaScript that is sent to the browser
 //! when a protected resource requires payment.
 
+/// Escape a string for safe interpolation into HTML text/attribute contexts.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 /// Render the full 402 payment page as an HTML string.
 ///
 /// # Arguments
@@ -46,17 +55,20 @@ pub fn render_payment_page(
 
     // ── Amounts ──────────────────────────────────────────────────────────────
     let amount_sats = amount_msat / 1000;
-    let invoice_short = if invoice.len() > 40 {
-        format!("{}\u{2026}{}", &invoice[..20], &invoice[invoice.len() - 10..])
+    let invoice_short = if invoice.chars().count() > 40 {
+        let head: String = invoice.chars().take(20).collect();
+        let tail: String = invoice.chars().rev().take(10).collect::<String>()
+            .chars().rev().collect();
+        html_escape(&format!("{}\u{2026}{}", head, tail))
     } else {
-        invoice.to_string()
+        html_escape(invoice)
     };
 
     // ── Cashu tab ────────────────────────────────────────────────────────────
     let cashu_tab_html = if cashu_enabled {
         let payment_req_hint = cashu_payment_request
             .map(|r| {
-                let preview = &r[..r.len().min(60)];
+                let preview = html_escape(&r.chars().take(60).collect::<String>());
                 format!(
                     "<div class=\"payment-req-box\">\
 <span class=\"payment-req-label\">Payment Request</span>\
@@ -110,7 +122,7 @@ pub fn render_payment_page(
             return;
         }}
         fetch(window.location.href, {{
-            headers: {{'Authorization': 'L402 {mac}'}},
+            headers: {{'Authorization': 'L402 ' + {mac}}},
             redirect: 'follow',
             credentials: 'same-origin'
         }}).then(r => {{
@@ -125,7 +137,11 @@ pub fn render_payment_page(
     }}
     startPolling();
 "#,
-            mac = macaroon_b64
+            mac = serde_json::to_string(macaroon_b64)
+                .unwrap_or_else(|_| "\"\"".to_string())
+                .replace('<', "\\u003c")
+                .replace('>', "\\u003e")
+                .replace('&', "\\u0026")
         )
     } else {
         String::new()
@@ -364,8 +380,8 @@ document.getElementById('preimage-section').classList.remove('hidden')\">Enter p
         auto_detect_section = auto_detect_section,
         preimage_hidden_class = preimage_hidden_class,
         cashu_tab_html = cashu_tab_html,
-        invoice_json = serde_json::to_string(invoice).unwrap_or_else(|_| "\"\"".to_string()),
-        macaroon_json = serde_json::to_string(macaroon_b64).unwrap_or_else(|_| "\"\"".to_string()),
+        invoice_json = serde_json::to_string(invoice).unwrap_or_else(|_| "\"\"".to_string()).replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026"),
+        macaroon_json = serde_json::to_string(macaroon_b64).unwrap_or_else(|_| "\"\"".to_string()).replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026"),
         auto_detect_js = auto_detect_js,
     )
 }

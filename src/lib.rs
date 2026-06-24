@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
-use tonic_openssl_lnd::lnrpc;
+use l402_middleware::lndrpc::lnrpc;
 
 mod cashu;
 mod cashu_redemption_logger;
@@ -181,6 +181,18 @@ static LNURL_CLIENT_CACHE: OnceLock<
 /// init for use in structured dry-run log lines.
 static LN_BACKEND_LABEL: OnceLock<String> = OnceLock::new();
 
+/// LNClientConfig saved by the master process so each worker can re-create its
+/// own LN client connection within the worker's own tokio runtime.
+static LN_CLIENT_CONFIG: OnceLock<lnclient::LNClientConfig> = OnceLock::new();
+
+/// Per-worker LN client, lazily initialized on the first request in each nginx
+/// worker process within HANDLER_RUNTIME. A tonic Channel established in the
+/// master process loses its epoll registrations after fork(), causing
+/// "Service was not ready: transport error" on the first RPC. Creating the
+/// client inside the worker avoids this.
+static WORKER_LN_CLIENT: tokio::sync::OnceCell<Arc<tokio::sync::Mutex<dyn lnclient::LNClient>>> =
+    tokio::sync::OnceCell::const_new();
+
 /// Get or create a cached LNURL client for the given address
 /// This function is also used by cashu.rs for multi-tenant redemption
 pub async fn get_or_create_lnurl_client(
@@ -248,15 +260,65 @@ fn is_preimage_used(preimage: &[u8]) -> bool {
     conn.exists::<_, bool>(&redis_key).unwrap_or(false)
 }
 
+/// Why an atomic replay-claim (`store_*_as_used`) did not produce a definitive
+/// stored / already-stored result.
+///
+/// A *typed* distinction — rather than matching on an error-message substring —
+/// keeps the "Redis intentionally absent" vs "Redis down" decision robust
+/// against message rewording, and lets every caller apply a consistent
+/// fail-open (unconfigured) vs fail-closed (outage) policy.
+pub enum ReplayClaimError {
+    /// `REDIS_POOL` is not set — Redis was never configured. Callers may fall
+    /// back to in-process (single-worker) replay protection.
+    NotConfigured,
+    /// Redis is configured but the pool/connection/command failed. Callers
+    /// should fail closed to prevent replay during the outage.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for ReplayClaimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReplayClaimError::NotConfigured => write!(f, "Redis not configured"),
+            ReplayClaimError::Unavailable(e) => write!(f, "Redis unavailable: {}", e),
+        }
+    }
+}
+
+/// Map an atomic preimage replay-claim to the nginx access-phase return code.
+/// Centralizes the configured-vs-unreachable Redis policy so the auto-detect and
+/// classic verification paths stay consistent:
+///   - claimed (first use)       -> admit (NGX_DECLINED)
+///   - already claimed (race)    -> reject as replay (401)
+///   - Redis not configured      -> admit; in-process protection only
+///   - Redis configured but down -> fail closed (503) to prevent replay
+fn handle_preimage_claim(result: Result<bool, ReplayClaimError>) -> isize {
+    match result {
+        Ok(true) => NGX_DECLINED as isize,
+        Ok(false) => {
+            warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
+            401
+        }
+        Err(ReplayClaimError::NotConfigured) => {
+            warn!("⚠️ Redis not configured — replay protection is in-process only (single-worker)");
+            NGX_DECLINED as isize
+        }
+        Err(ReplayClaimError::Unavailable(e)) => {
+            error!("❌ Redis unavailable for preimage claim — rejecting to prevent replay: {}", e);
+            503
+        }
+    }
+}
+
 /// Atomically store a preimage as used via SET NX EX (single round-trip).
 /// Returns Ok(true) if stored successfully (first use), Ok(false) if already existed (race with another worker).
 /// Called ONLY after successful verification to avoid burning preimages on transient failures.
-fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, String> {
-    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
+fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, ReplayClaimError> {
+    let pool = REDIS_POOL.get().ok_or(ReplayClaimError::NotConfigured)?;
 
     let mut conn = pool
         .get()
-        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+        .map_err(|e| ReplayClaimError::Unavailable(format!("connection: {}", e)))?;
 
     let redis_key = preimage_redis_key(preimage);
     let ttl = get_preimage_ttl();
@@ -278,7 +340,7 @@ fn store_preimage_as_used(preimage: &[u8]) -> Result<bool, String> {
             // Another worker stored it between our EXISTS check and this SET NX — that's fine
             Ok(false)
         }
-        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
+        Err(e) => Err(ReplayClaimError::Unavailable(format!("SET NX: {}", e))),
     }
 }
 
@@ -327,12 +389,12 @@ pub fn is_cashu_token_used(token: &str) -> bool {
 
 /// Atomically store a Cashu token as used via SET NX EX (single round-trip).
 /// Called ONLY after successful verification to avoid burning tokens on transient failures.
-pub fn store_cashu_token_as_used(token: &str) -> Result<bool, String> {
-    let pool = REDIS_POOL.get().ok_or("Redis not configured")?;
+pub fn store_cashu_token_as_used(token: &str) -> Result<bool, ReplayClaimError> {
+    let pool = REDIS_POOL.get().ok_or(ReplayClaimError::NotConfigured)?;
 
     let mut conn = pool
         .get()
-        .map_err(|e| format!("Failed to get Redis connection: {}", e))?;
+        .map_err(|e| ReplayClaimError::Unavailable(format!("connection: {}", e)))?;
 
     let redis_key = cashu_token_redis_key(token);
     let ttl = get_cashu_token_ttl();
@@ -350,7 +412,30 @@ pub fn store_cashu_token_as_used(token: &str) -> Result<bool, String> {
             Ok(true)
         }
         Ok(None) => Ok(false),
-        Err(e) => Err(format!("Redis SET NX failed: {}", e)),
+        Err(e) => Err(ReplayClaimError::Unavailable(format!("SET NX: {}", e))),
+    }
+}
+
+/// Release a Cashu replay claim previously taken by `store_cashu_token_as_used`.
+///
+/// Used to compensate when a step *after* the atomic claim fails (e.g. the
+/// database write): without this, the Redis key would stay set and a legitimate
+/// retry would be rejected until the TTL expired even though the proofs were
+/// never persisted. Best-effort — failures are logged, not propagated.
+pub fn release_cashu_token(token: &str) {
+    let Some(pool) = REDIS_POOL.get() else {
+        return;
+    };
+    let mut conn = match pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("⚠️ Could not release Cashu replay claim (no Redis conn): {}", e);
+            return;
+        }
+    };
+    let redis_key = cashu_token_redis_key(token);
+    if let Err(e) = redis::cmd("DEL").arg(&redis_key).query::<i64>(&mut *conn) {
+        warn!("⚠️ Failed to release Cashu replay claim {}: {}", redis_key, e);
     }
 }
 
@@ -639,8 +724,14 @@ impl L402Module {
                 info!("🔧 Configuring ECLAIR client");
                 let address = std::env::var("ECLAIR_ADDRESS")
                     .unwrap_or_else(|_| "http://localhost:8080".to_string());
-                let password =
-                    std::env::var("ECLAIR_PASSWORD").unwrap_or_else(|_| "password".to_string());
+                // No hardcoded fallback: a default credential is a security
+                // hole. If ECLAIR_PASSWORD is unset we use an empty password so
+                // the connection fails to authenticate loudly rather than
+                // silently trying a well-known default.
+                let password = std::env::var("ECLAIR_PASSWORD").unwrap_or_else(|_| {
+                    error!("❌ ECLAIR_PASSWORD is not set — Eclair requests will fail to authenticate. There is no default credential.");
+                    String::new()
+                });
                 info!("🔗 Using ECLAIR address: {}", address);
                 lnclient::LNClientConfig {
                     ln_client_type,
@@ -687,6 +778,7 @@ impl L402Module {
         .await
         .expect("Failed to create middleware");
 
+        let _ = LN_CLIENT_CONFIG.set(ln_client_config);
         Self { middleware }
     }
 
@@ -727,9 +819,29 @@ impl L402Module {
                 }
             }
         } else {
-            let ln_client_conn = lnclient::LNClientConn {
-                ln_client: self.middleware.ln_client.clone(),
+            // The LN client embedded in the module was created in the nginx
+            // master process. After fork(), the tonic Channel's epoll I/O
+            // registrations are absent from the worker's event loop, causing
+            // "Service was not ready: transport error" on the first RPC.
+            // Use a per-worker client lazily created within HANDLER_RUNTIME.
+            let ln_client = match WORKER_LN_CLIENT
+                .get_or_try_init(|| async {
+                    let config = LN_CLIENT_CONFIG.get().ok_or_else(
+                        || -> Box<dyn std::error::Error + Send + Sync> {
+                            "LN client config not available in worker".into()
+                        },
+                    )?;
+                    lnclient::LNClientConn::init(config).await
+                })
+                .await
+            {
+                Ok(c) => Arc::clone(c),
+                Err(e) => {
+                    error!("❌ Error initializing worker LN client: {}", e);
+                    return None;
+                }
             };
+            let ln_client_conn = lnclient::LNClientConn { ln_client };
             match ln_client_conn.generate_invoice(ln_invoice).await {
                 Ok(result) => result,
                 Err(e) => {
@@ -1275,14 +1387,12 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
         )
     };
 
-    let mut request_path = uri.clone();
-    if request_path.contains(".html") || request_path.ends_with('/') {
-        if let Some(pos) = request_path.rfind('/') {
-            request_path = request_path[..pos].to_string();
-        }
-    }
-    // Bind the macaroon to both the normalized path and the HTTP method so a
+    // Bind the macaroon to the exact request URI and HTTP method so a
     // token paid for `GET /v1/data` can't be replayed against `POST /v1/data`.
+    // NOTE: no path normalization — stripping .html / trailing-slash suffixes
+    // would widen the macaroon scope to the parent directory, allowing a token
+    // issued for /docs/page.html to be reused against /docs/secret.
+    let request_path = uri.clone();
     let request_method = method_caveat_value(method);
     let caveats = vec![
         format!("RequestPath = {}", request_path),
@@ -1476,15 +1586,25 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
             format!("RequestPath = {}", request_path),
             format!("RequestMethod = {}", request_method),
         ];
-        let header_result = rt.block_on(async {
-            module
-                .get_l402_header(
-                    challenge_caveats,
-                    final_amount,
-                    macaroon_timeout,
-                    final_lnurl_addr.clone(),
-                )
-                .await
+        // Catch any panic from the LNURL library (bare .unwrap() calls in
+        // l402_middleware's lnurl.rs can panic on network errors). Without this
+        // guard a panic would unwind through nginx's C stack — undefined
+        // behaviour in a cdylib that crashes the worker process (curl exit 52).
+        let header_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rt.block_on(async {
+                module
+                    .get_l402_header(
+                        challenge_caveats,
+                        final_amount,
+                        macaroon_timeout,
+                        final_lnurl_addr.clone(),
+                    )
+                    .await
+            })
+        }))
+        .unwrap_or_else(|_| {
+            error!("❌ Panic in get_l402_header (LNURL resolution failure); returning 500");
+            None
         });
 
         if perf_log_enabled() {
@@ -1727,12 +1847,14 @@ pub fn l402_access_handler(
                             return current_time <= ts;
                         }
                     }
-                    // `RequestMethod = …` must be satisfied by the exact set
-                    // (populated from the current request's method). Falling
-                    // through to `true` would let a GET-bound token verify
-                    // against a HEAD/POST/PUT/… request and defeat HTTP method
-                    // binding on the macaroon.
-                    if predicate_str.starts_with("RequestMethod = ") {
+                    // `RequestMethod = …` and `RequestPath = …` must be
+                    // satisfied by the exact set only. Falling through to
+                    // `true` would let a token issued for one route or method
+                    // verify against any other, defeating the per-route and
+                    // per-method binding on the macaroon.
+                    if predicate_str.starts_with("RequestMethod = ")
+                        || predicate_str.starts_with("RequestPath = ")
+                    {
                         return false;
                     }
                     true
@@ -1750,7 +1872,7 @@ pub fn l402_access_handler(
                 }
                 let mut preimage_arr = [0u8; 32];
                 preimage_arr.copy_from_slice(&preimage_bytes);
-                let preimage = lightning::ln::PaymentPreimage(preimage_arr);
+                let preimage = lightning::types::payment::PaymentPreimage(preimage_arr);
 
                 match l402::verify_l402_with_verifier(
                     &mac,
@@ -1768,19 +1890,7 @@ pub fn l402_access_handler(
                         // SET NX EX is the authoritative atomic admission gate.
                         // Ok(false) means another worker already claimed this
                         // preimage — treat as replay and reject.
-                        match store_preimage_as_used(&preimage_bytes) {
-                            Ok(true) => return NGX_DECLINED as isize,
-                            Ok(false) => {
-                                warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
-                                return 401;
-                            }
-                            Err(e) => {
-                                // Redis unavailable — fail-open (consistent with
-                                // the rest of the codebase's Redis-down policy).
-                                warn!("⚠️ Redis claim failed, admitting request: {}", e);
-                                return NGX_DECLINED as isize;
-                            }
-                        }
+                        return handle_preimage_claim(store_preimage_as_used(&preimage_bytes));
                     }
                     Err(e) => {
                         warn!("⚠️ L402 auto-detect verification failed: {:?}", e);
@@ -1816,12 +1926,14 @@ pub fn l402_access_handler(
                                 return is_valid;
                             }
                         }
-                        // `RequestMethod = …` must be satisfied by the exact
-                        // set (populated from the current request's method).
-                        // Falling through to `true` would let a GET-bound
-                        // token verify against a HEAD/POST/PUT/… request and
-                        // defeat HTTP method binding on the macaroon.
-                        if predicate_str.starts_with("RequestMethod = ") {
+                        // `RequestMethod = …` and `RequestPath = …` must be
+                        // satisfied by the exact set only. Falling through to
+                        // `true` would let a token issued for one route or
+                        // method verify against any other, defeating the
+                        // per-route and per-method binding.
+                        if predicate_str.starts_with("RequestMethod = ")
+                            || predicate_str.starts_with("RequestPath = ")
+                        {
                             return false;
                         }
                         true
@@ -1850,19 +1962,7 @@ pub fn l402_access_handler(
                             // SET NX EX is the authoritative atomic admission gate.
                             // Ok(false) means another worker already claimed this
                             // preimage — treat as replay and reject.
-                            match store_preimage_as_used(&preimage.0) {
-                                Ok(true) => return NGX_DECLINED as isize,
-                                Ok(false) => {
-                                    warn!("🚨 Preimage already claimed by concurrent worker — replay rejected");
-                                    return 401;
-                                }
-                                Err(e) => {
-                                    // Redis unavailable — fail-open (consistent with
-                                    // the rest of the codebase's Redis-down policy).
-                                    warn!("⚠️ Redis claim failed, admitting request: {}", e);
-                                    return NGX_DECLINED as isize;
-                                }
-                            }
+                            return handle_preimage_claim(store_preimage_as_used(&preimage.0));
                         }
                         Err(e) => {
                             warn!("⚠️ L402 verification failed: {:?}", e);
@@ -1978,15 +2078,55 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             if cashu_ecash_support {
                 cashu::restore_wallets_state().await;
             }
+
+            // Pre-warm the LNURL client cache in the master process so workers
+            // inherit the populated cache after fork(), avoiding HTTP requests
+            // inside worker request handlers where spawn_blocking can race with
+            // the multi-thread runtime startup and cause a panic.
+            //
+            // Warm every address workers might use: the global LNURL_ADDRESS
+            // (when LN_CLIENT_TYPE=LNURL) AND every per-location `l402_lnurl_addr`
+            // directive value, since a location can use LNURL regardless of the
+            // global backend type.
+            let mut lnurl_addrs: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            if std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string()) == "LNURL" {
+                if let Ok(addr) = std::env::var("LNURL_ADDRESS") {
+                    lnurl_addrs.insert(addr);
+                }
+            }
+            for snap in collect_route_snapshots() {
+                if let Some(addr) = snap.lnurl_addr {
+                    lnurl_addrs.insert(addr);
+                }
+            }
+            for addr in lnurl_addrs {
+                // Pre-warming is purely an optimization (workers create the
+                // client lazily anyway), so a transient LNURL outage must never
+                // be fatal. Upstream client creation can panic (it unwraps the
+                // HTTP response); catch it so the panic cannot unwind across the
+                // FFI boundary and abort the master.
+                let prewarm = std::panic::AssertUnwindSafe(get_or_create_lnurl_client(&addr));
+                match futures::FutureExt::catch_unwind(prewarm).await {
+                    Ok(Ok(_)) => info!("✅ Pre-warmed LNURL client cache for: {}", addr),
+                    Ok(Err(e)) => warn!("⚠️ Failed to pre-warm LNURL cache for {}: {}", addr, e),
+                    Err(_) => warn!(
+                        "⚠️ LNURL pre-warm panicked for {} (non-fatal); workers will create the client lazily",
+                        addr
+                    ),
+                }
+            }
+
             m
         });
 
-        // Initialize LN client for cashu redemption
-        let ln_client = module.middleware.ln_client.clone();
+        // Record LN client type for cashu redemption. The actual client
+        // connection is created lazily inside the redemption thread to avoid
+        // inheriting a broken tonic Channel after fork().
         let ln_client_type =
             std::env::var("LN_CLIENT_TYPE").unwrap_or_else(|_| "LNURL".to_string());
-        if let Err(e) = cashu::initialize_ln_client(ln_client, ln_client_type) {
-            error!("⚠️ Failed to initialize LN client for cashu: {}", e);
+        if let Err(e) = cashu::initialize_ln_client(ln_client_type) {
+            error!("⚠️ Failed to initialize LN client type for cashu: {}", e);
         }
 
         info!("✅ L402Module initialized successfully");
