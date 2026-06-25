@@ -8,3 +8,6 @@ docs/mermaid-init.js
 .DS_Store
 .cargo/config.toml
 .claude/
+# Local nginx source downloaded for the nginx-sys bindings
+/nginx-1.28.0/
+nginx*.tar.gz

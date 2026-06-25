@@ -1,11 +1,8 @@
-# Keep source and config files as LF in the repository, regardless of a
-# contributor's core.autocrlf setting. Prevents Windows checkouts from
-# committing CRLF and producing whole-file diffs/merge conflicts.
+# Keep Rust source files as LF in the repository, regardless of a contributor's
+# core.autocrlf setting. This prevents Windows checkouts from committing CRLF and
+# producing whole-file diffs / merge conflicts in the source the team edits.
+#
+# Deliberately scoped to *.rs: the rest of the repo (docs, workflows, etc.) was
+# historically committed with CRLF, and forcing eol=lf on it would trigger a
+# mass renormalization unrelated to any current change.
 *.rs    text eol=lf
-*.toml  text eol=lf
-*.md    text eol=lf
-*.yml   text eol=lf
-*.yaml  text eol=lf
-*.sh    text eol=lf
-*.conf  text eol=lf
-*.json  text eol=lf
