@@ -76,20 +76,6 @@ fn require_root_key() -> Vec<u8> {
         .clone()
 }
 
-/// Redact any credentials embedded in a Redis URL before logging.
-/// `redis://:secret@host:6379` and `redis://user:secret@host:6379`
-/// both become `redis://***@host:6379`. URLs without userinfo are
-/// returned unchanged.
-fn redact_redis_url(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    match rest.split_once('@') {
-        Some((_userinfo, host)) => format!("{}://***@{}", scheme, host),
-        None => url.to_string(),
-    }
-}
-
 /// Registry of l402-enabled locations, populated at config-parse time and
 /// drained at `.well-known/l402-services` request time. Each entry holds the
 /// location's path and a raw pointer to its `ModuleConfig` — the config
@@ -559,7 +545,7 @@ impl L402Module {
                             info!(
                                 "✅ Redis connection pool ready (max_size={}) at {}",
                                 pool_size,
-                                redact_redis_url(&redis_url)
+                                ngx_l402_core::redact_redis_url(&redis_url)
                             );
                         } else {
                             error!("❌ Failed to register Redis pool in OnceLock");
@@ -2404,11 +2390,11 @@ fn handle_dry_run_passthrough(
     // and forward to Loki / Splunk / Datadog.
     info!(
         "{{\"event\":\"l402_dry_run\",\"route\":\"{route}\",\"price_msat\":{price},\"price_source\":\"{src}\",\"backend\":\"{backend}\",\"client_ip\":\"{ip}\",\"auth_state\":\"{state}\",\"would_return\":{status},\"rate_limited\":{rl}}}",
-        route = escape_json(request_path),
+        route = ngx_l402_core::escape_json(request_path),
         price = final_amount,
         src = price_source,
         backend = backend,
-        ip = escape_json(&client_ip),
+        ip = ngx_l402_core::escape_json(&client_ip),
         state = auth_state,
         status = would_return,
         rl = rate_limited,
@@ -2502,28 +2488,6 @@ fn dry_run_runtime() -> &'static Runtime {
             }
         }
     })
-}
-
-/// Minimal JSON-string escaper. Handles the bytes mandated by RFC 8259.
-/// Good enough for a single log line; avoids pulling in a JSON crate on
-/// the hot path.
-fn escape_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                use core::fmt::Write;
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// Content-phase handler for `l402_metrics`. Serves the Prometheus text
@@ -2970,20 +2934,6 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
     std::ptr::null_mut()
 }
 
-// accepted: "5r/m", "10r/h", "2r/s", or bare "5" (defaults to per minute)
-fn parse_rate_limit(val: &str) -> Option<(u32, u64)> {
-    let val = val.trim();
-    if let Some(n) = val.strip_suffix("r/m") {
-        n.trim().parse::<u32>().ok().map(|c| (c, 60))
-    } else if let Some(n) = val.strip_suffix("r/h") {
-        n.trim().parse::<u32>().ok().map(|c| (c, 3600))
-    } else if let Some(n) = val.strip_suffix("r/s") {
-        n.trim().parse::<u32>().ok().map(|c| (c, 1))
-    } else {
-        val.parse::<u32>().ok().map(|c| (c, 60))
-    }
-}
-
 /// Returns the client IP, preferring X-Real-IP then the first entry of
 /// X-Forwarded-For over the direct socket address. Falls back to `"unknown"`.
 ///
@@ -3100,7 +3050,7 @@ pub unsafe extern "C" fn ngx_http_l402_invoice_rate_limit_set(
         }
         let conf = &mut *(conf as *mut ModuleConfig);
         let val = (*((*(*cf).args).elts as *mut ngx_str_t).add(1)).to_str().unwrap_or_default();
-        match parse_rate_limit(val) {
+        match ngx_l402_core::parse_rate_limit(val) {
             Some((max_req, window_secs)) => {
                 conf.invoice_rate_limit = Some((max_req, window_secs));
                 info!(
