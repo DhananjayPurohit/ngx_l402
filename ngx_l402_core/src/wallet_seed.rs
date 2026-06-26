@@ -104,4 +104,69 @@ mod tests {
         assert!(is_valid_mnemonic(&m));
         assert!(derive_wallet_seed(&m).is_ok());
     }
+
+    /// Different mnemonics must map to different wallets; a collision would let
+    /// one operator's phrase unlock another's funds.
+    #[test]
+    fn distinct_mnemonics_yield_distinct_seeds() {
+        let other = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+        assert_ne!(
+            derive_wallet_seed(VECTOR_MNEMONIC).unwrap(),
+            derive_wallet_seed(other).unwrap()
+        );
+    }
+
+    /// Leading/trailing whitespace (e.g. a stray newline in an env var or the
+    /// persisted file) must not select a different wallet.
+    #[test]
+    fn surrounding_whitespace_is_ignored() {
+        let clean = derive_wallet_seed(VECTOR_MNEMONIC).unwrap();
+        let padded = derive_wallet_seed(&format!("  {}\n", VECTOR_MNEMONIC)).unwrap();
+        assert_eq!(clean, padded);
+    }
+
+    /// Invalid input must error, never silently produce a seed — that would
+    /// quietly create a *different* empty wallet over the operator's funds.
+    #[test]
+    fn invalid_mnemonic_is_rejected() {
+        assert!(derive_wallet_seed("").is_err());
+        assert!(derive_wallet_seed("not a real mnemonic phrase at all").is_err());
+        assert!(derive_wallet_seed("abandon abandon abandon").is_err()); // wrong length
+        assert!(!is_valid_mnemonic(""));
+        assert!(!is_valid_mnemonic("nonsense words here"));
+    }
+
+    /// Valid words in a valid length but with a wrong final word → checksum
+    /// failure must be rejected (catches a single-word typo in a backup phrase).
+    #[test]
+    fn bad_checksum_is_rejected() {
+        let bad = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon";
+        assert!(derive_wallet_seed(bad).is_err());
+        assert!(!is_valid_mnemonic(bad));
+    }
+
+    #[test]
+    fn generates_valid_24_word_mnemonic() {
+        let m = generate_mnemonic(24).expect("generate 24");
+        assert_eq!(m.split_whitespace().count(), 24);
+        assert!(derive_wallet_seed(&m).is_ok());
+    }
+
+    /// Fresh mnemonics must not repeat — proves the RNG is actually exercised.
+    #[test]
+    fn generated_mnemonics_are_unique() {
+        assert_ne!(generate_mnemonic(12).unwrap(), generate_mnemonic(12).unwrap());
+    }
+
+    #[test]
+    fn generate_rejects_invalid_word_count() {
+        assert!(generate_mnemonic(13).is_err());
+        assert!(generate_mnemonic(0).is_err());
+    }
+
+    #[test]
+    fn is_valid_mnemonic_agrees_with_derive() {
+        assert!(is_valid_mnemonic(VECTOR_MNEMONIC));
+        assert!(derive_wallet_seed(VECTOR_MNEMONIC).is_ok());
+    }
 }

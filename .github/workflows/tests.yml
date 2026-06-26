@@ -40,6 +40,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Run unit tests (ngx_l402_core)
+        # Fast, nginx-free pure-logic tests (wallet-seed derivation, etc.).
+        # Runs before the heavy Docker integration steps so a logic regression
+        # — e.g. a wallet-seed derivation change that would strand funds —
+        # fails the build in seconds.
+        run: cargo test -p ngx_l402_core --verbose
+
       - name: Install dependencies
         run: |
           sudo apt-get update
