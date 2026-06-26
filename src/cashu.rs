@@ -1433,11 +1433,12 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     (group_proofs.clone(), group_total_msat)
                 };
 
-            // Calculate fee reserve
-            let percentage_fee_selected =
-                ((selected_total_msat as f64) * (current_fee_reserve_percent / 100.0)) as u64;
-            let fee_reserve_selected_msat =
-                percentage_fee_selected.max(current_min_fee_reserve_msat);
+            // Calculate fee reserve (pure math lives in ngx_l402_core, unit-tested).
+            let fee_reserve_selected_msat = ngx_l402_core::fee_reserve_msat(
+                selected_total_msat,
+                current_fee_reserve_percent,
+                current_min_fee_reserve_msat,
+            );
 
             if selected_total_msat <= fee_reserve_selected_msat {
                 let msg = format!(
