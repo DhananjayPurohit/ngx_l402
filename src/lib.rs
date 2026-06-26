@@ -1326,14 +1326,6 @@ fn method_caveat_value(method: u32) -> &'static str {
         _ => "UNKNOWN",
     }
 }
-/// Extract the raw macaroon (base64) and invoice (bolt11) strings from a
-/// `WWW-Authenticate` header value of the form:
-///   `L402 macaroon="<b64>", invoice="<bolt11>"`
-fn parse_l402_header_value(header: &str) -> Option<(String, String)> {
-    let mac = header.split("macaroon=\"").nth(1)?.split('"').next()?.to_string();
-    let inv = header.split("invoice=\"").nth(1)?.split('"').next()?.to_string();
-    Some((mac, inv))
-}
 
 /// Send a full HTTP response (status + body) from within an access-phase
 /// handler. Mirrors the pattern used by `l402_metrics_content_handler`.
@@ -1739,7 +1731,9 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 // Render and send the HTML payment page for browser clients.
                 // API clients that check WWW-Authenticate will still function
                 // correctly because the header is already set above.
-                if let Some((macaroon_b64, invoice)) = parse_l402_header_value(&header_value) {
+                if let Some((macaroon_b64, invoice)) =
+                    ngx_l402_core::parse_l402_header_value(&header_value)
+                {
                     // Show the Cashu tab whenever cashu ecash support is enabled.
                     // P2PK mode controls only the X-Cashu payment request header.
                     let cashu_en = cashu_ecash_support;
