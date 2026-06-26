@@ -8,8 +8,10 @@
 //! runs in seconds with no nginx and no Docker. A silent change to any of these
 //! can strand user funds, so each is pinned by tests in its own module.
 
+mod p2pk;
 mod wallet_seed;
 
+pub use p2pk::{parse_p2pk_secret_key, InvalidP2pkKey};
 pub use wallet_seed::{
     derive_wallet_seed, generate_mnemonic, is_valid_mnemonic, InvalidMnemonic, WALLET_SEED_LEN,
 };

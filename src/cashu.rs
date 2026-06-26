@@ -542,21 +542,20 @@ pub fn initialize_p2pk_mode() -> Result<(), String> {
         return Err("CASHU_P2PK_PRIVATE_KEY is empty".to_string());
     }
 
-    // Use the cdk SecretKey to derive public key
-    let private_key = cdk::nuts::SecretKey::from_hex(&private_key_hex)
-        .map_err(|e| format!("Invalid private key hex: {:?}", e))?;
+    // Parse once in ngx_l402_core so the stored signing key and the published
+    // public key come from a single, golden-vector-tested derivation. This
+    // prevents any lock/sign mismatch that would make proofs unspendable.
+    let (private_key, public_key_hex) = ngx_l402_core::parse_p2pk_secret_key(&private_key_hex)
+        .map_err(|e| format!("Invalid P2PK private key: {}", e))?;
 
-    // Derive public key from private key
-    let public_key = private_key.public_key();
-
-    info!("🔑 P2PK public key: {}", public_key);
+    info!("🔑 P2PK public key: {}", public_key_hex);
 
     // Store the parsed private key (not the raw hex) and the public key hex.
     P2PK_PRIVATE_KEY
         .set(private_key)
         .map_err(|_| "Failed to set private key".to_string())?;
     P2PK_PUBLIC_KEY
-        .set(public_key.to_string())
+        .set(public_key_hex)
         .map_err(|_| "Failed to set public key".to_string())?;
 
     let _ = P2PK_MODE_ENABLED.set(true);

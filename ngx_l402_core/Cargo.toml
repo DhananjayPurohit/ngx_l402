@@ -13,6 +13,10 @@ name = "ngx_l402_core"
 # mnemonic generation; `unicode-normalization` enables the normalizing
 # `parse`/`to_seed` paths so arbitrary operator input is handled correctly.
 bip39 = { version = "2.1.0", features = ["rand", "unicode-normalization"] }
+# cdk provides the secp256k1 SecretKey/PublicKey types used for P2PK (NUT-11).
+# Pinned to the same version/features as the main crate so the derived key type
+# is identical and there is a single source of truth for the derivation.
+cdk = { version = "0.14.1", default-features = false, features = ["wallet"] }
 
 [dev-dependencies]
 hex = "0.4"
