@@ -46,11 +46,13 @@ static LN_CLIENT: tokio::sync::OnceCell<Arc<tokio::sync::Mutex<dyn lnclient::LNC
     tokio::sync::OnceCell::const_new();
 static LN_CLIENT_TYPE: OnceLock<String> = OnceLock::new();
 
-// Dynamically generated secret for when CASHU_WALLET_SECRET is not provided
-static GENERATED_WALLET_SECRET: OnceLock<String> = OnceLock::new();
+// Resolved BIP39 wallet mnemonic — the Cashu/NUT-13 backup phrase. Set once at
+// init (initialize_cashu) from CASHU_WALLET_MNEMONIC, a persisted file, or a
+// freshly generated phrase.
+static WALLET_MNEMONIC: OnceLock<String> = OnceLock::new();
 
-// Cached wallet seed — computed once from the wallet secret, reused for all wallet operations.
-// Eliminates per-request blake3 hashing.
+// Cached wallet seed — derived once from the mnemonic and reused for all wallet
+// operations so the BIP39 PBKDF2 runs only once per process.
 static CACHED_WALLET_SEED: OnceLock<[u8; 64]> = OnceLock::new();
 
 // Per-(mint_url, unit) wallet cache. `cdk::wallet::Wallet` constructs internal state
@@ -92,30 +94,128 @@ async fn get_or_create_wallet(
 /// When exceeded, the set is cleared. Redis remains the authoritative replay check.
 const MAX_PROCESSED_TOKENS: usize = 10_000;
 
-fn get_wallet_secret() -> String {
-    std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
-        GENERATED_WALLET_SECRET
-            .get_or_init(|| {
-                warn!("⚠️ CASHU_WALLET_SECRET not set! Generating a random secret for this session. This means your wallet counter will reset on restart. Set CASHU_WALLET_SECRET in production!");
-                let mut bytes = [0u8; 32];
-                rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
-                hex::encode(bytes)
-            })
-            .clone()
-    })
+/// Number of words in a freshly generated wallet mnemonic. 12 words = 128 bits
+/// of entropy (the common Cashu default).
+const GENERATED_MNEMONIC_WORDS: usize = 12;
+
+/// Resolve the wallet mnemonic once, at init, and stash it in `WALLET_MNEMONIC`.
+///
+/// Resolution order:
+///   1. `CASHU_WALLET_MNEMONIC` — the canonical, explicit source.
+///   2. A previously persisted mnemonic file (see `wallet_mnemonic_file_path`).
+///   3. A freshly generated BIP39 phrase, persisted to that file when a path is
+///      available and logged once so the operator can back it up.
+///
+/// Fails closed (returns `Err`) only when an explicitly configured mnemonic is
+/// invalid — we must never silently start a *different* empty wallet over real
+/// funds.
+fn resolve_wallet_mnemonic(db_url: &str) -> Result<(), String> {
+    if WALLET_MNEMONIC.get().is_some() {
+        return Ok(());
+    }
+
+    // 1. Explicit env mnemonic.
+    if let Ok(env_mnemonic) = std::env::var("CASHU_WALLET_MNEMONIC") {
+        let m = env_mnemonic.trim().to_string();
+        if !m.is_empty() {
+            if bip39::Mnemonic::parse(&m).is_err() {
+                return Err(
+                    "CASHU_WALLET_MNEMONIC is set but is not a valid BIP39 mnemonic".to_string(),
+                );
+            }
+            let _ = WALLET_MNEMONIC.set(m);
+            info!("🔑 Using wallet mnemonic from CASHU_WALLET_MNEMONIC");
+            return Ok(());
+        }
+    }
+
+    let file_path = wallet_mnemonic_file_path(db_url);
+
+    // 2. Previously persisted mnemonic.
+    if let Some(ref path) = file_path {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            let m = contents.trim().to_string();
+            if bip39::Mnemonic::parse(&m).is_ok() {
+                let _ = WALLET_MNEMONIC.set(m);
+                info!("🔑 Loaded persisted wallet mnemonic from {}", path);
+                return Ok(());
+            } else if !m.is_empty() {
+                warn!(
+                    "⚠️ Persisted mnemonic at {} is not valid BIP39 — regenerating",
+                    path
+                );
+            }
+        }
+    }
+
+    // 3. Generate (and persist if we can).
+    let generated = bip39::Mnemonic::generate(GENERATED_MNEMONIC_WORDS)
+        .map(|m| m.to_string())
+        .map_err(|e| format!("Failed to generate wallet mnemonic: {}", e))?;
+
+    match &file_path {
+        Some(path) => match persist_mnemonic(path, &generated) {
+            Ok(()) => warn!(
+                "⚠️ CASHU_WALLET_MNEMONIC not set — generated a new wallet mnemonic and saved it to {}. BACK IT UP; it controls all Cashu funds.",
+                path
+            ),
+            Err(e) => warn!(
+                "⚠️ CASHU_WALLET_MNEMONIC not set — generated a new wallet mnemonic but could NOT persist it ({}). It will change on restart and orphan funds. Save this phrase and set CASHU_WALLET_MNEMONIC: {}",
+                e, generated
+            ),
+        },
+        None => warn!(
+            "⚠️ CASHU_WALLET_MNEMONIC not set and no persist path available — using an EPHEMERAL mnemonic that changes on restart. Save this phrase and set CASHU_WALLET_MNEMONIC: {}",
+            generated
+        ),
+    }
+
+    let _ = WALLET_MNEMONIC.set(generated);
+    Ok(())
+}
+
+/// Decide where to persist a generated mnemonic. Prefers
+/// `CASHU_WALLET_MNEMONIC_FILE`; otherwise derives a sibling `wallet.mnemonic`
+/// next to the SQLite database file. Returns `None` if no path can be derived.
+fn wallet_mnemonic_file_path(db_url: &str) -> Option<String> {
+    if let Ok(p) = std::env::var("CASHU_WALLET_MNEMONIC_FILE") {
+        let p = p.trim().to_string();
+        if !p.is_empty() {
+            return Some(p);
+        }
+    }
+    let raw = db_url
+        .trim()
+        .trim_start_matches("sqlite://")
+        .trim_start_matches("sqlite:");
+    let parent = std::path::Path::new(raw).parent()?;
+    Some(parent.join("wallet.mnemonic").to_string_lossy().into_owned())
+}
+
+/// Persist the mnemonic to `path` with owner-only permissions where supported.
+fn persist_mnemonic(path: &str, mnemonic: &str) -> Result<(), String> {
+    std::fs::write(path, format!("{}\n", mnemonic))
+        .map_err(|e| format!("write {}: {}", path, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 fn get_cached_seed() -> [u8; 64] {
     *CACHED_WALLET_SEED.get_or_init(|| {
-        let wallet_secret = get_wallet_secret();
-
-        // Derive a deterministic seed from CASHU_WALLET_SECRET using blake3.
-        // The first 32 bytes are the blake3 hash; the remaining 32 bytes are
-        // left as zero to preserve compatibility with existing wallets.
-        let seed_hash = blake3::hash(wallet_secret.as_bytes());
-        let mut seed = [0u8; 64];
-        seed[..32].copy_from_slice(seed_hash.as_bytes());
-        seed
+        // The mnemonic is resolved and validated during initialize_cashu.
+        let mnemonic = WALLET_MNEMONIC
+            .get()
+            .expect("wallet mnemonic must be resolved during initialize_cashu");
+        // Cashu/NUT-13 standard: the 64-byte seed is the BIP39 seed of the
+        // mnemonic with an empty passphrase (PBKDF2-HMAC-SHA512, 2048 rounds).
+        // cdk feeds this seed to its NUT-13 deterministic-secret derivation.
+        bip39::Mnemonic::parse(mnemonic.trim())
+            .expect("wallet mnemonic was validated at init")
+            .to_seed_normalized("")
     })
 }
 
@@ -177,6 +277,11 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
 
     // Set Cashu eCash enabled flag
     let _ = CASHU_ECASH_ENABLED.set(true);
+
+    // Resolve the BIP39 wallet mnemonic before anything touches the wallet.
+    // Fails closed if an explicitly configured mnemonic is invalid, so we never
+    // start a different empty wallet over real funds.
+    resolve_wallet_mnemonic(db_url)?;
 
     // Create runtime for async initialization
     let rt = Runtime::new().expect("Failed to create runtime");

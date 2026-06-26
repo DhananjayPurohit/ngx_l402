@@ -1574,7 +1574,7 @@ jobs:
           echo "✅ All Redis replay attack prevention tests passed!"
         env:
           CASHU_WHITELISTED_MINTS: http://cashu-mint:3338
-          CASHU_WALLET_SECRET: test_wallet_secret_for_ci
+          CASHU_WALLET_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
       - name: Run Integration Tests - Invoice Rate Limiting
         run: |
@@ -1814,7 +1814,7 @@ jobs:
       - name: Stop nginx-lnd and start nginx-lnurl
         env: 
           CASHU_WHITELISTED_MINTS: http://cashu-mint:3338
-          CASHU_WALLET_SECRET: test_wallet_secret_for_ci
+          CASHU_WALLET_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
           LNURL_ADDRESS: hello@getalby.com
         run: |
           echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
