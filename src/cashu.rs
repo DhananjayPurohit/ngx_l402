@@ -217,6 +217,69 @@ fn get_cached_seed() -> [u8; 64] {
     })
 }
 
+/// Verify the configured mnemonic matches the wallet that owns this database's
+/// funds.
+///
+/// On first run it records a one-way fingerprint of the seed next to the DB. On
+/// later runs it refuses to start if the fingerprint differs: a changed or
+/// typo'd `CASHU_WALLET_MNEMONIC` would otherwise open a *different* empty wallet
+/// over the existing one and silently orphan its funds. To switch wallets
+/// intentionally, delete the fingerprint file.
+fn check_wallet_fingerprint(db_url: &str) -> Result<(), String> {
+    let seed = get_cached_seed();
+    let fingerprint = ngx_l402_core::wallet_fingerprint(&seed);
+
+    let Some(path) = wallet_fingerprint_file_path(db_url) else {
+        // No filesystem path to anchor against — skip (best effort).
+        return Ok(());
+    };
+
+    match std::fs::read_to_string(&path) {
+        Ok(stored) if stored.trim() == fingerprint => Ok(()),
+        Ok(stored) => Err(format!(
+            "CASHU_WALLET_MNEMONIC does not match the wallet that owns this database \
+             (seed fingerprint {} != recorded {}). Refusing to start to avoid orphaning \
+             funds. If you intentionally switched wallets, delete {}.",
+            fingerprint,
+            stored.trim(),
+            path
+        )),
+        Err(_) => {
+            // First run (or unreadable): record the current fingerprint.
+            if let Err(e) = persist_fingerprint(&path, &fingerprint) {
+                warn!("⚠️ Could not persist wallet fingerprint to {}: {}", path, e);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Path of the fingerprint sidecar file, beside the SQLite database.
+fn wallet_fingerprint_file_path(db_url: &str) -> Option<String> {
+    let raw = db_url
+        .trim()
+        .trim_start_matches("sqlite://")
+        .trim_start_matches("sqlite:");
+    let parent = std::path::Path::new(raw).parent()?;
+    Some(
+        parent
+            .join("wallet.fingerprint")
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn persist_fingerprint(path: &str, fingerprint: &str) -> Result<(), String> {
+    std::fs::write(path, format!("{}\n", fingerprint))
+        .map_err(|e| format!("write {}: {}", path, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 /// Add token to thread-local cache, clearing if at capacity.
 fn cache_processed_token(token: &str) {
     PROCESSED_TOKENS.with(|tokens| {
@@ -280,6 +343,10 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     // Fails closed if an explicitly configured mnemonic is invalid, so we never
     // start a different empty wallet over real funds.
     resolve_wallet_mnemonic(db_url)?;
+
+    // Refuse to start if the configured mnemonic no longer matches the wallet
+    // that owns this DB's funds (changed/typo'd mnemonic would orphan them).
+    check_wallet_fingerprint(db_url)?;
 
     // Create runtime for async initialization
     let rt = Runtime::new().expect("Failed to create runtime");

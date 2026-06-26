@@ -23,5 +23,6 @@ pub use p2pk::{parse_p2pk_secret_key, InvalidP2pkKey};
 pub use rate_limit::parse_rate_limit;
 pub use redact::redact_redis_url;
 pub use wallet_seed::{
-    derive_wallet_seed, generate_mnemonic, is_valid_mnemonic, InvalidMnemonic, WALLET_SEED_LEN,
+    derive_wallet_seed, generate_mnemonic, is_valid_mnemonic, wallet_fingerprint, InvalidMnemonic,
+    WALLET_SEED_LEN,
 };

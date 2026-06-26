@@ -66,6 +66,16 @@ pub fn is_valid_mnemonic(mnemonic: &str) -> bool {
     Mnemonic::parse(mnemonic.trim()).is_ok()
 }
 
+/// A short, stable, one-way fingerprint of a wallet seed. Used to detect that a
+/// configured mnemonic still matches the wallet that owns a database's funds,
+/// without persisting anything that could reveal the seed.
+pub fn wallet_fingerprint(seed: &[u8; WALLET_SEED_LEN]) -> String {
+    use cdk::secp256k1::hashes::{sha256, Hash};
+    // First 8 bytes of SHA-256(seed), hex-encoded — enough to distinguish
+    // wallets, and one-way so the stored value reveals nothing about the seed.
+    sha256::Hash::hash(seed).to_string()[..16].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +178,24 @@ mod tests {
     fn is_valid_mnemonic_agrees_with_derive() {
         assert!(is_valid_mnemonic(VECTOR_MNEMONIC));
         assert!(derive_wallet_seed(VECTOR_MNEMONIC).is_ok());
+    }
+
+    #[test]
+    fn fingerprint_is_short_and_stable() {
+        let seed = derive_wallet_seed(VECTOR_MNEMONIC).unwrap();
+        let fp = wallet_fingerprint(&seed);
+        assert_eq!(fp.len(), 16);
+        assert_eq!(wallet_fingerprint(&seed), fp);
+    }
+
+    /// Different wallets must have different fingerprints, so a changed mnemonic
+    /// is detectable.
+    #[test]
+    fn distinct_seeds_have_distinct_fingerprints() {
+        let a = derive_wallet_seed(VECTOR_MNEMONIC).unwrap();
+        let other =
+            "legal winner thank year wave sausage worth useful legal winner thank yellow";
+        let b = derive_wallet_seed(other).unwrap();
+        assert_ne!(wallet_fingerprint(&a), wallet_fingerprint(&b));
     }
 }
