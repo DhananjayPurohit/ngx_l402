@@ -1,0 +1,18 @@
+[package]
+name = "ngx_l402_core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure, nginx-free logic extracted from ngx_l402 so it can be unit-tested with plain `cargo test`."
+license = "MIT"
+
+[lib]
+name = "ngx_l402_core"
+
+[dependencies]
+# BIP39 mnemonic -> 64-byte seed (Cashu/NUT-13 standard). `rand` enables
+# mnemonic generation; `unicode-normalization` enables the normalizing
+# `parse`/`to_seed` paths so arbitrary operator input is handled correctly.
+bip39 = { version = "2.1.0", features = ["rand", "unicode-normalization"] }
+
+[dev-dependencies]
+hex = "0.4"

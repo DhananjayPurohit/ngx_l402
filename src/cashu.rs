@@ -118,7 +118,7 @@ fn resolve_wallet_mnemonic(db_url: &str) -> Result<(), String> {
     if let Ok(env_mnemonic) = std::env::var("CASHU_WALLET_MNEMONIC") {
         let m = env_mnemonic.trim().to_string();
         if !m.is_empty() {
-            if bip39::Mnemonic::parse(&m).is_err() {
+            if !ngx_l402_core::is_valid_mnemonic(&m) {
                 return Err(
                     "CASHU_WALLET_MNEMONIC is set but is not a valid BIP39 mnemonic".to_string(),
                 );
@@ -135,7 +135,7 @@ fn resolve_wallet_mnemonic(db_url: &str) -> Result<(), String> {
     if let Some(ref path) = file_path {
         if let Ok(contents) = std::fs::read_to_string(path) {
             let m = contents.trim().to_string();
-            if bip39::Mnemonic::parse(&m).is_ok() {
+            if ngx_l402_core::is_valid_mnemonic(&m) {
                 let _ = WALLET_MNEMONIC.set(m);
                 info!("🔑 Loaded persisted wallet mnemonic from {}", path);
                 return Ok(());
@@ -149,8 +149,7 @@ fn resolve_wallet_mnemonic(db_url: &str) -> Result<(), String> {
     }
 
     // 3. Generate (and persist if we can).
-    let generated = bip39::Mnemonic::generate(GENERATED_MNEMONIC_WORDS)
-        .map(|m| m.to_string())
+    let generated = ngx_l402_core::generate_mnemonic(GENERATED_MNEMONIC_WORDS)
         .map_err(|e| format!("Failed to generate wallet mnemonic: {}", e))?;
 
     match &file_path {
@@ -210,12 +209,11 @@ fn get_cached_seed() -> [u8; 64] {
         let mnemonic = WALLET_MNEMONIC
             .get()
             .expect("wallet mnemonic must be resolved during initialize_cashu");
-        // Cashu/NUT-13 standard: the 64-byte seed is the BIP39 seed of the
-        // mnemonic with an empty passphrase (PBKDF2-HMAC-SHA512, 2048 rounds).
-        // cdk feeds this seed to its NUT-13 deterministic-secret derivation.
-        bip39::Mnemonic::parse(mnemonic.trim())
+        // Derivation lives in ngx_l402_core so it can be unit-tested (golden
+        // vectors) without nginx. The mnemonic was validated at init, so this
+        // cannot fail here.
+        ngx_l402_core::derive_wallet_seed(mnemonic)
             .expect("wallet mnemonic was validated at init")
-            .to_seed_normalized("")
     })
 }
 
