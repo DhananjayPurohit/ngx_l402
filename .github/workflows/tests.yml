@@ -1471,6 +1471,27 @@ jobs:
 
           echo "✅ Database regeneration and wallet state restoration test passed!"
 
+          # --- Wallet-mnemonic fingerprint guard ---
+          # A fingerprint that no longer matches the configured mnemonic must
+          # refuse Cashu init, so a changed/typo'd mnemonic can't orphan funds.
+          echo "Testing wallet fingerprint guard (mismatch must refuse init)..."
+          docker exec nginx-lnd sh -c 'echo corrupt-fingerprint > /app/data/wallet.fingerprint'
+          docker-compose -f docker-compose.yml restart nginx-lnd
+          sleep 10
+          if docker exec nginx-lnd grep -q "does not match the wallet that owns" /var/log/nginx/error.log; then
+            echo "✅ Fingerprint mismatch correctly refused Cashu initialization!"
+          else
+            echo "Error: expected Cashu init to refuse on fingerprint mismatch, but no refusal was logged"
+            docker exec nginx-lnd tail -n 50 /var/log/nginx/error.log || true
+            exit 1
+          fi
+          # Restore: remove the corrupt fingerprint so it is re-recorded correctly.
+          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint
+          docker-compose -f docker-compose.yml restart nginx-lnd
+          sleep 10
+          docker exec nginx-lnd chmod 660 /app/data/cashu_tokens.db || echo 'Warning: could not set permissions'
+          echo "✅ Wallet fingerprint guard test passed!"
+
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
 
