@@ -135,10 +135,11 @@ the manifest stays valid JSON even with no service metadata.
 
 ## Caveats and limitations
 
-- **Per-worker registry.** Like `l402_metrics`, the manifest registry is
-  per-nginx-worker. On a multi-worker deployment, every worker sees the
-  same routes (config is shared), so this is a non-issue for the manifest
-  itself.
+- **Per-worker registry.** The manifest registry is per-nginx-worker. On a
+  multi-worker deployment, every worker sees the same routes (config is
+  shared), so this is a non-issue for the manifest itself. (Unlike the
+  `l402_metrics` counters, which use a shared-memory zone, the registry is
+  read-only per-worker state and needs no cross-worker aggregation.)
 - **No authentication by default.** Pricing information is public.
   Restrict the endpoint with `allow`/`deny`, an auth subrequest, or a
   firewall if competitors should not see your full pricing matrix.

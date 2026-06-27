@@ -143,6 +143,12 @@ scrape_configs:
       - targets: ['nginx:8000']
 ```
 
+Counters are kept in an nginx **shared-memory zone**, so they are aggregated
+across all worker processes: a scrape served by any worker returns the true
+total regardless of `worker_processes`. (If the shared zone cannot be
+allocated at startup the module logs a warning and falls back to per-worker
+counters, which under-report by roughly a factor of `worker_processes`.)
+
 ### Exported counters
 
 | Metric | Meaning |
