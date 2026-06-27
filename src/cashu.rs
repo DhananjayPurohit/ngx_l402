@@ -13,6 +13,7 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use l402_middleware::lndrpc::lnrpc;
+use url::Url;
 
 // Thread-local storage to track processed tokens
 thread_local! {
@@ -198,26 +199,18 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     })
 }
 
-/// Normalize a mint URL for consistent comparison:
-/// - trim leading/trailing whitespace
-/// - strip trailing slashes
-/// - lowercase the scheme and host
+/// Normalize a mint URL for consistent comparison.
+///
+/// Uses the `url` crate so that equivalent URLs are treated as the same mint
+/// even when they differ in case, default ports, IPv6 formatting, or
+/// percent-encoding. Invalid inputs fall back to the previous naive behaviour
+/// (trim whitespace, strip trailing slashes, lowercase) so that the whitelist
+/// check never silently rejects malformed strings.
 fn normalize_mint_url(url: &str) -> String {
-    // RFC 3986: scheme and host are case-insensitive.  Lowercase them so that
-    // "HTTPS://Mint.example.com/v1" and "https://mint.example.com/v1" are
-    // treated as the same mint and whitelist comparisons are reliable.
-    let trimmed = url.trim().trim_end_matches('/');
-    if let Some(sep) = trimmed.find("://") {
-        let scheme = trimmed[..sep].to_lowercase();
-        // Host ends at the next '/' after the authority, or at end-of-string.
-        let after_scheme = &trimmed[sep + 3..];
-        let (host_part, path_part) = match after_scheme.find('/') {
-            Some(p) => (&after_scheme[..p], &after_scheme[p..]),
-            None => (after_scheme, ""),
-        };
-        format!("{}://{}{}", scheme, host_part.to_lowercase(), path_part)
-    } else {
-        trimmed.to_lowercase()
+    let trimmed = url.trim();
+    match Url::parse(trimmed) {
+        Ok(parsed) => parsed.as_str().trim_end_matches('/').to_string(),
+        Err(_) => trimmed.trim_end_matches('/').to_lowercase(),
     }
 }
 
