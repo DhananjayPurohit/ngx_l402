@@ -2163,6 +2163,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             let m = L402Module::new().await;
             if cashu_ecash_support {
                 cashu::restore_wallets_state().await;
+                cashu::reconcile_pending_proofs().await;
             }
 
             // Pre-warm the LNURL client cache in the master process so workers

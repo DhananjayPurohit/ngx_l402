@@ -462,6 +462,62 @@ pub async fn restore_wallets_state() {
     }
 }
 
+/// Reconcile proofs left in a Pending/Reserved state by an interrupted melt.
+///
+/// When a redemption is interrupted mid-melt, its proofs stay reserved in the
+/// DB. On the next startup, ask the mint about them: proofs the mint reports
+/// spent (the melt actually settled) are dropped, and the rest are reclaimed so
+/// a future sweep can redeem them — preventing funds from being stuck reserved
+/// forever. Best-effort and timeout-bounded so an unreachable mint at startup
+/// doesn't block the worker.
+pub async fn reconcile_pending_proofs() {
+    let whitelisted_mints = match get_whitelisted_mints() {
+        Some(mints) => mints,
+        None => return,
+    };
+
+    let db = match CASHU_DB.get() {
+        Some(db) => db.clone(),
+        None => {
+            warn!("⚠️ Cashu database not initialized before pending-proof reconciliation");
+            return;
+        }
+    };
+
+    let seed = get_cached_seed();
+
+    for mint_url in whitelisted_mints {
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            match cdk::wallet::Wallet::new(mint_url, unit, db.clone(), seed, None) {
+                Ok(wallet) => wallet
+                    .check_all_pending_proofs()
+                    .await
+                    .map(|amount| {
+                        let v: u64 = amount.into();
+                        v
+                    })
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Ok(reclaimable)) if reclaimable > 0 => info!(
+                "🔄 Reconciled pending proofs for {}: {} sat reclaimable from an interrupted melt",
+                mint_url, reclaimable
+            ),
+            Ok(Ok(_)) => debug!("✅ No pending proofs to reconcile for {}", mint_url),
+            Ok(Err(e)) => warn!("⚠️ Pending-proof reconciliation failed for {}: {}", mint_url, e),
+            Err(_) => warn!(
+                "⚠️ Pending-proof reconciliation timed out for {} (mint unreachable)",
+                mint_url
+            ),
+        }
+    }
+}
+
 pub fn is_mint_whitelisted(mint_url: &str) -> bool {
     // If no whitelisted mints are configured, allow all mints
     if let Some(whitelisted_mints) = WHITELISTED_MINTS.get() {
