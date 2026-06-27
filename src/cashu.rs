@@ -1694,11 +1694,15 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                 Ok(q) => {
                     let actual_fee_reserve_sats: u64 = q.fee_reserve.into();
                     let amount_sats: u64 = q.amount.into();
+                    // Saturating conversion: these amounts come from the mint, so
+                    // a buggy/hostile quote must not overflow the sat->msat math.
+                    // An absurd value saturates to u64::MAX and is rejected by the
+                    // balance check below rather than wrapping to a small number.
                     let (actual_fee_reserve_msat, amount_msat) =
                         if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
                             (
-                                actual_fee_reserve_sats * MSAT_PER_SAT,
-                                amount_sats * MSAT_PER_SAT,
+                                actual_fee_reserve_sats.saturating_mul(MSAT_PER_SAT),
+                                amount_sats.saturating_mul(MSAT_PER_SAT),
                             )
                         } else {
                             (actual_fee_reserve_sats, amount_sats)
@@ -1711,7 +1715,7 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     info!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
 
-                    let required_total_msat = amount_msat + actual_fee_reserve_msat;
+                    let required_total_msat = amount_msat.saturating_add(actual_fee_reserve_msat);
                     if selected_total_msat < required_total_msat {
                         let msg = format!(
                             "⚠️ Fee reserve insufficient for {}: {} msat < {} msat required",
