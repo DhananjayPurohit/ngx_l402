@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-15ee1fd4.js";
+            window.path_to_searchindex_js = "searchindex-bb8316c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b5966016.js"></script>
@@ -306,6 +306,11 @@ endpoint. It serves counters in text exposition format v0.0.4.</p>
     static_configs:
       - targets: ['nginx:8000']
 </code></pre>
+<p>Counters are kept in an nginx <strong>shared-memory zone</strong>, so they are aggregated
+across all worker processes: a scrape served by any worker returns the true
+total regardless of <code>worker_processes</code>. (If the shared zone cannot be
+allocated at startup the module logs a warning and falls back to per-worker
+counters, which under-report by roughly a factor of <code>worker_processes</code>.)</p>
 <h3 id="exported-counters"><a class="header" href="#exported-counters">Exported counters</a></h3>
 <div class="table-wrapper">
 <table>

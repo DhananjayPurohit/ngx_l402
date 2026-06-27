@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-15ee1fd4.js";
+            window.path_to_searchindex_js = "searchindex-bb8316c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b5966016.js"></script>
@@ -298,10 +298,11 @@ the manifest stays valid JSON even with no service metadata.</p>
 <hr>
 <h2 id="caveats-and-limitations"><a class="header" href="#caveats-and-limitations">Caveats and limitations</a></h2>
 <ul>
-<li><strong>Per-worker registry.</strong> Like <code>l402_metrics</code>, the manifest registry is
-per-nginx-worker. On a multi-worker deployment, every worker sees the
-same routes (config is shared), so this is a non-issue for the manifest
-itself.</li>
+<li><strong>Per-worker registry.</strong> The manifest registry is per-nginx-worker. On a
+multi-worker deployment, every worker sees the same routes (config is
+shared), so this is a non-issue for the manifest itself. (Unlike the
+<code>l402_metrics</code> counters, which use a shared-memory zone, the registry is
+read-only per-worker state and needs no cross-worker aggregation.)</li>
 <li><strong>No authentication by default.</strong> Pricing information is public.
 Restrict the endpoint with <code>allow</code>/<code>deny</code>, an auth subrequest, or a
 firewall if competitors should not see your full pricing matrix.</li>
