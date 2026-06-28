@@ -183,12 +183,28 @@ Environment=CASHU_P2PK_MODE=true
 Environment=CASHU_P2PK_PRIVATE_KEY=<your-private-key-hex>
 # Public key is derived automatically from the private key
 # CASHU_WHITELISTED_MINTS is REQUIRED in P2PK mode
+Environment=CASHU_REQUIRE_DLEQ=true   # default: true — keep it on
 ```
 
 > **⚠️ Security**: `CASHU_P2PK_PRIVATE_KEY` is equally critical. Anyone with this key can spend tokens locked to your public key!
 > - Generate with: `openssl rand -hex 32`
 > - Never commit to Git or share publicly
 > - Keep it secure alongside `CASHU_WALLET_SECRET`
+
+> **🔒 NUT-12 DLEQ (`CASHU_REQUIRE_DLEQ`)**: In P2PK mode, tokens are verified
+> on a fast path that **skips the mint swap** for lower latency. DLEQ proofs
+> (NUT-12) are what let us confirm offline — using only cached mint keysets —
+> that each proof was actually signed by the whitelisted mint. With this check
+> off, a forger could submit correctly-shaped, mint-whitelisted proofs that the
+> mint never signed and get free service (the operator only finds out at
+> redemption time, when the melt fails).
+> - **Default `true`**: a proof with no DLEQ data is rejected. Modern Cashu
+>   wallets include DLEQ by default, so this is safe.
+> - Set `CASHU_REQUIRE_DLEQ=false` only as a temporary safety valve if a
+>   real-world wallet ships DLEQ-less tokens. This is **insecure** and re-opens
+>   the forged-proof window above.
+> - The standard (non-P2PK) mode is unaffected: its mint swap already validates
+>   proofs authoritatively.
 
 See [Cashu eCash](./cashu.md) for a full explanation of Standard vs P2PK mode and redemption fee examples.
 
