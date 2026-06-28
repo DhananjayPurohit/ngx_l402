@@ -20,7 +20,8 @@ The module supports [Cashu](https://cashu.space) eCash tokens as an alternative 
 ```bash
 Environment=CASHU_ECASH_SUPPORT=true
 Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
-Environment=CASHU_WALLET_SECRET=<your-secret-random-string>
+# BIP39 wallet mnemonic (NUT-13 backup phrase); unset = auto-generated on first run
+Environment=CASHU_WALLET_MNEMONIC="word1 word2 ... word12"
 
 # Optional: Whitelist specific mints (comma-separated)
 Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
@@ -30,7 +31,7 @@ Environment=CASHU_REDEEM_ON_LIGHTNING=true
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=3600
 ```
 
-> **⚠️ Security**: `CASHU_WALLET_SECRET` is used to generate the wallet seed. Anyone with this secret can steal your tokens! Generate with `openssl rand -hex 32` and never commit it to Git.
+> **⚠️ Security**: `CASHU_WALLET_MNEMONIC` is the BIP39 phrase that derives the wallet seed (NUT-13) — the only backup of your wallet. Anyone with it can steal your tokens, and losing it loses the funds. It's a 12/24-word phrase (not a hex secret); leave it unset to auto-generate and persist one on first run, and never commit it to Git. On startup the module records a seed fingerprint next to the DB and refuses to start if a later mnemonic doesn't match — delete `wallet.fingerprint` to switch wallets intentionally.
 
 ---
 

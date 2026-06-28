@@ -140,7 +140,11 @@ Environment=L402_CASHU_TOKEN_TTL_SECONDS=2147483647
 ```bash
 Environment=CASHU_ECASH_SUPPORT=true
 Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
-Environment=CASHU_WALLET_SECRET=<your-secret-random-string>
+# BIP39 wallet mnemonic (the Cashu/NUT-13 backup phrase). Leave unset to have one
+# generated and saved next to the DB on first run (check the logs for the phrase).
+Environment=CASHU_WALLET_MNEMONIC="word1 word2 ... word12"
+# Optional: where to persist a generated mnemonic (defaults beside the DB file)
+# Environment=CASHU_WALLET_MNEMONIC_FILE=/var/lib/nginx/wallet.mnemonic
 
 # Optional: Whitelist specific mints (comma-separated)
 # In standard mode: if not set, all mints are accepted
@@ -152,11 +156,11 @@ Environment=CASHU_REDEEM_ON_LIGHTNING=true
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=3600  # default: 1 hour
 ```
 
-> **⚠️ Security**: `CASHU_WALLET_SECRET` is used to generate the wallet seed. Anyone with this secret can steal your tokens!
-> - Generate with: `openssl rand -hex 32`
-> - Never commit to Git
-> - Use a different value per deployment/environment
-> - Keep it in a secure environment variable or secrets manager
+> **⚠️ Security**: `CASHU_WALLET_MNEMONIC` is the BIP39 phrase that derives the wallet seed (NUT-13). It is the only backup of your wallet — anyone with it can steal your tokens, and losing it loses the funds!
+> - 12 or 24 English words; restorable in any NUT-13 wallet (nutshell, cashu-ts, cdk-cli)
+> - If unset, one is generated and saved beside the DB on first run — **back it up**
+> - On startup the module records a fingerprint of the seed next to the DB and refuses to start if a later mnemonic doesn't match (so a changed/typo'd phrase can't silently orphan a funded wallet); delete the `wallet.fingerprint` file to switch wallets intentionally
+> - Never commit it to Git; keep it in a secrets manager
 
 ### Redemption Fee Handling
 
@@ -188,7 +192,7 @@ Environment=CASHU_P2PK_PRIVATE_KEY=<your-private-key-hex>
 > **⚠️ Security**: `CASHU_P2PK_PRIVATE_KEY` is equally critical. Anyone with this key can spend tokens locked to your public key!
 > - Generate with: `openssl rand -hex 32`
 > - Never commit to Git or share publicly
-> - Keep it secure alongside `CASHU_WALLET_SECRET`
+> - Keep it secure alongside `CASHU_WALLET_MNEMONIC`
 
 See [Cashu eCash](./cashu.md) for a full explanation of Standard vs P2PK mode and redemption fee examples.
 

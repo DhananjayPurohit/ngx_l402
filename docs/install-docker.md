@@ -37,7 +37,7 @@ docker run -d \
   -e MACAROON_FILE_PATH=/app/data/admin.macaroon \
   -e CERT_FILE_PATH=/app/data/tls.cert \
   -e CASHU_ECASH_SUPPORT=true \
-  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_WALLET_MNEMONIC="word1 word2 ... word12" \
   -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
   -e CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com \
   -e CASHU_REDEEM_ON_LIGHTNING=true \
@@ -72,7 +72,7 @@ docker run -d \
   -e CLN_LIGHTNING_RPC_FILE_PATH=/app/data/lightning-rpc \
   -e ROOT_KEY=your-32-byte-hex-key \
   -e CASHU_ECASH_SUPPORT=true \
-  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_WALLET_MNEMONIC="word1 word2 ... word12" \
   -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
   -v ~/.lightning/bitcoin/lightning-rpc:/app/data/lightning-rpc:ro \
   ghcr.io/dhananjaypurohit/ngx_l402:latest
@@ -103,7 +103,7 @@ docker run -d \
   -e CASHU_ECASH_SUPPORT=true \
   -e CASHU_P2PK_MODE=true \
   -e CASHU_P2PK_PRIVATE_KEY=your-32-byte-hex-private-key \
-  -e CASHU_WALLET_SECRET=your-32-byte-hex-secret \
+  -e CASHU_WALLET_MNEMONIC="word1 word2 ... word12" \
   -e CASHU_DB_PATH=/app/data/cashu_tokens.db \
   -e CASHU_WHITELISTED_MINTS=https://mint1.example.com \
   -e CASHU_REDEEM_ON_LIGHTNING=true \
@@ -147,8 +147,9 @@ docker run -d \
 # ROOT_KEY (required for all setups)
 openssl rand -hex 32
 
-# CASHU_WALLET_SECRET (for Cashu support)
-openssl rand -hex 32
+# CASHU_WALLET_MNEMONIC (for Cashu support): a BIP39 phrase, NOT a random hex.
+# Leave it unset to have one generated and saved beside the DB on first run,
+# or generate a 12/24-word phrase with any BIP39 tool.
 
 # CASHU_P2PK_PRIVATE_KEY (for P2PK mode)
 openssl rand -hex 32
