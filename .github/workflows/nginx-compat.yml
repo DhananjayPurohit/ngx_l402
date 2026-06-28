@@ -32,8 +32,9 @@ jobs:
       - name: Verify module loads
         run: |
           echo "Testing nginx -t (config validation with module loaded)..."
+          # No --add-host: the generic image must start without the demo gRPC
+          # backend being resolvable (issue #120).
           docker run --rm \
-            --add-host=grpc-content-server:127.0.0.1 \
             -e LN_CLIENT_TYPE=LNURL \
             -e LNURL_ADDRESS=hello@getalby.com \
             -e ROOT_KEY=a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4 \
@@ -52,8 +53,8 @@ jobs:
       - name: Smoke test - module serves requests
         run: |
           echo "Starting container for smoke test..."
+          # No --add-host: verifies the image boots standalone (issue #120).
           docker run -d --name smoke-test-${{ matrix.nginx_version }} \
-            --add-host=grpc-content-server:127.0.0.1 \
             -p 8000:8000 \
             -e LN_CLIENT_TYPE=LNURL \
             -e LNURL_ADDRESS=hello@getalby.com \
