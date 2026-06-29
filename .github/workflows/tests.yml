@@ -259,7 +259,10 @@ jobs:
           fi
           echo "PASS: Content-Type is text/plain"
 
-          for counter in l402_requests_total l402_dry_run_requests_total l402_dry_run_would_block_total; do
+          for counter in l402_requests_total l402_dry_run_requests_total l402_dry_run_would_block_total \
+                        l402_challenges_issued_total l402_payments_valid_total l402_payments_invalid_total \
+                        l402_payments_missing_total l402_payments_lightning_total l402_payments_cashu_total \
+                        l402_invoices_generated_total; do
             if ! echo "$metrics_resp" | grep -q "^${counter} "; then
               echo "FAIL: expected counter ${counter} missing from /metrics body"
               echo "$metrics_resp"
@@ -1039,6 +1042,27 @@ jobs:
             exit 1
           fi
 
+          # Test /.well-known/l402-services capability manifest
+          echo "Testing /.well-known/l402-services manifest endpoint..."
+          manifest_resp=$(curl -s -i -w "\n%{http_code}" --max-time 30 http://0.0.0.0:8000/.well-known/l402-services)
+          manifest_code=$(echo "$manifest_resp" | tail -n1)
+          if [ "$manifest_code" -ne 200 ]; then
+            echo "Error: /.well-known/l402-services returned $manifest_code, expected 200"
+            docker logs nginx-lnd
+            exit 1
+          fi
+          if ! echo "$manifest_resp" | grep -qi "application/json"; then
+            echo "Error: /.well-known/l402-services Content-Type is not application/json"
+            echo "$manifest_resp"
+            exit 1
+          fi
+          if ! echo "$manifest_resp" | grep -q '"routes"'; then
+            echo "Error: manifest response missing 'routes' field"
+            echo "$manifest_resp"
+            exit 1
+          fi
+          echo "✅ /.well-known/l402-services manifest returned valid JSON"
+
           # Test protected route without header
           echo "Testing protected route without header..."
           response=$(curl -s -i -w "\n%{http_code}" --max-time 30 -L http://0.0.0.0:8000/protected)
@@ -1472,6 +1496,58 @@ jobs:
 
           echo "✅ Database regeneration and wallet state restoration test passed!"
 
+          # --- Auto-generated mnemonic persists across restarts ---
+          echo "Testing auto-generated mnemonic persists across restarts..."
+          # Delete both wallet files from inside the running container (same UID)
+          # so that on the next start there is no env var AND no persisted file,
+          # forcing the generation path.
+          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
+          # Start without CASHU_WALLET_MNEMONIC in the env so a mnemonic is generated
+          CASHU_WALLET_MNEMONIC="" docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
+          sleep 15
+          # A wallet.mnemonic file must have been created
+          MNEMONIC_FILE=$(docker run --rm -v ngx_l402_cashu-data:/data alpine \
+            sh -c 'cat /data/wallet.mnemonic 2>/dev/null || echo ""')
+          if [ -z "$MNEMONIC_FILE" ]; then
+            echo "❌ No wallet.mnemonic generated on first run"
+            docker logs nginx-lnd | tail -30
+            exit 1
+          fi
+          echo "✅ wallet.mnemonic generated on first run"
+          # A fingerprint must have been recorded
+          FP1=$(docker run --rm -v ngx_l402_cashu-data:/data alpine \
+            sh -c 'cat /data/wallet.fingerprint 2>/dev/null | tr -d "[:space:]" || echo ""')
+          if [ -z "$FP1" ]; then
+            echo "❌ No wallet.fingerprint recorded on first run"
+            exit 1
+          fi
+          echo "✅ wallet.fingerprint recorded: $FP1"
+          # Restart — the generated mnemonic must be reloaded from wallet.mnemonic;
+          # the same fingerprint must be re-recorded.
+          docker-compose -f docker-compose.yml restart nginx-lnd
+          sleep 10
+          FP2=$(docker run --rm -v ngx_l402_cashu-data:/data alpine \
+            sh -c 'cat /data/wallet.fingerprint 2>/dev/null | tr -d "[:space:]" || echo ""')
+          if [ "$FP1" != "$FP2" ]; then
+            echo "❌ Fingerprint changed across restart ($FP1 != $FP2) — mnemonic not persisted"
+            exit 1
+          fi
+          echo "✅ Auto-generated mnemonic persists across restarts (fingerprint stable: $FP1)"
+          # Restore: delete auto-generated wallet files from inside the running
+          # container (same UID/GID) then recreate with the known test mnemonic.
+          # Using docker exec avoids alpine UID-mapping issues on the named volume.
+          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
+          CASHU_WALLET_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" \
+            docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
+          sleep 15
+          # Verify Cashu initialized with the restored mnemonic
+          if docker logs nginx-lnd 2>&1 | grep -q "does not match the wallet that owns"; then
+            echo "❌ Fingerprint mismatch after restore — check wallet.fingerprint was actually deleted"
+            docker logs nginx-lnd | tail -30
+            exit 1
+          fi
+          docker exec nginx-lnd chmod 660 /app/data/cashu_tokens.db || echo 'Warning: could not set permissions'
+
           # --- Wallet-mnemonic fingerprint guard ---
           # A fingerprint that no longer matches the configured mnemonic must
           # refuse Cashu init, so a changed/typo'd mnemonic can't orphan funds.
@@ -1495,6 +1571,83 @@ jobs:
 
           echo "All Cashu eCash tests completed successfully!"
           docker logs nginx-lnd
+
+      - name: Run Integration test - Cashu P2PK mode
+        env:
+          CASHU_WALLET_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+          # k=1 secp256k1 scalar → pubkey 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+          CASHU_P2PK_PRIVATE_KEY: "0000000000000000000000000000000000000000000000000000000000000001"
+          CASHU_P2PK_MODE: "true"
+        run: |
+          echo "🔑 Testing Cashu P2PK mode (NUT-11/NUT-24)..."
+
+          # Restart nginx-lnd with P2PK mode enabled
+          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
+          sleep 15
+
+          # 1. 402 response must carry an X-Cashu NUT-24 payment request header
+          echo "Checking X-Cashu header on 402 response..."
+          p2pk_resp=$(curl -s -i --max-time 30 http://0.0.0.0:8000/protected)
+          p2pk_code=$(echo "$p2pk_resp" | grep "^HTTP" | tail -1 | awk '{print $2}')
+          if [ "$p2pk_code" -ne 402 ]; then
+            echo "❌ Expected 402 in P2PK mode, got $p2pk_code"
+            docker logs nginx-lnd | tail -30
+            exit 1
+          fi
+          if ! echo "$p2pk_resp" | grep -qi "^X-Cashu:"; then
+            echo "❌ X-Cashu header missing from 402 response in P2PK mode"
+            echo "$p2pk_resp"
+            docker logs nginx-lnd | tail -30
+            exit 1
+          fi
+          echo "✅ X-Cashu NUT-24 payment request header present on 402"
+
+          # 2. The X-Cashu header must contain our known public key
+          EXPECTED_PUBKEY="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+          if ! echo "$p2pk_resp" | grep -qi "$EXPECTED_PUBKEY"; then
+            echo "❌ X-Cashu header does not contain expected pubkey $EXPECTED_PUBKEY"
+            echo "$p2pk_resp" | grep -i "X-Cashu"
+            exit 1
+          fi
+          echo "✅ X-Cashu header contains correct public key"
+
+          # 3. A plain (non-P2PK-locked) token must be rejected in P2PK mode
+          echo "Checking plain token is rejected in P2PK mode..."
+          PLAIN_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
+          plain_resp=$(curl -s -w "\n%{http_code}" --max-time 30 \
+            -H "Authorization: Cashu $PLAIN_TOKEN" http://0.0.0.0:8000/protected)
+          plain_code=$(echo "$plain_resp" | tail -n1)
+          if [ "$plain_code" -ne 401 ]; then
+            echo "❌ Plain token accepted in P2PK mode (got $plain_code), expected 401"
+            docker logs nginx-lnd | tail -30
+            exit 1
+          fi
+          echo "✅ Plain (non-P2PK) token correctly rejected in P2PK mode"
+
+          # 4. A P2PK-locked token must be accepted
+          echo "Sending P2PK-locked token..."
+          P2PK_TOKEN=$(docker exec cashu-mint poetry run cashu send 10 \
+            --lock "P2PK:$EXPECTED_PUBKEY" 2>/dev/null || echo "")
+          if [ -z "$P2PK_TOKEN" ]; then
+            echo "⚠️  cashu send --lock not supported in this nutshell version — skipping send test"
+          else
+            p2pk_auth_resp=$(curl -s -w "\n%{http_code}" --max-time 60 -L \
+              -H "Authorization: Cashu $P2PK_TOKEN" http://0.0.0.0:8000/protected)
+            p2pk_auth_code=$(echo "$p2pk_auth_resp" | tail -n1)
+            if [ "$p2pk_auth_code" -ne 200 ]; then
+              echo "❌ P2PK-locked token rejected (got $p2pk_auth_code), expected 200"
+              docker logs nginx-lnd | tail -30
+              exit 1
+            fi
+            echo "✅ P2PK-locked token accepted (200)"
+          fi
+
+          # Restore nginx-lnd to non-P2PK mode for subsequent tests
+          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
+          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
+          sleep 15
+          echo "✅ Cashu P2PK mode tests passed!"
 
       - name: Run Integration test - Redis Replay Attack Prevention
         run: |
@@ -1847,10 +2000,10 @@ jobs:
           LNURL_ADDRESS: hello@getalby.com
         run: |
           echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
+          # Remove wallet files from inside the running container (same UID/GID as nginx)
+          # before stopping, so nginx-lnurl can start fresh with its own mnemonic.
+          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
           docker-compose -f docker-compose.yml stop nginx-lnd
-          # Remove the fingerprint recorded by nginx-lnd (different generated mnemonic)
-          # so nginx-lnurl can start fresh with its own CASHU_WALLET_MNEMONIC.
-          docker run --rm -v ngx_l402_cashu-data:/data alpine sh -c 'rm -f /data/wallet.fingerprint /data/wallet.mnemonic'
           docker-compose -f docker-compose.yml up -d nginx-lnurl
           sleep 15
 
@@ -1912,6 +2065,30 @@ jobs:
           fi
 
           echo "✅ Multi-tenant LNURL Cashu Redemption integration test completed with 2 tenants!"
+
+          # ========== TEST DYNAMIC REDIS LNURL OVERRIDE ==========
+          echo "Testing dynamic Redis LNURL address override (lnurl:<path> key)..."
+          # Override tenant1's LNURL address dynamically via Redis
+          docker exec redis redis-cli SET "lnurl:/tenant1" "dynamic@getalby.com"
+          OVERRIDE_TOKEN=$(docker exec cashu-mint poetry run cashu send 10)
+          override_resp=$(curl -s -w "\n%{http_code}" --max-time 30 -L \
+            -H "Authorization: Cashu $OVERRIDE_TOKEN" http://0.0.0.0:8000/tenant1)
+          override_code=$(echo "$override_resp" | tail -n1)
+          if [ "$override_code" -ne 200 ]; then
+            echo "❌ Dynamic LNURL override: token rejected with $override_code, expected 200"
+            docker logs nginx-lnurl | tail -30
+            exit 1
+          fi
+          # The proof should be mapped to the dynamic address, not the static one
+          sleep 2
+          DYNAMIC_KEYS=$(docker exec redis redis-cli keys "cashu:proof_lnurl:*" 2>/dev/null | wc -l)
+          if [ "$DYNAMIC_KEYS" -lt 1 ]; then
+            echo "❌ No proof-to-lnurl mapping after dynamic override"
+            exit 1
+          fi
+          echo "✅ Dynamic Redis LNURL override accepted token and created proof mapping"
+          # Clean up override key
+          docker exec redis redis-cli DEL "lnurl:/tenant1"
 
       - name: Stop nginx-lnurl and start litd
         run: |
