@@ -1661,9 +1661,11 @@ jobs:
             echo "✅ P2PK-locked token accepted (200)"
           fi
 
-          # Restore nginx-lnd to non-P2PK mode for subsequent tests
+          # Restore nginx-lnd to non-P2PK mode for subsequent tests.
+          # Unset P2PK vars so docker-compose falls back to defaults (false/empty).
           docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
-          docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
+          env -u CASHU_P2PK_MODE -u CASHU_P2PK_PRIVATE_KEY -u CASHU_REQUIRE_DLEQ \
+            docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
           sleep 15
           docker exec nginx-lnd chmod 755 /root
           echo "✅ Cashu P2PK mode tests passed!"
