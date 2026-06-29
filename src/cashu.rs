@@ -39,6 +39,10 @@ static P2PK_PUBLIC_KEY: OnceLock<String> = OnceLock::new();
 // Cashu eCash support flag
 static CASHU_ECASH_ENABLED: OnceLock<bool> = OnceLock::new();
 
+// Whether the P2PK fast path requires NUT-12 DLEQ proofs (default true).
+// Read once from CASHU_REQUIRE_DLEQ at first use; see `cashu_require_dleq`.
+static CASHU_REQUIRE_DLEQ: OnceLock<bool> = OnceLock::new();
+
 // Lazily initialised inside the redemption thread's own runtime so we never
 // inherit a tonic Channel whose epoll registrations were created in the nginx
 // master process (they do not survive fork()).
@@ -302,6 +306,69 @@ pub fn is_p2pk_mode_enabled() -> bool {
 
 pub fn is_cashu_ecash_enabled() -> bool {
     CASHU_ECASH_ENABLED.get().copied().unwrap_or(false)
+}
+
+/// Whether to require NUT-12 DLEQ proofs on the P2PK fast path.
+///
+/// Defaults to `true`: a proof without DLEQ data is rejected, because the fast
+/// path skips the mint swap and DLEQ is the only offline guarantee that the
+/// proof was actually signed by the (whitelisted) mint. Set
+/// `CASHU_REQUIRE_DLEQ=false` to relax this for one release as a safety valve
+/// in case a real-world wallet ships DLEQ-less tokens — this is insecure and
+/// re-opens the forged-proof window described in issue #117.
+pub fn cashu_require_dleq() -> bool {
+    *CASHU_REQUIRE_DLEQ.get_or_init(|| {
+        std::env::var("CASHU_REQUIRE_DLEQ")
+            // Only an explicit, case-insensitive "false" disables the check;
+            // anything else (unset, empty, "true", garbage) keeps it on.
+            .map(|v| v.trim().to_lowercase() != "false")
+            .unwrap_or(true)
+    })
+}
+
+/// Verify a single proof's NUT-12 DLEQ against the per-amount mint key,
+/// applying the require-DLEQ policy.
+///
+/// `amount_key` is the mint public key for this proof's (keyset, amount),
+/// resolved by the caller from the already-cached keysets (no network here).
+/// When the proof carries DLEQ data, the caller passes the resolved key and we
+/// cryptographically verify the proof was signed by the mint. When DLEQ is
+/// absent, the `require_dleq` policy decides admit-vs-reject.
+///
+/// Returns `Err` on any failure so the fast path can reject the whole token.
+fn verify_proof_dleq_offline(
+    proof: &cdk::nuts::Proof,
+    amount_key: Option<cdk::nuts::PublicKey>,
+    require_dleq: bool,
+) -> Result<(), String> {
+    match proof.dleq {
+        Some(_) => {
+            let key = amount_key.ok_or_else(|| {
+                format!(
+                    "No mint key for amount {} in keyset {} — cannot verify DLEQ",
+                    proof.amount, proof.keyset_id
+                )
+            })?;
+            proof
+                .verify_dleq(key)
+                .map_err(|e| format!("NUT-12 DLEQ verification failed: {:?}", e))
+        }
+        None => {
+            if require_dleq {
+                Err(
+                    "Proof is missing NUT-12 DLEQ data; rejecting on P2PK fast path. \
+                     Set CASHU_REQUIRE_DLEQ=false to admit DLEQ-less tokens (insecure)."
+                        .to_string(),
+                )
+            } else {
+                warn!(
+                    "⚠️ Proof missing DLEQ and CASHU_REQUIRE_DLEQ=false — admitting \
+                     without offline mint-signature verification (insecure)"
+                );
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Check if multi-tenant LNURL mode is enabled (LN_CLIENT_TYPE=LNURL)
@@ -682,6 +749,11 @@ pub fn initialize_p2pk_mode() -> Result<(), String> {
         .map_err(|_| "Failed to set public key".to_string())?;
 
     let _ = P2PK_MODE_ENABLED.set(true);
+    let _ = CASHU_REQUIRE_DLEQ.set(
+        std::env::var("CASHU_REQUIRE_DLEQ")
+            .map(|v| v.trim().to_lowercase() != "false")
+            .unwrap_or(true),
+    );
     info!("✅ P2PK mode initialized with public key");
 
     Ok(())
@@ -1048,6 +1120,33 @@ pub async fn verify_cashu_token_p2pk(
         .map_err(|e| format!("Token not locked to our public key: {:?}", e))?;
 
     info!("✅ Token verified as P2PK-locked to our public key");
+
+    // NUT-12 DLEQ offline verification (issue #117).
+    //
+    // The P2PK fast path skips the authoritative mint swap, so without this
+    // check a forger could submit proofs that are (a) from a whitelisted mint
+    // and (b) correctly P2PK-locked to us, yet NOT actually signed by the mint —
+    // getting free service while the operator never gets paid. DLEQ lets us
+    // verify the mint's signature offline using only the keysets we already
+    // loaded above (no extra mint round-trip: `load_keyset_keys` reads the same
+    // metadata cache that `get_mint_keysets` just warmed). Done before the
+    // NUT-07 network check below so forged proofs are rejected without a hop.
+    let require_dleq = cashu_require_dleq();
+    for proof in &proofs {
+        // Only resolve the per-amount key when the proof actually carries DLEQ;
+        // the missing-DLEQ policy is handled inside `verify_proof_dleq_offline`.
+        let amount_key = if proof.dleq.is_some() {
+            let keys = wallet
+                .load_keyset_keys(proof.keyset_id)
+                .await
+                .map_err(|e| format!("Failed to load keyset keys for DLEQ verification: {}", e))?;
+            keys.amount_key(proof.amount)
+        } else {
+            None
+        };
+        verify_proof_dleq_offline(proof, amount_key, require_dleq)?;
+    }
+    info!("✅ All {} proofs passed NUT-12 DLEQ verification", proofs.len());
 
     // NUT-07: check proof state with the mint before accepting.
     // Without this call, a proof that has already been spent at the mint would
@@ -1810,4 +1909,76 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
     info!("{}", msg);
     cashu_redemption_logger::log_redemption(&msg);
     Ok(total_redeemed > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cdk::nuts::{Proof, PublicKey};
+    use std::str::FromStr;
+
+    // A proof carrying a valid NUT-12 DLEQ, signed by the mint key `A` below.
+    // Lifted from cdk's own nut12 test vectors (cashu-0.14.3 nut12.rs).
+    const VALID_PROOF_JSON: &str = r#"{"amount": 1,"id": "00882760bfa2eb41","secret": "daf4dd00a2b68a0858a80450f52c8a7d2ccf87d375e43e216e0c571f089f63e9","C": "024369d2d22a80ecf78f3937da9d5f30c1b9f74f0c32684d583cca0fa6a61cdcfc","dleq": {"e": "b31e58ac6527f34975ffab13e70a48b6d2b0d35abc4b03f0151f09ee1a9763d4","s": "8fbae004c59e754d71df67e392b6ae4e29293113ddc2ec86592a0431d16306d8","r": "a6d13fcd7a18442e6076f5e1e7c887ad5de40a019824bdfa9fe740d302e8d861"}}"#;
+
+    // The mint public key `A` that signed the proof above.
+    const MINT_KEY_HEX: &str =
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+    fn mint_key() -> PublicKey {
+        PublicKey::from_str(MINT_KEY_HEX).unwrap()
+    }
+
+    #[test]
+    fn require_dleq_defaults_to_true() {
+        // Reset isn't possible on a OnceLock, so exercise the parsing logic
+        // directly to keep the test independent of process env state.
+        let parse = |v: &str| v.trim().to_lowercase() != "false";
+        assert!(parse("")); // unset/empty -> required
+        assert!(parse("true"));
+        assert!(parse("garbage"));
+        assert!(!parse("false"));
+        assert!(!parse("  FALSE  "));
+    }
+
+    #[test]
+    fn dleq_offline_accepts_valid_proof() {
+        let proof: Proof = serde_json::from_str(VALID_PROOF_JSON).unwrap();
+        // Valid DLEQ + correct per-amount key -> admitted.
+        assert!(verify_proof_dleq_offline(&proof, Some(mint_key()), true).is_ok());
+    }
+
+    #[test]
+    fn dleq_offline_rejects_tampered_c() {
+        // Simulate a forger: a proof from a whitelisted mint, P2PK-shaped, but
+        // whose unblinded signature C does not match the mint's DLEQ. Today
+        // (pre-#117) this would be admitted on the fast path; it must be rejected.
+        let mut proof: Proof = serde_json::from_str(VALID_PROOF_JSON).unwrap();
+        proof.c = PublicKey::from_str(
+            "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+        )
+        .unwrap();
+        let err = verify_proof_dleq_offline(&proof, Some(mint_key()), true)
+            .expect_err("tampered C must be rejected");
+        assert!(err.contains("DLEQ"), "unexpected error: {}", err);
+    }
+
+    #[test]
+    fn dleq_offline_rejects_wrong_amount_key() {
+        // DLEQ present but we couldn't resolve the per-amount key -> reject,
+        // never silently admit.
+        let proof: Proof = serde_json::from_str(VALID_PROOF_JSON).unwrap();
+        assert!(verify_proof_dleq_offline(&proof, None, true).is_err());
+    }
+
+    #[test]
+    fn dleq_offline_missing_dleq_respects_policy() {
+        let json = r#"{"amount": 1,"id": "00882760bfa2eb41","secret": "daf4dd00a2b68a0858a80450f52c8a7d2ccf87d375e43e216e0c571f089f63e9","C": "024369d2d22a80ecf78f3937da9d5f30c1b9f74f0c32684d583cca0fa6a61cdcfc"}"#;
+        let proof: Proof = serde_json::from_str(json).unwrap();
+        assert!(proof.dleq.is_none());
+        // require_dleq = true -> reject DLEQ-less proof.
+        assert!(verify_proof_dleq_offline(&proof, None, true).is_err());
+        // require_dleq = false -> admit (safety valve).
+        assert!(verify_proof_dleq_offline(&proof, None, false).is_ok());
+    }
 }
