@@ -1586,6 +1586,11 @@ jobs:
           docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
           sleep 15
+          # Recreating the container resets the writable layer, losing the
+          # `chmod 755 /root` from "Start nginx containers for LND". Nginx
+          # worker processes need execute permission on /root to traverse the
+          # lndnode-receiver-data volume mounted at /root/.lnd.
+          docker exec nginx-lnd chmod 755 /root
 
           # 1. 402 response must carry an X-Cashu NUT-24 payment request header
           echo "Checking X-Cashu header on 402 response..."
@@ -1648,6 +1653,7 @@ jobs:
           docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
           docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
           sleep 15
+          docker exec nginx-lnd chmod 755 /root
           echo "✅ Cashu P2PK mode tests passed!"
 
       - name: Run Integration test - Redis Replay Attack Prevention
