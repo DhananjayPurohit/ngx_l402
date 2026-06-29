@@ -1012,6 +1012,7 @@ jobs:
         env:
           CURRENCY: USD
           AMOUNT: 0.01
+          CASHU_WALLET_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
         run: |
           # Make LND macaroon and cert readable by nginx user
           docker exec lndnode-receiver chmod a+rx /root /root/.lnd /root/.lnd/data /root/.lnd/data/chain /root/.lnd/data/chain/bitcoin /root/.lnd/data/chain/bitcoin/regtest
@@ -1847,6 +1848,9 @@ jobs:
         run: |
           echo "Stopping nginx-lnd and starting nginx-lnurl for multi-tenant LNURL mode..."
           docker-compose -f docker-compose.yml stop nginx-lnd
+          # Remove the fingerprint recorded by nginx-lnd (different generated mnemonic)
+          # so nginx-lnurl can start fresh with its own CASHU_WALLET_MNEMONIC.
+          docker run --rm -v ngx_l402_cashu-data:/data alpine sh -c 'rm -f /data/wallet.fingerprint /data/wallet.mnemonic'
           docker-compose -f docker-compose.yml up -d nginx-lnurl
           sleep 15
 
