@@ -71,6 +71,7 @@ jobs:
       - name: Start LNURL service
         env:
           LNURL_ADDRESS: hello@getalby.com
+          CASHU_WALLET_MNEMONIC: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
         run: |
           echo "Starting nginx-lnurl and grpc-content-server..."
           docker-compose -f docker-compose.yml up -d nginx-lnurl grpc-content-server
