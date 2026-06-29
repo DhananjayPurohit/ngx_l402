@@ -1610,11 +1610,16 @@ jobs:
           echo "✅ X-Cashu NUT-24 payment request header present on 402"
 
           # 2. The X-Cashu header must contain our known public key.
-          # The header value is base64url-encoded CBOR; the pubkey is stored
-          # inside as a UTF-8 text string, so we must decode before grepping.
+          # NUT-24 format: "creq" + version_char + base64url(CBOR).
+          # The pubkey is stored in the CBOR as a UTF-8 text string.
+          # Strip the 5-char "creqA" prefix, convert base64url → base64,
+          # add padding, decode, then grep the raw CBOR bytes.
           EXPECTED_PUBKEY="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-          xcashu_b64=$(echo "$p2pk_resp" | grep -i "^X-Cashu:" | sed 's/^[Xx]-[Cc]ashu:[[:space:]]*//' | tr -d '\r')
-          if ! echo "$xcashu_b64" | base64 -d 2>/dev/null | grep -qa "$EXPECTED_PUBKEY"; then
+          xcashu_val=$(echo "$p2pk_resp" | grep -i "^X-Cashu:" | sed 's/^[Xx]-[Cc]ashu:[[:space:]]*//' | tr -d '\r')
+          xcashu_cbor=$(printf '%s' "$xcashu_val" | cut -c6- | tr -- '-_' '+/' | \
+            awk '{l=length($0)%4; if(l==2){print $0"=="}else if(l==3){print $0"="}else{print $0}}' | \
+            base64 -d 2>/dev/null)
+          if ! printf '%s' "$xcashu_cbor" | grep -qa "$EXPECTED_PUBKEY"; then
             echo "❌ X-Cashu header does not contain expected pubkey $EXPECTED_PUBKEY"
             echo "$p2pk_resp" | grep -i "X-Cashu"
             exit 1
