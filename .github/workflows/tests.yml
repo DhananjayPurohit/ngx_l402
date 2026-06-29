@@ -1579,6 +1579,10 @@ jobs:
           # k=1 secp256k1 scalar → pubkey 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
           CASHU_P2PK_PRIVATE_KEY: "0000000000000000000000000000000000000000000000000000000000000001"
           CASHU_P2PK_MODE: "true"
+          # nutshell (the CI cashu-mint) does not include NUT-12 DLEQ proofs
+          # in its tokens; disable the DLEQ requirement so P2PK tokens are
+          # accepted in CI. Production deployments should keep this true.
+          CASHU_REQUIRE_DLEQ: "false"
         run: |
           echo "🔑 Testing Cashu P2PK mode (NUT-11/NUT-24)..."
 
