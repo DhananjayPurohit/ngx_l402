@@ -347,6 +347,7 @@ services:
       - CASHU_WHITELISTED_MINTS=http://cashu-mint:3338,http://cashu-mint1:3338
       - CASHU_P2PK_MODE=${CASHU_P2PK_MODE:-false}
       - CASHU_P2PK_PRIVATE_KEY=${CASHU_P2PK_PRIVATE_KEY:-}
+      - CASHU_REQUIRE_DLEQ=${CASHU_REQUIRE_DLEQ:-true}
       - REDIS_URL=redis://redis:6379
     volumes:
       - lndnode-receiver-data:/root/.lnd:ro
