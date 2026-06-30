@@ -1897,11 +1897,23 @@ jobs:
 
           echo "Cashu token consumed successfully to access protected route."
 
-          REDEMPTION_INTERVAL=$(docker exec nginx-lnd env | grep CASHU_REDEMPTION_INTERVAL_SECS | cut -d'=' -f2 || echo "not_set")
-          WAIT_TIME=$((REDEMPTION_INTERVAL + 30))
-
-          echo "Waiting for $WAIT_TIME seconds to allow redemption process to complete..."
-          sleep $WAIT_TIME
+          # Poll for the redemption to land instead of a fixed sleep. With the
+          # extra P2PK/DB-regen/mnemonic tests now running earlier in this job
+          # (each restarting nginx-lnd and queuing tokens through the same
+          # automatic-redemption thread), a fixed interval+30s wait is no
+          # longer reliably enough — the actual melt has been observed landing
+          # several minutes later under CI load. Poll up to 5 minutes.
+          echo "Waiting up to 300s for redemption to increase the receiver channel balance..."
+          FINAL_RECEIVER_LOCAL_BALANCE=$INITIAL_RECEIVER_LOCAL_BALANCE
+          for i in $(seq 1 60); do
+            FINAL_RECEIVER_CHANNEL=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest channelbalance)
+            FINAL_RECEIVER_LOCAL_BALANCE=$(echo $FINAL_RECEIVER_CHANNEL | jq -r '.local_balance.sat')
+            if [ "$FINAL_RECEIVER_LOCAL_BALANCE" -gt "$INITIAL_RECEIVER_LOCAL_BALANCE" ]; then
+              echo "Redemption detected after ~$((i * 5))s"
+              break
+            fi
+            sleep 5
+          done
 
           # Capture final channel balance (Lightning payments affect channel balance, not wallet balance)
           FINAL_RECEIVER_CHANNEL=$(docker exec lndnode-receiver lncli --rpcserver=127.0.0.1:10010 -n regtest channelbalance)
