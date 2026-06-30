@@ -33,7 +33,7 @@ jobs:
         run: |
           echo "Testing nginx -t (config validation with module loaded)..."
           # No --add-host: the generic image must start without the demo gRPC
-          # backend being resolvable (issue #120).
+          # backend being resolvable.
           docker run --rm \
             -e LN_CLIENT_TYPE=LNURL \
             -e LNURL_ADDRESS=hello@getalby.com \
@@ -53,7 +53,7 @@ jobs:
       - name: Smoke test - module serves requests
         run: |
           echo "Starting container for smoke test..."
-          # No --add-host: verifies the image boots standalone (issue #120).
+          # No --add-host: verifies the image boots standalone.
           docker run -d --name smoke-test-${{ matrix.nginx_version }} \
             -p 8000:8000 \
             -e LN_CLIENT_TYPE=LNURL \

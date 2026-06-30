@@ -261,7 +261,7 @@ services:
     depends_on:
       # NOTE: intentionally NOT depending on grpc-content-server — that is a
       # demo-only backend and the LNURL Lightning service must not be coupled to
-      # it (issue #120). Bring up grpc-content-server explicitly when you want
+      # it. Bring up grpc-content-server explicitly when you want
       # to exercise the /content.ContentService/ demo route.
       - redis
 
