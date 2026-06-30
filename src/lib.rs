@@ -41,6 +41,7 @@ mod cashu;
 mod cashu_redemption_logger;
 mod manifest;
 mod metrics;
+mod mpp;
 mod payment_detector;
 mod payment_page;
 
@@ -769,13 +770,14 @@ impl L402Module {
         Self { middleware }
     }
 
-    pub async fn get_l402_header(
+    /// Generate a Lightning invoice and return `(bolt11, payment_hash)`.
+    /// Routes through the per-location LNURL client when `lnurl_addr` is set;
+    /// otherwise uses the global ln_client. `None` signals backend failure.
+    pub async fn generate_invoice_only(
         &self,
-        mut caveats: Vec<String>,
         amount_msat: i64,
-        timeout_secs: i64,
-        lnurl_addr: Option<String>,
-    ) -> Option<String> {
+        lnurl_addr: Option<&str>,
+    ) -> Option<(String, lightning::ln::PaymentHash)> {
         let ln_invoice = lnrpc::Invoice {
             value_msat: amount_msat,
             memo: l402::L402_HEADER.to_string(),
@@ -784,9 +786,7 @@ impl L402Module {
 
         debug!("Invoice value: {} msat", amount_msat);
 
-        // If a per-location LNURL address is provided, use cached LNURL client
-        // Otherwise use the global ln_client from middleware
-        let (invoice, payment_hash) = if let Some(ref addr) = lnurl_addr {
+        let result = if let Some(addr) = lnurl_addr {
             debug!("Using per-location LNURL address for invoice: {}", addr);
 
             match get_or_create_lnurl_client(addr).await {
@@ -838,7 +838,20 @@ impl L402Module {
             }
         };
 
-        debug!("📜 Generated invoice: {}", invoice);
+        debug!("📜 Generated invoice: {}", result.0);
+        Some(result)
+    }
+
+    pub async fn get_l402_header(
+        &self,
+        mut caveats: Vec<String>,
+        amount_msat: i64,
+        timeout_secs: i64,
+        lnurl_addr: Option<String>,
+    ) -> Option<String> {
+        let (invoice, payment_hash) = self
+            .generate_invoice_only(amount_msat, lnurl_addr.as_deref())
+            .await?;
 
         // Only add expiry time caveat if timeout_secs > 0
         if timeout_secs > 0 {
