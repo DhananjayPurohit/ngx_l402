@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f88675b8.js";
+            window.path_to_searchindex_js = "searchindex-42a9c4d7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b5966016.js"></script>
@@ -291,7 +291,11 @@ module to fail-open and skip the replay check entirely.</p>
 <h2 id="cashu-ecash"><a class="header" href="#cashu-ecash">Cashu eCash</a></h2>
 <pre><code class="language-bash">Environment=CASHU_ECASH_SUPPORT=true
 Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
-Environment=CASHU_WALLET_SECRET=&lt;your-secret-random-string&gt;
+# BIP39 wallet mnemonic (the Cashu/NUT-13 backup phrase). Leave unset to have one
+# generated and saved next to the DB on first run (check the logs for the phrase).
+Environment=CASHU_WALLET_MNEMONIC="word1 word2 ... word12"
+# Optional: where to persist a generated mnemonic (defaults beside the DB file)
+# Environment=CASHU_WALLET_MNEMONIC_FILE=/var/lib/nginx/wallet.mnemonic
 
 # Optional: Whitelist specific mints (comma-separated)
 # In standard mode: if not set, all mints are accepted
@@ -303,12 +307,12 @@ Environment=CASHU_REDEEM_ON_LIGHTNING=true
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=3600  # default: 1 hour
 </code></pre>
 <blockquote>
-<p><strong>⚠️ Security</strong>: <code>CASHU_WALLET_SECRET</code> is used to generate the wallet seed. Anyone with this secret can steal your tokens!</p>
+<p><strong>⚠️ Security</strong>: <code>CASHU_WALLET_MNEMONIC</code> is the BIP39 phrase that derives the wallet seed (NUT-13). It is the only backup of your wallet — anyone with it can steal your tokens, and losing it loses the funds!</p>
 <ul>
-<li>Generate with: <code>openssl rand -hex 32</code></li>
-<li>Never commit to Git</li>
-<li>Use a different value per deployment/environment</li>
-<li>Keep it in a secure environment variable or secrets manager</li>
+<li>12 or 24 English words; restorable in any NUT-13 wallet (nutshell, cashu-ts, cdk-cli)</li>
+<li>If unset, one is generated and saved beside the DB on first run — <strong>back it up</strong></li>
+<li>On startup the module records a fingerprint of the seed next to the DB and refuses to start if a later mnemonic doesn’t match (so a changed/typo’d phrase can’t silently orphan a funded wallet); delete the <code>wallet.fingerprint</code> file to switch wallets intentionally</li>
+<li>Never commit it to Git; keep it in a secrets manager</li>
 </ul>
 </blockquote>
 <h3 id="redemption-fee-handling"><a class="header" href="#redemption-fee-handling">Redemption Fee Handling</a></h3>
@@ -338,7 +342,25 @@ Environment=CASHU_REQUIRE_DLEQ=true   # default: true — keep it on
 <ul>
 <li>Generate with: <code>openssl rand -hex 32</code></li>
 <li>Never commit to Git or share publicly</li>
-<li>Keep it secure alongside <code>CASHU_WALLET_SECRET</code></li>
+<li>Keep it secure alongside <code>CASHU_WALLET_MNEMONIC</code></li>
+</ul>
+</blockquote>
+<blockquote>
+<p><strong>🔒 NUT-12 DLEQ (<code>CASHU_REQUIRE_DLEQ</code>)</strong>: In P2PK mode, tokens are verified
+on a fast path that <strong>skips the mint swap</strong> for lower latency. DLEQ proofs
+(NUT-12) are what let us confirm offline — using only cached mint keysets —
+that each proof was actually signed by the whitelisted mint. With this check
+off, a forger could submit correctly-shaped, mint-whitelisted proofs that the
+mint never signed and get free service (the operator only finds out at
+redemption time, when the melt fails).</p>
+<ul>
+<li><strong>Default <code>true</code></strong>: a proof with no DLEQ data is rejected. Modern Cashu
+wallets include DLEQ by default, so this is safe.</li>
+<li>Set <code>CASHU_REQUIRE_DLEQ=false</code> only as a temporary safety valve if a
+real-world wallet ships DLEQ-less tokens. This is <strong>insecure</strong> and re-opens
+the forged-proof window above.</li>
+<li>The standard (non-P2PK) mode is unaffected: its mint swap already validates
+proofs authoritatively.</li>
 </ul>
 </blockquote>
 <blockquote>

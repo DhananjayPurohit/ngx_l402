@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f88675b8.js";
+            window.path_to_searchindex_js = "searchindex-42a9c4d7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-b5966016.js"></script>
@@ -201,7 +201,8 @@
 <h2 id="standard-mode-setup"><a class="header" href="#standard-mode-setup">Standard Mode Setup</a></h2>
 <pre><code class="language-bash">Environment=CASHU_ECASH_SUPPORT=true
 Environment=CASHU_DB_PATH=/var/lib/nginx/cashu_tokens.db
-Environment=CASHU_WALLET_SECRET=&lt;your-secret-random-string&gt;
+# BIP39 wallet mnemonic (NUT-13 backup phrase); unset = auto-generated on first run
+Environment=CASHU_WALLET_MNEMONIC="word1 word2 ... word12"
 
 # Optional: Whitelist specific mints (comma-separated)
 Environment=CASHU_WHITELISTED_MINTS=https://mint1.example.com,https://mint2.example.com
@@ -211,7 +212,7 @@ Environment=CASHU_REDEEM_ON_LIGHTNING=true
 Environment=CASHU_REDEMPTION_INTERVAL_SECS=3600
 </code></pre>
 <blockquote>
-<p><strong>⚠️ Security</strong>: <code>CASHU_WALLET_SECRET</code> is used to generate the wallet seed. Anyone with this secret can steal your tokens! Generate with <code>openssl rand -hex 32</code> and never commit it to Git.</p>
+<p><strong>⚠️ Security</strong>: <code>CASHU_WALLET_MNEMONIC</code> is the BIP39 phrase that derives the wallet seed (NUT-13) — the only backup of your wallet. Anyone with it can steal your tokens, and losing it loses the funds. It’s a 12/24-word phrase (not a hex secret); leave it unset to auto-generate and persist one on first run, and never commit it to Git. On startup the module records a seed fingerprint next to the DB and refuses to start if a later mnemonic doesn’t match — delete <code>wallet.fingerprint</code> to switch wallets intentionally.</p>
 </blockquote>
 <hr>
 <h2 id="p2pk-mode-setup-high-performance"><a class="header" href="#p2pk-mode-setup-high-performance">P2PK Mode Setup (High Performance)</a></h2>
