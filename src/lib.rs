@@ -2242,7 +2242,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
     info!("✅ L402 module initialization complete");
 
     // Splash key observability / testing features so operators can discover
-    // them straight from the logs without a trip to the docs (issue #119).
+    // them straight from the logs without a trip to the docs.
     info!("📊 Prometheus metrics: expose a route with `l402_metrics;` (e.g. `location = /metrics {{ l402_metrics; }}`) to scrape l402_* counters");
     info!("🌓 Dry-run (shadow) mode: add `l402_dry_run on;` to a protected location to evaluate pricing/challenges/metrics without enforcing payment");
 
