@@ -1132,14 +1132,25 @@ pub async fn verify_cashu_token_p2pk(
     // metadata cache that `get_mint_keysets` just warmed). Done before the
     // NUT-07 network check below so forged proofs are rejected without a hop.
     let require_dleq = cashu_require_dleq();
+    // A token's proofs commonly share a keyset_id; cache by id to avoid
+    // calling load_keyset_keys once per proof.
+    let mut keyset_keys_cache = HashMap::new();
     for proof in &proofs {
         // Only resolve the per-amount key when the proof actually carries DLEQ;
         // the missing-DLEQ policy is handled inside `verify_proof_dleq_offline`.
         let amount_key = if proof.dleq.is_some() {
-            let keys = wallet
-                .load_keyset_keys(proof.keyset_id)
-                .await
-                .map_err(|e| format!("Failed to load keyset keys for DLEQ verification: {}", e))?;
+            let keys = match keyset_keys_cache.get(&proof.keyset_id) {
+                Some(keys) => keys,
+                None => {
+                    let keys = wallet
+                        .load_keyset_keys(proof.keyset_id)
+                        .await
+                        .map_err(|e| {
+                            format!("Failed to load keyset keys for DLEQ verification: {}", e)
+                        })?;
+                    keyset_keys_cache.entry(proof.keyset_id).or_insert(keys)
+                }
+            };
             keys.amount_key(proof.amount)
         } else {
             None
