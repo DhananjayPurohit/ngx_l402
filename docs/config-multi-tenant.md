@@ -58,7 +58,7 @@ Environment=REDIS_URL=redis://127.0.0.1:6379
 
 # Enable Cashu eCash support
 Environment=CASHU_ECASH_SUPPORT=true
-Environment=CASHU_WALLET_SECRET=<your-secret>
+Environment=CASHU_WALLET_MNEMONIC="word1 word2 ... word12"
 Environment=CASHU_WHITELISTED_MINTS=https://mint.example.com
 
 # Enable automatic redemption to Lightning

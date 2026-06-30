@@ -4,14 +4,7 @@
 //! This module owns all HTML, CSS, and JavaScript that is sent to the browser
 //! when a protected resource requires payment.
 
-/// Escape a string for safe interpolation into HTML text/attribute contexts.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
+use ngx_l402_core::html_escape;
 
 /// Render the full 402 payment page as an HTML string.
 ///

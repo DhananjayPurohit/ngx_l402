@@ -50,11 +50,13 @@ static LN_CLIENT: tokio::sync::OnceCell<Arc<tokio::sync::Mutex<dyn lnclient::LNC
     tokio::sync::OnceCell::const_new();
 static LN_CLIENT_TYPE: OnceLock<String> = OnceLock::new();
 
-// Dynamically generated secret for when CASHU_WALLET_SECRET is not provided
-static GENERATED_WALLET_SECRET: OnceLock<String> = OnceLock::new();
+// Resolved BIP39 wallet mnemonic — the Cashu/NUT-13 backup phrase. Set once at
+// init (initialize_cashu) from CASHU_WALLET_MNEMONIC, a persisted file, or a
+// freshly generated phrase.
+static WALLET_MNEMONIC: OnceLock<String> = OnceLock::new();
 
-// Cached wallet seed — computed once from the wallet secret, reused for all wallet operations.
-// Eliminates per-request blake3 hashing.
+// Cached wallet seed — derived once from the mnemonic and reused for all wallet
+// operations so the BIP39 PBKDF2 runs only once per process.
 static CACHED_WALLET_SEED: OnceLock<[u8; 64]> = OnceLock::new();
 
 // Per-(mint_url, unit) wallet cache. `cdk::wallet::Wallet` constructs internal state
@@ -96,31 +98,190 @@ async fn get_or_create_wallet(
 /// When exceeded, the set is cleared. Redis remains the authoritative replay check.
 const MAX_PROCESSED_TOKENS: usize = 10_000;
 
-fn get_wallet_secret() -> String {
-    std::env::var("CASHU_WALLET_SECRET").unwrap_or_else(|_| {
-        GENERATED_WALLET_SECRET
-            .get_or_init(|| {
-                warn!("⚠️ CASHU_WALLET_SECRET not set! Generating a random secret for this session. This means your wallet counter will reset on restart. Set CASHU_WALLET_SECRET in production!");
-                let mut bytes = [0u8; 32];
-                rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
-                hex::encode(bytes)
-            })
-            .clone()
-    })
+/// Number of words in a freshly generated wallet mnemonic. 12 words = 128 bits
+/// of entropy (the common Cashu default).
+const GENERATED_MNEMONIC_WORDS: usize = 12;
+
+/// Resolve the wallet mnemonic once, at init, and stash it in `WALLET_MNEMONIC`.
+///
+/// Resolution order:
+///   1. `CASHU_WALLET_MNEMONIC` — the canonical, explicit source.
+///   2. A previously persisted mnemonic file (see `wallet_mnemonic_file_path`).
+///   3. A freshly generated BIP39 phrase, persisted to that file when a path is
+///      available and logged once so the operator can back it up.
+///
+/// Fails closed (returns `Err`) only when an explicitly configured mnemonic is
+/// invalid — we must never silently start a *different* empty wallet over real
+/// funds.
+fn resolve_wallet_mnemonic(db_url: &str) -> Result<(), String> {
+    if WALLET_MNEMONIC.get().is_some() {
+        return Ok(());
+    }
+
+    // 1. Explicit env mnemonic.
+    if let Ok(env_mnemonic) = std::env::var("CASHU_WALLET_MNEMONIC") {
+        let m = env_mnemonic.trim().to_string();
+        if !m.is_empty() {
+            if !ngx_l402_core::is_valid_mnemonic(&m) {
+                return Err(
+                    "CASHU_WALLET_MNEMONIC is set but is not a valid BIP39 mnemonic".to_string(),
+                );
+            }
+            let _ = WALLET_MNEMONIC.set(m);
+            info!("🔑 Using wallet mnemonic from CASHU_WALLET_MNEMONIC");
+            return Ok(());
+        }
+    }
+
+    let file_path = wallet_mnemonic_file_path(db_url);
+
+    // 2. Previously persisted mnemonic.
+    if let Some(ref path) = file_path {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            let m = contents.trim().to_string();
+            if ngx_l402_core::is_valid_mnemonic(&m) {
+                let _ = WALLET_MNEMONIC.set(m);
+                info!("🔑 Loaded persisted wallet mnemonic from {}", path);
+                return Ok(());
+            } else if !m.is_empty() {
+                warn!(
+                    "⚠️ Persisted mnemonic at {} is not valid BIP39 — regenerating",
+                    path
+                );
+            }
+        }
+    }
+
+    // 3. Generate (and persist if we can).
+    let generated = ngx_l402_core::generate_mnemonic(GENERATED_MNEMONIC_WORDS)
+        .map_err(|e| format!("Failed to generate wallet mnemonic: {}", e))?;
+
+    match &file_path {
+        Some(path) => match persist_mnemonic(path, &generated) {
+            Ok(()) => warn!(
+                "⚠️ CASHU_WALLET_MNEMONIC not set — generated a new wallet mnemonic and saved it to {}. BACK IT UP; it controls all Cashu funds.",
+                path
+            ),
+            Err(e) => warn!(
+                "⚠️ CASHU_WALLET_MNEMONIC not set — generated a new wallet mnemonic but could NOT persist it ({}). It will change on restart and orphan funds. Save this phrase and set CASHU_WALLET_MNEMONIC: {}",
+                e, generated
+            ),
+        },
+        None => warn!(
+            "⚠️ CASHU_WALLET_MNEMONIC not set and no persist path available — using an EPHEMERAL mnemonic that changes on restart. Save this phrase and set CASHU_WALLET_MNEMONIC: {}",
+            generated
+        ),
+    }
+
+    let _ = WALLET_MNEMONIC.set(generated);
+    Ok(())
+}
+
+/// Decide where to persist a generated mnemonic. Prefers
+/// `CASHU_WALLET_MNEMONIC_FILE`; otherwise derives a sibling `wallet.mnemonic`
+/// next to the SQLite database file. Returns `None` if no path can be derived.
+fn wallet_mnemonic_file_path(db_url: &str) -> Option<String> {
+    if let Ok(p) = std::env::var("CASHU_WALLET_MNEMONIC_FILE") {
+        let p = p.trim().to_string();
+        if !p.is_empty() {
+            return Some(p);
+        }
+    }
+    let raw = db_url
+        .trim()
+        .trim_start_matches("sqlite://")
+        .trim_start_matches("sqlite:");
+    let parent = std::path::Path::new(raw).parent()?;
+    Some(parent.join("wallet.mnemonic").to_string_lossy().into_owned())
+}
+
+/// Persist the mnemonic to `path` with owner-only permissions where supported.
+fn persist_mnemonic(path: &str, mnemonic: &str) -> Result<(), String> {
+    std::fs::write(path, format!("{}\n", mnemonic))
+        .map_err(|e| format!("write {}: {}", path, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 fn get_cached_seed() -> [u8; 64] {
     *CACHED_WALLET_SEED.get_or_init(|| {
-        let wallet_secret = get_wallet_secret();
-
-        // Derive a deterministic seed from CASHU_WALLET_SECRET using blake3.
-        // The first 32 bytes are the blake3 hash; the remaining 32 bytes are
-        // left as zero to preserve compatibility with existing wallets.
-        let seed_hash = blake3::hash(wallet_secret.as_bytes());
-        let mut seed = [0u8; 64];
-        seed[..32].copy_from_slice(seed_hash.as_bytes());
-        seed
+        // The mnemonic is resolved and validated during initialize_cashu.
+        let mnemonic = WALLET_MNEMONIC
+            .get()
+            .expect("wallet mnemonic must be resolved during initialize_cashu");
+        // Derivation lives in ngx_l402_core so it can be unit-tested (golden
+        // vectors) without nginx. The mnemonic was validated at init, so this
+        // cannot fail here.
+        ngx_l402_core::derive_wallet_seed(mnemonic)
+            .expect("wallet mnemonic was validated at init")
     })
+}
+
+/// Verify the configured mnemonic matches the wallet that owns this database's
+/// funds.
+///
+/// On first run it records a one-way fingerprint of the seed next to the DB. On
+/// later runs it refuses to start if the fingerprint differs: a changed or
+/// typo'd `CASHU_WALLET_MNEMONIC` would otherwise open a *different* empty wallet
+/// over the existing one and silently orphan its funds. To switch wallets
+/// intentionally, delete the fingerprint file.
+fn check_wallet_fingerprint(db_url: &str) -> Result<(), String> {
+    let seed = get_cached_seed();
+    let fingerprint = ngx_l402_core::wallet_fingerprint(&seed);
+
+    let Some(path) = wallet_fingerprint_file_path(db_url) else {
+        // No filesystem path to anchor against — skip (best effort).
+        return Ok(());
+    };
+
+    match std::fs::read_to_string(&path) {
+        Ok(stored) if stored.trim() == fingerprint => Ok(()),
+        Ok(stored) => Err(format!(
+            "CASHU_WALLET_MNEMONIC does not match the wallet that owns this database \
+             (seed fingerprint {} != recorded {}). Refusing to start to avoid orphaning \
+             funds. If you intentionally switched wallets, delete {}.",
+            fingerprint,
+            stored.trim(),
+            path
+        )),
+        Err(_) => {
+            // First run (or unreadable): record the current fingerprint.
+            if let Err(e) = persist_fingerprint(&path, &fingerprint) {
+                warn!("⚠️ Could not persist wallet fingerprint to {}: {}", path, e);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Path of the fingerprint sidecar file, beside the SQLite database.
+fn wallet_fingerprint_file_path(db_url: &str) -> Option<String> {
+    let raw = db_url
+        .trim()
+        .trim_start_matches("sqlite://")
+        .trim_start_matches("sqlite:");
+    let parent = std::path::Path::new(raw).parent()?;
+    Some(
+        parent
+            .join("wallet.fingerprint")
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn persist_fingerprint(path: &str, fingerprint: &str) -> Result<(), String> {
+    std::fs::write(path, format!("{}\n", fingerprint))
+        .map_err(|e| format!("write {}: {}", path, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 /// Add token to thread-local cache, clearing if at capacity.
@@ -245,6 +406,15 @@ pub fn initialize_cashu(db_url: &str) -> Result<(), String> {
     // Set Cashu eCash enabled flag
     let _ = CASHU_ECASH_ENABLED.set(true);
 
+    // Resolve the BIP39 wallet mnemonic before anything touches the wallet.
+    // Fails closed if an explicitly configured mnemonic is invalid, so we never
+    // start a different empty wallet over real funds.
+    resolve_wallet_mnemonic(db_url)?;
+
+    // Refuse to start if the configured mnemonic no longer matches the wallet
+    // that owns this DB's funds (changed/typo'd mnemonic would orphan them).
+    check_wallet_fingerprint(db_url)?;
+
     // Create runtime for async initialization
     let rt = Runtime::new().expect("Failed to create runtime");
 
@@ -355,6 +525,62 @@ pub async fn restore_wallets_state() {
             Ok(Ok(amount)) => info!("✅ Restored {} sats state from {}", amount, mint_url),
             Ok(Err(e))     => warn!("⚠️ Skipping restore for {} (mint error): {}", mint_url, e),
             Err(_)         => warn!("⚠️ Skipping restore for {} (unreachable, timed out after 5s)", mint_url),
+        }
+    }
+}
+
+/// Reconcile proofs left in a Pending/Reserved state by an interrupted melt.
+///
+/// When a redemption is interrupted mid-melt, its proofs stay reserved in the
+/// DB. On the next startup, ask the mint about them: proofs the mint reports
+/// spent (the melt actually settled) are dropped, and the rest are reclaimed so
+/// a future sweep can redeem them — preventing funds from being stuck reserved
+/// forever. Best-effort and timeout-bounded so an unreachable mint at startup
+/// doesn't block the worker.
+pub async fn reconcile_pending_proofs() {
+    let whitelisted_mints = match get_whitelisted_mints() {
+        Some(mints) => mints,
+        None => return,
+    };
+
+    let db = match CASHU_DB.get() {
+        Some(db) => db.clone(),
+        None => {
+            warn!("⚠️ Cashu database not initialized before pending-proof reconciliation");
+            return;
+        }
+    };
+
+    let seed = get_cached_seed();
+
+    for mint_url in whitelisted_mints {
+        let unit = cdk::nuts::CurrencyUnit::Sat;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            match cdk::wallet::Wallet::new(mint_url, unit, db.clone(), seed, None) {
+                Ok(wallet) => wallet
+                    .check_all_pending_proofs()
+                    .await
+                    .map(|amount| {
+                        let v: u64 = amount.into();
+                        v
+                    })
+                    .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Ok(reclaimable)) if reclaimable > 0 => info!(
+                "🔄 Reconciled pending proofs for {}: {} sat reclaimable from an interrupted melt",
+                mint_url, reclaimable
+            ),
+            Ok(Ok(_)) => debug!("✅ No pending proofs to reconcile for {}", mint_url),
+            Ok(Err(e)) => warn!("⚠️ Pending-proof reconciliation failed for {}: {}", mint_url, e),
+            Err(_) => warn!(
+                "⚠️ Pending-proof reconciliation timed out for {} (mint unreachable)",
+                mint_url
+            ),
         }
     }
 }
@@ -506,24 +732,28 @@ pub fn initialize_p2pk_mode() -> Result<(), String> {
         return Err("CASHU_P2PK_PRIVATE_KEY is empty".to_string());
     }
 
-    // Use the cdk SecretKey to derive public key
-    let private_key = cdk::nuts::SecretKey::from_hex(&private_key_hex)
-        .map_err(|e| format!("Invalid private key hex: {:?}", e))?;
+    // Parse once in ngx_l402_core so the stored signing key and the published
+    // public key come from a single, golden-vector-tested derivation. This
+    // prevents any lock/sign mismatch that would make proofs unspendable.
+    let (private_key, public_key_hex) = ngx_l402_core::parse_p2pk_secret_key(&private_key_hex)
+        .map_err(|e| format!("Invalid P2PK private key: {}", e))?;
 
-    // Derive public key from private key
-    let public_key = private_key.public_key();
-
-    info!("🔑 P2PK public key: {}", public_key);
+    info!("🔑 P2PK public key: {}", public_key_hex);
 
     // Store the parsed private key (not the raw hex) and the public key hex.
     P2PK_PRIVATE_KEY
         .set(private_key)
         .map_err(|_| "Failed to set private key".to_string())?;
     P2PK_PUBLIC_KEY
-        .set(public_key.to_string())
+        .set(public_key_hex)
         .map_err(|_| "Failed to set public key".to_string())?;
 
     let _ = P2PK_MODE_ENABLED.set(true);
+    let _ = CASHU_REQUIRE_DLEQ.set(
+        std::env::var("CASHU_REQUIRE_DLEQ")
+            .map(|v| v.trim().to_lowercase() != "false")
+            .unwrap_or(true),
+    );
     info!("✅ P2PK mode initialized with public key");
 
     Ok(())
@@ -1425,11 +1655,12 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     (group_proofs.clone(), group_total_msat)
                 };
 
-            // Calculate fee reserve
-            let percentage_fee_selected =
-                ((selected_total_msat as f64) * (current_fee_reserve_percent / 100.0)) as u64;
-            let fee_reserve_selected_msat =
-                percentage_fee_selected.max(current_min_fee_reserve_msat);
+            // Calculate fee reserve (pure math lives in ngx_l402_core, unit-tested).
+            let fee_reserve_selected_msat = ngx_l402_core::fee_reserve_msat(
+                selected_total_msat,
+                current_fee_reserve_percent,
+                current_min_fee_reserve_msat,
+            );
 
             if selected_total_msat <= fee_reserve_selected_msat {
                 let msg = format!(
@@ -1562,11 +1793,15 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                 Ok(q) => {
                     let actual_fee_reserve_sats: u64 = q.fee_reserve.into();
                     let amount_sats: u64 = q.amount.into();
+                    // Saturating conversion: these amounts come from the mint, so
+                    // a buggy/hostile quote must not overflow the sat->msat math.
+                    // An absurd value saturates to u64::MAX and is rejected by the
+                    // balance check below rather than wrapping to a small number.
                     let (actual_fee_reserve_msat, amount_msat) =
                         if wallet.unit == cdk::nuts::CurrencyUnit::Sat {
                             (
-                                actual_fee_reserve_sats * MSAT_PER_SAT,
-                                amount_sats * MSAT_PER_SAT,
+                                actual_fee_reserve_sats.saturating_mul(MSAT_PER_SAT),
+                                amount_sats.saturating_mul(MSAT_PER_SAT),
                             )
                         } else {
                             (actual_fee_reserve_sats, amount_sats)
@@ -1579,7 +1814,7 @@ pub async fn redeem_to_lightning() -> Result<bool, String> {
                     info!("{}", msg);
                     cashu_redemption_logger::log_redemption(&msg);
 
-                    let required_total_msat = amount_msat + actual_fee_reserve_msat;
+                    let required_total_msat = amount_msat.saturating_add(actual_fee_reserve_msat);
                     if selected_total_msat < required_total_msat {
                         let msg = format!(
                             "⚠️ Fee reserve insufficient for {}: {} msat < {} msat required",

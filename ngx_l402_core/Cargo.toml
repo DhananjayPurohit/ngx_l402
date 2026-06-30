@@ -1,0 +1,22 @@
+[package]
+name = "ngx_l402_core"
+version = "0.1.0"
+edition = "2021"
+description = "Pure, nginx-free logic extracted from ngx_l402 so it can be unit-tested with plain `cargo test`."
+license = "MIT"
+
+[lib]
+name = "ngx_l402_core"
+
+[dependencies]
+# BIP39 mnemonic -> 64-byte seed (Cashu/NUT-13 standard). `rand` enables
+# mnemonic generation; `unicode-normalization` enables the normalizing
+# `parse`/`to_seed` paths so arbitrary operator input is handled correctly.
+bip39 = { version = "2.1.0", features = ["rand", "unicode-normalization"] }
+# cdk provides the secp256k1 SecretKey/PublicKey types used for P2PK (NUT-11).
+# Pinned to the same version/features as the main crate so the derived key type
+# is identical and there is a single source of truth for the derivation.
+cdk = { version = "0.14.1", default-features = false, features = ["wallet"] }
+
+[dev-dependencies]
+hex = "0.4"

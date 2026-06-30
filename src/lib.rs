@@ -76,20 +76,6 @@ fn require_root_key() -> Vec<u8> {
         .clone()
 }
 
-/// Redact any credentials embedded in a Redis URL before logging.
-/// `redis://:secret@host:6379` and `redis://user:secret@host:6379`
-/// both become `redis://***@host:6379`. URLs without userinfo are
-/// returned unchanged.
-fn redact_redis_url(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    match rest.split_once('@') {
-        Some((_userinfo, host)) => format!("{}://***@{}", scheme, host),
-        None => url.to_string(),
-    }
-}
-
 /// Registry of l402-enabled locations, populated at config-parse time and
 /// drained at `.well-known/l402-services` request time. Each entry holds the
 /// location's path and a raw pointer to its `ModuleConfig` — the config
@@ -559,7 +545,7 @@ impl L402Module {
                             info!(
                                 "✅ Redis connection pool ready (max_size={}) at {}",
                                 pool_size,
-                                redact_redis_url(&redis_url)
+                                ngx_l402_core::redact_redis_url(&redis_url)
                             );
                         } else {
                             error!("❌ Failed to register Redis pool in OnceLock");
@@ -1326,14 +1312,6 @@ fn method_caveat_value(method: u32) -> &'static str {
         _ => "UNKNOWN",
     }
 }
-/// Extract the raw macaroon (base64) and invoice (bolt11) strings from a
-/// `WWW-Authenticate` header value of the form:
-///   `L402 macaroon="<b64>", invoice="<bolt11>"`
-fn parse_l402_header_value(header: &str) -> Option<(String, String)> {
-    let mac = header.split("macaroon=\"").nth(1)?.split('"').next()?.to_string();
-    let inv = header.split("invoice=\"").nth(1)?.split('"').next()?.to_string();
-    Some((mac, inv))
-}
 
 /// Send a full HTTP response (status + body) from within an access-phase
 /// handler. Mirrors the pattern used by `l402_metrics_content_handler`.
@@ -1739,7 +1717,9 @@ pub unsafe extern "C" fn l402_access_handler_wrapper(request: *mut ngx_http_requ
                 // Render and send the HTML payment page for browser clients.
                 // API clients that check WWW-Authenticate will still function
                 // correctly because the header is already set above.
-                if let Some((macaroon_b64, invoice)) = parse_l402_header_value(&header_value) {
+                if let Some((macaroon_b64, invoice)) =
+                    ngx_l402_core::parse_l402_header_value(&header_value)
+                {
                     // Show the Cashu tab whenever cashu ecash support is enabled.
                     // P2PK mode controls only the X-Cashu payment request header.
                     let cashu_en = cashu_ecash_support;
@@ -2183,6 +2163,7 @@ pub unsafe extern "C" fn init_module(cycle: *mut ngx_cycle_s) -> isize {
             let m = L402Module::new().await;
             if cashu_ecash_support {
                 cashu::restore_wallets_state().await;
+                cashu::reconcile_pending_proofs().await;
             }
 
             // Pre-warm the LNURL client cache in the master process so workers
@@ -2415,11 +2396,11 @@ fn handle_dry_run_passthrough(
     // and forward to Loki / Splunk / Datadog.
     info!(
         "{{\"event\":\"l402_dry_run\",\"route\":\"{route}\",\"price_msat\":{price},\"price_source\":\"{src}\",\"backend\":\"{backend}\",\"client_ip\":\"{ip}\",\"auth_state\":\"{state}\",\"would_return\":{status},\"rate_limited\":{rl}}}",
-        route = escape_json(request_path),
+        route = ngx_l402_core::escape_json(request_path),
         price = final_amount,
         src = price_source,
         backend = backend,
-        ip = escape_json(&client_ip),
+        ip = ngx_l402_core::escape_json(&client_ip),
         state = auth_state,
         status = would_return,
         rl = rate_limited,
@@ -2513,28 +2494,6 @@ fn dry_run_runtime() -> &'static Runtime {
             }
         }
     })
-}
-
-/// Minimal JSON-string escaper. Handles the bytes mandated by RFC 8259.
-/// Good enough for a single log line; avoids pulling in a JSON crate on
-/// the hot path.
-fn escape_json(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                use core::fmt::Write;
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// Content-phase handler for `l402_metrics`. Serves the Prometheus text
@@ -2981,20 +2940,6 @@ pub unsafe extern "C" fn ngx_http_l402_lnurl_set(
     std::ptr::null_mut()
 }
 
-// accepted: "5r/m", "10r/h", "2r/s", or bare "5" (defaults to per minute)
-fn parse_rate_limit(val: &str) -> Option<(u32, u64)> {
-    let val = val.trim();
-    if let Some(n) = val.strip_suffix("r/m") {
-        n.trim().parse::<u32>().ok().map(|c| (c, 60))
-    } else if let Some(n) = val.strip_suffix("r/h") {
-        n.trim().parse::<u32>().ok().map(|c| (c, 3600))
-    } else if let Some(n) = val.strip_suffix("r/s") {
-        n.trim().parse::<u32>().ok().map(|c| (c, 1))
-    } else {
-        val.parse::<u32>().ok().map(|c| (c, 60))
-    }
-}
-
 /// Returns the client IP, preferring X-Real-IP then the first entry of
 /// X-Forwarded-For over the direct socket address. Falls back to `"unknown"`.
 ///
@@ -3111,7 +3056,7 @@ pub unsafe extern "C" fn ngx_http_l402_invoice_rate_limit_set(
         }
         let conf = &mut *(conf as *mut ModuleConfig);
         let val = (*((*(*cf).args).elts as *mut ngx_str_t).add(1)).to_str().unwrap_or_default();
-        match parse_rate_limit(val) {
+        match ngx_l402_core::parse_rate_limit(val) {
             Some((max_req, window_secs)) => {
                 conf.invoice_rate_limit = Some((max_req, window_secs));
                 info!(
