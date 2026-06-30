@@ -1662,12 +1662,20 @@ jobs:
           fi
 
           # Restore nginx-lnd to non-P2PK mode for subsequent tests.
-          # Unset P2PK vars so docker-compose falls back to defaults (false/empty).
-          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic
+          # Also wipe the Cashu token DB: the P2PK-locked proofs accepted above
+          # were stored directly as Unspent (no mint swap, by design of the
+          # P2PK fast path). The automatic redemption thread doesn't know how
+          # to produce a P2PK witness, so if left in the DB it loops forever
+          # on "Witness is missing for p2pk signature" / melt 400s — starving
+          # the redemption queue and breaking the next test that expects a
+          # plain token to be auto-redeemed.
+          docker exec nginx-lnd rm -f /app/data/wallet.fingerprint /app/data/wallet.mnemonic \
+            /app/data/cashu_tokens.db /app/data/cashu_tokens.db-shm /app/data/cashu_tokens.db-wal
           env -u CASHU_P2PK_MODE -u CASHU_P2PK_PRIVATE_KEY -u CASHU_REQUIRE_DLEQ \
             docker-compose -f docker-compose.yml up -d --no-deps nginx-lnd
           sleep 15
           docker exec nginx-lnd chmod 755 /root
+          docker exec nginx-lnd chmod 660 /app/data/cashu_tokens.db || echo 'Warning: could not set permissions'
           echo "✅ Cashu P2PK mode tests passed!"
 
       - name: Run Integration test - Redis Replay Attack Prevention
