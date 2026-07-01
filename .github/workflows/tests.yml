@@ -2581,11 +2581,41 @@ jobs:
         run: |
           docker-compose -f docker-compose.yml stop nginx-eclair eclair
 
-      - name: Publish .so file
-        if: startsWith(github.ref, 'refs/tags/v')
+  publish:
+    name: Publish .so for Nginx ${{ matrix.nginx_version }}
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx_version: ["1.28.0", "1.28.3", "1.29.8", "1.30.3", "1.31.2"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build module for Nginx ${{ matrix.nginx_version }}
+        run: |
+          docker build \
+            --build-arg NGX_VERSION=${{ matrix.nginx_version }} \
+            -t ngx_l402:nginx-${{ matrix.nginx_version }} \
+            .
+
+      - name: Extract .so and create archive
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          tar -czf ngx_l402-${VERSION}.tar.gz target/release/libngx_l402_lib.so
-          gh release create ${GITHUB_REF#refs/tags/} ngx_l402-${VERSION}.tar.gz
+          ARCHIVE="ngx_l402-${VERSION}-nginx-${{ matrix.nginx_version }}-linux-x86_64.tar.gz"
+          CONTAINER=$(docker create ngx_l402:nginx-${{ matrix.nginx_version }})
+          docker cp "$CONTAINER:/etc/nginx/modules/libngx_l402_lib.so" libngx_l402_lib.so
+          docker rm "$CONTAINER"
+          tar -czf "$ARCHIVE" libngx_l402_lib.so
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload to GitHub Release
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          gh release create "$TAG" "${{ env.ARCHIVE }}" --generate-notes 2>/dev/null || \
+            gh release upload "$TAG" "${{ env.ARCHIVE }}" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
